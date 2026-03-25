@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
+RecordFamily = Literal["listing", "deal"]
+
 JobType = Literal["one_click", "download_ingest", "export_excel", "manual_import", "mapping_refresh"]
 ItemStage = Literal[
     "downloaded",
@@ -62,6 +64,7 @@ class ItemProgressEvent:
     error_type: str = ""
     error_message: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
+    record_family: RecordFamily = "listing"
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ class IngestedRecord:
     parser_payload: Dict[str, Any]
     postprocess_payload: Dict[str, Any]
     findings: List[PostProcessFinding] = field(default_factory=list)
+    record_family: RecordFamily = "listing"
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,7 @@ class ExportRequest:
     mode: str = "incremental"
     cursor_key: str = ""
     output_dir: str = ""
+    record_family: RecordFamily = "listing"
 
 
 @dataclass(frozen=True)
