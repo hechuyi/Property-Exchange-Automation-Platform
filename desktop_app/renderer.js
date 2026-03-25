@@ -176,9 +176,29 @@ function formatLocalDate(date) {
   return `${year}-${month}-${day}`;
 }
 
+function setInputValue(id, value) {
+  const node = $(id);
+  if (node) {
+    node.value = value;
+  }
+}
+
 function countValue(value) {
   const numeric = Number(value || 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function currentRecordsViewState() {
+  return {
+    recordFamily: String(desktopState?.records?.recordFamily || "listing").trim() || "listing",
+    state: $("recordsStateFilter")?.value || "all",
+    projectType: $("recordsProjectTypeFilter")?.value || "all",
+    keyword: String($("recordsKeywordInput")?.value || "").trim(),
+    dateFrom: String($("recordsDateFromInput")?.value || "").trim(),
+    dateTo: String($("recordsDateToInput")?.value || "").trim(),
+    page: desktopState?.records?.page || 1,
+    pageSize: desktopState?.records?.pageSize || 50,
+  };
 }
 
 function isMappingEditorActive() {
@@ -192,10 +212,10 @@ function isMappingEditorActive() {
 function defaultDates() {
   const today = new Date();
   const todayText = formatLocalDate(today);
-  $("startDateInput").value = todayText;
-  $("endDateInput").value = todayText;
-  $("exportDateFromInput").value = todayText;
-  $("exportDateToInput").value = todayText;
+  setInputValue("startDateInput", todayText);
+  setInputValue("endDateInput", todayText);
+  setInputValue("recordsDateFromInput", todayText);
+  setInputValue("recordsDateToInput", todayText);
   const hintNode = $("todayHint");
   if (hintNode) {
     hintNode.textContent = `今天是 ${todayText}`;
@@ -845,22 +865,9 @@ async function loadRecords() {
   if (!desktopState) {
     throw new Error("前端状态尚未初始化");
   }
-  const state = $("recordsStateFilter")?.value || "all";
-  const projectType = $("recordsProjectTypeFilter")?.value || "all";
-  const keyword = String($("recordsKeywordInput")?.value || "").trim();
-  const dateFrom = String($("recordsDateFromInput")?.value || "").trim();
-  const dateTo = String($("recordsDateToInput")?.value || "").trim();
-  // date_from / date_to / keyword 都由 records.mjs 负责归一化。
-  const query = buildRecordsQuery({
-    recordFamily: "listing",
-    state,
-    projectType,
-    keyword,
-    dateFrom,
-    dateTo,
-    page: desktopState.records.page,
-    pageSize: desktopState.records.pageSize,
-  });
+  const view = currentRecordsViewState();
+  // date_from / date_to / keyword 保持在当前 records 视图里，不再单独读导出输入框。
+  const query = buildRecordsQuery(view);
   const payload = await api(`/api/records?${query.toString()}`);
   renderRecords(payload);
 }
@@ -972,14 +979,7 @@ async function runExport() {
     // job.job_type === "export_excel"
     // 生成文件
     const request = buildExportRequestFromView({
-      recordFamily: "listing",
-      state: $("recordsStateFilter")?.value || "all",
-      projectType: $("recordsProjectTypeFilter")?.value || "all",
-      keyword: String($("recordsKeywordInput")?.value || "").trim(),
-      dateFrom: String($("exportDateFromInput")?.value || "").trim(),
-      dateTo: String($("exportDateToInput")?.value || "").trim(),
-      page: desktopState?.records?.page || 1,
-      pageSize: desktopState?.records?.pageSize || 50,
+      ...currentRecordsViewState(),
       mode: "rebuild",
       outputDir: overviewCache?.export_root || "",
     });
@@ -1537,6 +1537,7 @@ async function bootstrap() {
   const backendConfig = await window.peapDesktop.getBackendConfig();
   desktopState.backendUrl = String(backendConfig?.backendUrl || "");
   desktopState.backendApiToken = String(backendConfig?.apiToken || "");
+  desktopState.records.recordFamily = "listing";
   apiClient = apiModule.createApiClient({
     baseUrl: desktopState.backendUrl,
     apiToken: desktopState.backendApiToken,

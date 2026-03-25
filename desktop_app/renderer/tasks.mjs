@@ -72,6 +72,101 @@ function isTerminalProgress(progressView = {}) {
   );
 }
 
+function terminalProgressMeta(progressView = {}, latestJob = null, overview = {}) {
+  const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
+  const statusLabel = jobStatusLabel(String(latestJob?.status || progressView.job_status || "").trim());
+  const downloaded = countValue(progressView.downloaded_count);
+  const persisted = countValue(progressView.persisted_count);
+  const skipped = countValue(progressView.skipped_count);
+  const pending = countValue(progressView.pending_mapping_count);
+  const exceptions = countValue(progressView.exception_count);
+  const archivePending = countValue(progressView.archive_pending_count);
+  const archiveCompleted = countValue(progressView.archive_completed_count);
+  const overallCounts = overview.record_state_counts || {};
+  const overallPending = countValue(overview.pending_mapping_count || overallCounts.pending_mapping);
+  const overallSkipped = countValue(overallCounts.skipped);
+
+  if (jobType === "export_excel") {
+    return exportMeta(progressView, latestJob);
+  }
+  if (jobType === "manual_import") {
+    return joinParts([
+      `${statusLabel} · 手动导入`,
+      `已处理文件 ${downloaded} 个`,
+      `已写回 ${persisted} 条`,
+      pending > 0 ? `待补映射 ${pending} 条` : "",
+      exceptions > 0 ? `异常 ${exceptions} 条` : "",
+    ]);
+  }
+  if (jobType === "mapping_refresh") {
+    return joinParts([
+      `${statusLabel} · 映射回刷`,
+      `已回刷 ${downloaded} 条`,
+      `已写回 ${persisted} 条`,
+      pending > 0 ? `待补映射 ${pending} 条` : "",
+      exceptions > 0 ? `异常 ${exceptions} 条` : "",
+    ]);
+  }
+  return joinParts([
+    `${statusLabel} · 已保存网页 ${downloaded} 条`,
+    `已存档 ${archiveCompleted} 条`,
+    `已跳过 ${skipped} 条`,
+    `待补映射 ${pending} 条`,
+    `异常 ${exceptions} 条`,
+    overallPending > 0 ? `当前待补映射 ${overallPending} 条` : "",
+    overallSkipped > 0 ? `累计已跳过 ${overallSkipped} 条` : "",
+  ]);
+}
+
+function terminalProgressHint(progressView = {}, latestJob = null, overview = {}) {
+  const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
+  const status = String(latestJob?.status || progressView.job_status || "").trim();
+  if (jobType === "export_excel") {
+    if (status === "failed") {
+      return "导出失败，请到任务页查看详细原因。";
+    }
+    if (status === "interrupted") {
+      return "导出已中断，请到任务页查看详细原因。";
+    }
+    if (status === "success_with_warnings") {
+      return "导出已结束，但当前条件下没有形成新的导出文件。";
+    }
+    return "导出已完成，可以从导出目录直接打开文件。";
+  }
+  if (jobType === "manual_import") {
+    if (status === "failed") {
+      return "手动导入失败，请到任务页查看结果。";
+    }
+    if (status === "interrupted") {
+      return "手动导入已中断，请到任务页查看结果。";
+    }
+    return "手动导入已完成，请到任务页查看结果。";
+  }
+  if (jobType === "mapping_refresh") {
+    if (status === "failed") {
+      return "映射回刷失败，请到任务页查看结果。";
+    }
+    if (status === "interrupted") {
+      return "映射回刷已中断，请到任务页查看结果。";
+    }
+    return "映射回刷已完成，请到任务页查看结果。";
+  }
+  if (status === "failed") {
+    return "任务执行失败，请到任务页查看详细原因。";
+  }
+  if (status === "interrupted") {
+    return "任务已中断，请到任务页查看详细原因。";
+  }
+  if (status === "success_with_warnings") {
+    return "任务已完成，但仍有待补映射或失败项；请先处理后再导出 Excel。";
+  }
+  const downloaded = countValue(progressView.downloaded_count);
+  const persisted = countValue(progressView.persisted_count);
+  return downloaded <= 0 && persisted <= 0
+    ? "最近一次任务已完成，但当前范围没有形成新的可录入结果。"
+    : "最近一次任务已完成；如需表格，请点击导出 Excel。";
+}
+
 function exportMeta(progressView = {}, latestJob = null) {
   const exportSummary = latestJob && typeof latestJob.summary === "object" ? latestJob.summary : {};
   return joinParts([
@@ -134,6 +229,16 @@ function genericDownloadMeta(progressView = {}, latestJob = null, overview = {})
       fetchedCount > 0 ? `已抓取详情 ${fetchedCount} 条` : "",
       `已保存网页 ${downloaded} 条`,
       detailDateSkippedCount > 0 ? `日期不符 ${detailDateSkippedCount} 条` : "",
+      pending > 0 ? `待补映射 ${pending} 条` : "",
+      exceptions > 0 ? `异常 ${exceptions} 条` : "",
+    ]);
+  }
+  if (phaseCode === "archive_pending") {
+    return joinParts([
+      `已保存网页 ${downloaded} 条`,
+      `待存档 ${archivePending} 条`,
+      `已存档 ${archiveCompleted} 条`,
+      `已跳过 ${skipped} 条`,
       pending > 0 ? `待补映射 ${pending} 条` : "",
       exceptions > 0 ? `异常 ${exceptions} 条` : "",
     ]);
@@ -283,7 +388,9 @@ export function progressPreset(progressView = {}) {
 
 export function formatProgressMeta(progressView = {}, latestJob = null, overview = {}) {
   const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
-  const phaseCode = String(progressView.phase_code || "").trim();
+  if (isTerminalProgress(progressView)) {
+    return terminalProgressMeta(progressView, latestJob, overview);
+  }
   if (jobType === "export_excel") {
     return exportMeta(progressView, latestJob);
   }
@@ -298,6 +405,9 @@ export function formatProgressMeta(progressView = {}, latestJob = null, overview
 
 export function formatProgressHint(progressView = {}, latestJob = null, overview = {}) {
   const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
+  if (isTerminalProgress(progressView)) {
+    return terminalProgressHint(progressView, latestJob, overview);
+  }
   if (jobType === "export_excel") {
     return exportHint(progressView, latestJob);
   }
