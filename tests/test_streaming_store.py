@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -412,6 +413,122 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertIn("project_id:CQFAILEDTOKENS001", after_tokens)
         self.assertIn("page_url:https://example.test/failed/tokens", after_tokens)
 
+    def test_reimport_failed_record_merges_new_candidate_tokens(self) -> None:
+        original_source = os.path.join(self.temp_dir.name, "failed-merge-original.html")
+        reimport_source = os.path.join(self.temp_dir.name, "failed-merge-reimport.html")
+        with open(original_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed merge original</body></html>")
+        with open(reimport_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed merge reimport</body></html>")
+
+        created = self.store.upsert_failed_record(
+            project_code="",
+            source_file=original_source,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom-1",
+            payload={
+                "original_evidence_path": original_source,
+                "candidate_tokens": ["project_id:CQMERGE001"],
+            },
+        )
+        self.store.upsert_failed_record(
+            project_code="",
+            source_file=reimport_source,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom-2",
+            payload={
+                "original_evidence_path": original_source,
+                "candidate_tokens": ["project_id:CQMERGE001", "page_url:https://example.test/failed/merge"],
+            },
+        )
+
+        record = self.store.get_record(created["record_id"])
+        self.assertEqual(
+            record["source_identity_json"]["candidate_tokens"],
+            ["project_id:CQMERGE001", "page_url:https://example.test/failed/merge"],
+        )
+
+    def test_legacy_failed_record_is_backfilled_with_stable_identity_contract(self) -> None:
+        legacy_source = os.path.join(self.temp_dir.name, "legacy-failed.html")
+        moved_source = os.path.join(self.temp_dir.name, "legacy-failed-moved.html")
+        with open(legacy_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>legacy failed</body></html>")
+        with open(moved_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>legacy failed moved</body></html>")
+
+        with sqlite3.connect(self.store.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO records (
+                    record_id, business_key, record_family, identity_anchor, source_identity_json,
+                    project_code, project_name, project_type, exchange, listing_date,
+                    state, source_file, archive_path, latest_revision_id,
+                    last_error_type, last_error_message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-failed-record",
+                    "source:legacy-business-key",
+                    "listing",
+                    "",
+                    "{}",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "parse_failed",
+                    legacy_source,
+                    "",
+                    None,
+                    "parse_failed",
+                    "legacy boom",
+                    "2026-03-25T00:00:00Z",
+                    "2026-03-25T00:00:00Z",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO record_revisions (
+                    record_id, revision_hash, parser_payload_json,
+                    postprocess_payload_json, findings_json, state, source_file, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-failed-record",
+                    "legacy-revision-hash",
+                    '{"original_evidence_path":"%s","candidate_tokens":["project_id:CQLEGACY001"]}' % legacy_source,
+                    "{}",
+                    "[]",
+                    "parse_failed",
+                    legacy_source,
+                    "2026-03-25T00:00:00Z",
+                ),
+            )
+            latest_revision_id = conn.execute(
+                "SELECT revision_id FROM record_revisions WHERE record_id = ? ORDER BY revision_id DESC LIMIT 1",
+                ("legacy-failed-record",),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE records SET latest_revision_id = ? WHERE record_id = ?",
+                (int(latest_revision_id), "legacy-failed-record"),
+            )
+
+        reopened = StreamingStore(self.store.db_path)
+        before = reopened.get_record("legacy-failed-record")
+        self.assertTrue(before["identity_anchor"])
+        self.assertEqual(before["business_key"], f"failed:{before['identity_anchor']}")
+        self.assertEqual(before["source_identity_json"]["original_evidence_path"], legacy_source)
+
+        reopened.update_record_source_file("legacy-failed-record", moved_source)
+        after = reopened.get_record("legacy-failed-record")
+
+        self.assertEqual(after["identity_anchor"], before["identity_anchor"])
+        self.assertEqual(after["business_key"], before["business_key"])
+        self.assertEqual(after["source_identity_json"]["candidate_tokens"], ["project_id:CQLEGACY001"])
+
     def test_list_job_events_raises_key_error_for_missing_job(self) -> None:
         with self.assertRaises(KeyError):
             self.store.list_job_events("missing-job-id")
@@ -435,6 +552,49 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertEqual(counts["total_count"], 3)
         self.assertEqual(counts["ok"], 2)
         self.assertEqual(counts["failed"], 1)
+
+    def test_count_records_by_state_can_filter_record_family(self) -> None:
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-listing-1",
+                revision_hash="hash-listing-1",
+                project_code="L32026SH000001",
+                project_name="挂牌测试项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/listing.html",
+                archive_path=f"{self.temp_dir.name}/archive/listing.html",
+                parser_payload={"项目编号": "L32026SH000001"},
+                postprocess_payload={"项目编号": "L32026SH000001"},
+                findings=[],
+            )
+        )
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-deal-1",
+                revision_hash="hash-deal-1",
+                project_code="D32026SH000001",
+                project_name="成交测试项目",
+                project_type="成交公告",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/deal.html",
+                archive_path=f"{self.temp_dir.name}/archive/deal.html",
+                parser_payload={"项目编号": "D32026SH000001"},
+                postprocess_payload={"项目编号": "D32026SH000001"},
+                findings=[],
+                record_family="deal",
+            )
+        )
+
+        listing_counts = self.store.count_records_by_state(record_family="listing")
+        deal_counts = self.store.count_records_by_state(record_family="deal")
+
+        self.assertEqual(listing_counts["ready"], 1)
+        self.assertEqual(deal_counts["ready"], 1)
 
     def test_store_recreates_schema_after_database_file_is_deleted(self) -> None:
         self.store.set_setting("ui.basic", {"default_exchange": "all"})

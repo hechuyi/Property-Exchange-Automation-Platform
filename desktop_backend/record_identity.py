@@ -62,7 +62,6 @@ def build_identity_anchor(*, record_state: str, source_identity: dict) -> str:
         "project_name": _coerce_text(identity.get("project_name")),
         "exchange": _coerce_text(identity.get("exchange")),
         "listing_date": _coerce_text(identity.get("listing_date")),
-        "candidate_tokens": _unique_tokens(identity.get("candidate_tokens")),
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(serialized.encode("utf-8")).hexdigest()

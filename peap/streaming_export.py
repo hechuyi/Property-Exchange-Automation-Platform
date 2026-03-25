@@ -157,6 +157,7 @@ def run_ready_export(
         states=["ready"],
         date_from=request.date_from,
         date_to=request.date_to,
+        record_family=record_family,
     )
 
     grouped: Dict[tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)

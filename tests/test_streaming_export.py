@@ -141,6 +141,45 @@ class StreamingExportTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_ready_export(self.store, request, writer=lambda *_args, **_kwargs: None)
 
+    def test_run_ready_export_filters_records_by_record_family(self) -> None:
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-deal-export",
+                revision_hash="hash-deal-export",
+                project_code="D32026SH000002",
+                project_name="成交导出项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/deal-export.html",
+                archive_path=f"{self.temp_dir.name}/archive/deal-export.html",
+                parser_payload={"项目编号": "D32026SH000002", "项目名称": "成交导出项目"},
+                postprocess_payload={"项目编号": "D32026SH000002", "项目名称": "成交导出项目", "项目类型": "股权转让"},
+                findings=[],
+                record_family="deal",
+            )
+        )
+        request = ExportRequest(
+            date_from="2026-03-21",
+            date_to="2026-03-21",
+            business_types=["股权转让"],
+            mode="incremental",
+            output_dir=f"{self.temp_dir.name}/exports",
+            record_family="listing",
+        )
+        captured: dict[str, object] = {}
+
+        def fake_writer(file_path: str, rows: list[dict[str, object]]) -> None:
+            captured["file_path"] = file_path
+            captured["rows"] = rows
+
+        result = run_ready_export(self.store, request, writer=fake_writer)
+
+        self.assertEqual(result.new_records, 1)
+        self.assertEqual(len(captured["rows"]), 1)
+        self.assertEqual(captured["rows"][0]["项目编号"], "G32025SH1000194")
+
 
 if __name__ == "__main__":
     unittest.main()

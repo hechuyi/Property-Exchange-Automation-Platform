@@ -12,7 +12,11 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
-from desktop_backend.record_identity import build_identity_anchor, build_source_identity_payload
+from desktop_backend.record_identity import (
+    FAILED_RECORD_STATES,
+    build_identity_anchor,
+    build_source_identity_payload,
+)
 
 from .streaming_models import IngestedRecord, ItemProgressEvent
 
@@ -351,6 +355,28 @@ def _build_failed_source_identity(
     return source_identity
 
 
+def _merge_source_identity(existing: Dict[str, Any] | None, incoming: Dict[str, Any] | None) -> Dict[str, Any]:
+    existing_data = dict(existing or {})
+    incoming_data = dict(incoming or {})
+    merged = dict(existing_data)
+    for key in (
+        "record_family",
+        "original_evidence_path",
+        "original_source_file",
+        "source_url",
+        "project_code",
+        "project_name",
+        "exchange",
+        "listing_date",
+        "record_state",
+    ):
+        merged[key] = _first_non_empty(merged.get(key), incoming_data.get(key))
+    merged["candidate_tokens"] = _unique_text_values(
+        list(existing_data.get("candidate_tokens") or []) + list(incoming_data.get("candidate_tokens") or [])
+    )
+    return merged
+
+
 class StreamingStore:
     """Thin sqlite-backed store with JSON payload columns."""
 
@@ -387,6 +413,69 @@ class StreamingStore:
             if column_name in existing_columns:
                 continue
             conn.execute(f"ALTER TABLE records ADD COLUMN {column_name} {column_spec}")
+        self._backfill_failed_record_contracts(conn)
+
+    def _backfill_failed_record_contracts(self, conn: sqlite3.Connection) -> None:
+        failed_state_placeholders = ",".join("?" for _ in FAILED_RECORD_STATES)
+        rows = conn.execute(
+            f"""
+            SELECT
+                records.record_id,
+                records.project_code,
+                records.record_family,
+                records.business_key,
+                records.identity_anchor,
+                records.source_identity_json,
+                records.source_file,
+                records.state,
+                revisions.parser_payload_json
+            FROM records
+            LEFT JOIN record_revisions AS revisions
+              ON revisions.revision_id = records.latest_revision_id
+            WHERE records.state IN ({failed_state_placeholders})
+              AND (
+                records.identity_anchor = ''
+                OR records.source_identity_json = '{{}}'
+                OR records.business_key NOT LIKE 'failed:%'
+              )
+            """,
+            list(FAILED_RECORD_STATES),
+        ).fetchall()
+        for row in rows:
+            payload = _json_loads(row["parser_payload_json"], default={})
+            existing_source_identity = _json_loads(row["source_identity_json"], default={})
+            if not isinstance(existing_source_identity, dict):
+                existing_source_identity = {}
+            source_identity = _merge_source_identity(
+                existing_source_identity,
+                _build_failed_source_identity(
+                    project_code=str(row["project_code"] or ""),
+                    source_file=str(row["source_file"] or ""),
+                    state=str(row["state"] or ""),
+                    payload=payload if isinstance(payload, dict) else {},
+                ),
+            )
+            identity_anchor = _first_non_empty(
+                str(row["identity_anchor"] or "").strip(),
+                build_identity_anchor(record_state=str(row["state"] or ""), source_identity=source_identity),
+            )
+            conn.execute(
+                """
+                UPDATE records
+                SET record_family = ?,
+                    identity_anchor = ?,
+                    source_identity_json = ?,
+                    business_key = ?
+                WHERE record_id = ?
+                """,
+                (
+                    _first_non_empty(str(row["record_family"] or "").strip(), str(source_identity.get("record_family") or "").strip(), "listing"),
+                    identity_anchor,
+                    _json_dumps(source_identity),
+                    f"failed:{identity_anchor}",
+                    str(row["record_id"]),
+                ),
+            )
 
     def create_job(self, job_type: str, *, metadata: Dict[str, Any] | None = None) -> str:
         job_id = uuid.uuid4().hex
@@ -1089,7 +1178,7 @@ class StreamingStore:
             if existing is not None:
                 existing_source_identity = _json_loads(existing["source_identity_json"], default={})
                 if isinstance(existing_source_identity, dict) and existing_source_identity:
-                    stored_source_identity = existing_source_identity
+                    stored_source_identity = _merge_source_identity(existing_source_identity, source_identity)
             if existing is None:
                 conn.execute(
                     """
@@ -1162,10 +1251,7 @@ class StreamingStore:
                         WHEN identity_anchor = '' THEN excluded.identity_anchor
                         ELSE identity_anchor
                     END,
-                    source_identity_json = CASE
-                        WHEN source_identity_json = '{}' THEN excluded.source_identity_json
-                        ELSE source_identity_json
-                    END,
+                    source_identity_json = excluded.source_identity_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -1416,6 +1502,7 @@ class StreamingStore:
         date_from: str | None = None,
         date_to: str | None = None,
         business_types: Iterable[str] | None = None,
+        record_family: str | None = None,
     ) -> Dict[str, int]:
         clauses = ["1=1"]
         params: List[Any] = []
@@ -1435,6 +1522,10 @@ class StreamingStore:
             if items:
                 clauses.append(f"records.project_type IN ({','.join('?' for _ in items)})")
                 params.extend(items)
+        normalized_record_family = str(record_family or "").strip()
+        if normalized_record_family:
+            clauses.append("records.record_family = ?")
+            params.append(normalized_record_family)
 
         with self._connect() as conn:
             rows = conn.execute(
@@ -1501,7 +1592,7 @@ class StreamingStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT project_code, business_key, latest_revision_id, identity_anchor
+                SELECT project_code, business_key, latest_revision_id, identity_anchor, state
                 FROM records
                 WHERE record_id = ?
                 """,
@@ -1509,7 +1600,10 @@ class StreamingStore:
             ).fetchone()
             if row is None:
                 raise KeyError(record_id)
-            failed_identity = str(row["identity_anchor"] or "").strip()
+            failed_identity = _first_non_empty(
+                str(row["identity_anchor"] or "").strip(),
+                "legacy-failed" if str(row["state"] or "").strip() in FAILED_RECORD_STATES else "",
+            )
             business_key = (
                 str(row["business_key"] or "").strip()
                 if failed_identity
@@ -1587,6 +1681,7 @@ class StreamingStore:
         date_from: str | None = None,
         date_to: str | None = None,
         business_type: str | None = None,
+        record_family: str | None = None,
         limit: int | None = None,
         sort: str = "business",
     ) -> List[Dict[str, Any]]:
@@ -1608,6 +1703,9 @@ class StreamingStore:
         if business_type:
             clauses.append("records.project_type = ?")
             params.append(str(business_type))
+        if record_family:
+            clauses.append("records.record_family = ?")
+            params.append(str(record_family))
 
         order_clause = "records.project_type, records.project_code, records.updated_at"
         if str(sort or "").strip().lower() == "recent":
