@@ -88,8 +88,8 @@ def pick_reprocess_evidence_path(record: dict) -> str:
         source_identity = {}
     return _first_non_empty(
         source_identity.get("original_evidence_path"),
-        source_identity.get("original_source_file"),
         data.get("original_evidence_path"),
+        source_identity.get("original_source_file"),
         data.get("evidence_path"),
         data.get("archive_path"),
         data.get("source_file"),

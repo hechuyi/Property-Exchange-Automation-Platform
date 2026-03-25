@@ -46,9 +46,11 @@ class RecordIdentityTest(unittest.TestCase):
 
     def test_pick_reprocess_evidence_path_prefers_original_evidence_path(self) -> None:
         record = {
+            "original_evidence_path": "/tmp/record/original-evidence.html",
             "source_file": "/tmp/current/path.html",
             "source_identity": {
                 "original_evidence_path": "/tmp/original/evidence.html",
+                "original_source_file": "/tmp/source/original-source.html",
             },
         }
 

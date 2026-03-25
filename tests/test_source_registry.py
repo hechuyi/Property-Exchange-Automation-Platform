@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import unittest
 
+from peap import source_registry
 from peap.source_registry import SourceCapability, get_source, list_sources, register_source
 
 
 class SourceRegistryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        source_registry._SOURCE_REGISTRY.clear()
+
     def test_register_get_and_list_sources(self) -> None:
         capability = SourceCapability(
             source_id="unit-listing-source",
