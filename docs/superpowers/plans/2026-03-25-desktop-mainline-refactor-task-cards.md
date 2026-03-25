@@ -2,7 +2,7 @@
 
 ## 中央监督执行状态（2026-03-25）
 
-- Status: `Task 0` 进行中，中央监督已接管分发。
+- Status: 已完成 `Task 0`、`Task 1`、`Task 2`、`Task 3`、`Task 4`；`Task 5`、`Task 6` 待执行。
 - Supervisor: 主控工作区 `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform`
 - Worktree assignments:
   - `Task 1` -> `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/task-1-shared-contracts` on `codex-task-1-shared-contracts`
@@ -17,6 +17,17 @@
   - 不在失败对象上继续用路径重算身份
 - Dispatch order frozen: `Task 1 -> Task 2 -> Task 3 -> Task 4 -> Task 5 -> Task 6`
 - Boundary policy: 任一 worker 越权改文件、私保兼容层、跳过测试、擅改契约字段名，直接打回。
+- Verified checkpoints:
+  - `Task 1`: `62c3fa0 feat: add shared desktop semantic contracts`
+  - `Task 1 review fix`: `cd8ac09 fix: tighten shared contract edge cases`
+  - `Task 2`: `3a44648 feat: stabilize store identity and export contracts`
+  - `Task 2 review fix`: `ec458a5 fix: close task2 contract review gaps`
+  - `Task 3`: `61be917 feat: align desktop service with semantic contracts`
+  - `Task 4`: `5a2f1c2 feat: normalize desktop http contracts`
+  - `Task 1` verification: `python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract -v`
+  - `Task 2` verification: `python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract tests.test_streaming_store tests.test_streaming_export -v`
+  - `Task 3` verification: `python3 -m unittest tests.test_app_service -v`
+  - `Task 4` verification: `python3 -m unittest tests.test_app_backend -v`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
