@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "peap"
+version = "0.1.0"
+description = "Property Exchange Automation Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4",
+  "certifi",
+  "chardet",
+  "openpyxl",
+  "pandas",
+  "playwright",
+  "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6.0",
+]
+
+[tool.setuptools.packages.find]
+include = [
+  "peap*",
+  "peap_parsers*",
+  "peap_core*",
+  "peap_postprocess*",
+  "scripts*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"peap_postprocess/run_postprocess.py" = ["E402", "I001"]
+"scripts/init_runtime_config.py" = ["E402", "I001"]
+"scripts/prepare_submission.py" = ["E402", "I001"]

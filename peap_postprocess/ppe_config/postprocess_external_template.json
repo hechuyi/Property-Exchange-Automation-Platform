@@ -1,0 +1,75 @@
+{
+  "input_dir": "%PEAP_DATA_ROOT%/outputs/excel",
+  "output_dir": "%PEAP_DATA_ROOT%/outputs/postprocess",
+  "audit_dir": "%PEAP_DATA_ROOT%/outputs/postprocess_audit",
+  "exclude_dirs": [
+    "%PEAP_DATA_ROOT%/outputs/postprocess",
+    "../ppe_config"
+  ],
+  "mode": "plan",
+  "overwrite": false,
+  "output_suffix": "_postprocessed",
+  "scan_recursive": false,
+  "input_targets": [
+    "挂牌_股权转让.xlsx",
+    "挂牌_实物资产.xlsx",
+    "挂牌_增资扩股.xlsx",
+    "挂牌_预披露.xlsx"
+  ],
+  "include_globs": [
+    "*.xlsx",
+    "*.xls",
+    "*.csv"
+  ],
+  "rules": [
+    {
+      "id": "R010_filter_scrap_physical_asset",
+      "enabled": true,
+      "priority": 5,
+      "params": {
+        "active": true,
+        "severity": "info",
+        "search_all_fields": true
+      }
+    },
+    {
+      "id": "R012_clear_invalid_group_placeholder",
+      "enabled": true,
+      "priority": 30,
+      "params": {
+        "min_placeholder_length": 3
+      }
+    },
+    {
+      "id": "R011_person_transferor_private",
+      "enabled": true,
+      "priority": 40,
+      "params": {
+        "override_existing": true
+      }
+    },
+    {
+      "id": "R005_normalize_source_type",
+      "enabled": true,
+      "priority": 50,
+      "params": {
+        "transferor_type_mapping_file": "../ppe_config/transferor_type_mapping_template.csv",
+        "transferor_group_mapping_file": "../ppe_config/transferor_group_mapping_template.csv",
+        "group_group_mapping_file": "../ppe_config/group_group_mapping_template.csv",
+        "group_type_mapping_file": "../ppe_config/group_type_mapping_template.csv",
+        "conflict_strategy": "keep_original_and_flag",
+        "emit_group_no_match": false,
+        "emit_ministry_no_match": false,
+        "emit_ministry_missing": false,
+        "write_ministry_field": false,
+        "ministry_field_name": "主管部委"
+      }
+    },
+    {
+      "id": "R006_derive_listing_times",
+      "enabled": true,
+      "priority": 60,
+      "params": {}
+    }
+  ]
+}

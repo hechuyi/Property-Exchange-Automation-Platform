@@ -1,0 +1,54 @@
+name: Desktop Package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/desktop-package.yml"
+      - "desktop_app/**"
+      - "desktop_backend/**"
+      - "peap/**"
+      - "peap_parsers/**"
+      - "peap_postprocess/**"
+      - "pyproject.toml"
+      - "README.md"
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            artifact_glob: desktop_app/dist/*.pkg
+          - os: windows-latest
+            platform: win
+            artifact_glob: desktop_app/dist/*.exe
+    runs-on: ${{ matrix.os }}
+    env:
+      PEAP_DESKTOP_PYTHON: python
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install desktop app dependencies
+        working-directory: desktop_app
+        run: npm install
+
+      - name: Package desktop app
+        run: node scripts/package_desktop.js --platform ${{ matrix.platform }} --layout release
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: peap-desktop-${{ matrix.os }}
+          path: ${{ matrix.artifact_glob }}

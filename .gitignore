@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local env / editor
+.venv/
+.venv-desktop/
+.vscode/
+.trae/
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Runtime outputs (legacy in-repo artifacts, should stay outside repo)
+logs/
+postprocess_output/
+postprocess_audit/
+peap_postprocess/logs/
+peap_postprocess/postprocess_output/
+peap_postprocess/postprocess_audit/
+archive_merge_module/output_test/
+peap_postprocess/ppe_config/postprocess_audit/
+
+# Web cache artifacts
+*.html
+*.htm
+
+# Temporary artifacts
+peap_postprocess/_tmp_*/
+.~lock*
+.tmp_test_data_root/
+
+# Business output tables (must not upload concrete tables)
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+
+# Keep only template tables
+!peap_postprocess/ppe_config/*.template.csv
+
+# Desktop app
+desktop_app/node_modules/
+desktop_app/build/
+desktop_app/dist/
+desktop_app/out/
+desktop_app/.pyinstaller/
+.cache/
+.worktrees/

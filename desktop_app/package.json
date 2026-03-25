@@ -1,0 +1,21 @@
+{
+  "name": "peap-desktop-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure desktop shell for PEAP streaming ingest workflow",
+  "main": "main.js",
+  "scripts": {
+    "bootstrap:backend": "bash ../scripts/bootstrap_desktop_env.sh",
+    "build:backend": "node build_backend_sidecar.js",
+    "package:desktop": "node package_desktop.js",
+    "pack": "npm run package:desktop -- --platform current --layout dir",
+    "dist:mac": "npm run package:desktop -- --platform mac --layout release",
+    "dist:win": "npm run package:desktop -- --platform win --layout release",
+    "start": "electron .",
+    "test": "node --test ./backend_launch.test.js ./backend_ready.test.js ./layout_contract.test.js ./package_desktop.test.js ./packaging_manifest.test.js ./renderer/api.test.js ./renderer/records.test.js ./renderer/mappings.test.js"
+  },
+  "devDependencies": {
+    "electron": "^37.3.1",
+    "electron-builder": "^26.0.12"
+  }
+}

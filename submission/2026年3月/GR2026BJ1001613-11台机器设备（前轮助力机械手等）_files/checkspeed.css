@@ -1,0 +1,8 @@
+.speedcontainer {float: right; font-size: 13px; padding: 0 10px 0 0;color: #555; }
+.speeddiv {font-size: 13px; vertical-align: middle;}
+.sfont {font-size: 13px;}
+
+.speedcls{background-repeat: no-repeat;background-position: 3px 3px;padding-left: 25px;}
+.speed_normal{background-image: url('images/02.png');}
+.speed_slower{background-image: url('images/04.png');}
+.speed_veryslow{background-image: url('images/05.png');}

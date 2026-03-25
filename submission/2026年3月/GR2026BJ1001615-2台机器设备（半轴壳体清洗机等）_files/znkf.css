@@ -1,0 +1,225 @@
+.bjKf_v2019_5BBox {
+	height: 100%;
+	position: fixed;
+	top: 0;
+	right: 0;
+	width: 40px;
+	background: url(images/znkf/bjs_kf_5B_03.png);
+	z-index: 2000;
+}
+
+.bjKf_v2019_5BBox ul {
+	height: 520px;
+	position: absolute;
+	top: 50%;
+	margin-top: -260px;
+	left: 0;
+	width: 40px;
+}
+
+.bjKf_v2019_5BBox ul li {
+	height: 44px;
+	position: relative;
+	cursor: pointer;
+}
+
+.bjKf_v2019_5BBox ul li:hover {
+	background: url(images/znkf/bjs_kf_5B_10.png);
+}
+
+.bjKf_v2019_5BBox ul li a {
+	display: block;
+	height: 44px;
+}
+
+.bjKf_v2019_5BBox ul li .bjKf_v2019_5B_xf {
+	position: absolute;
+	right: 40px;
+	width: 0px;
+	top: 5px;
+	height: 34px;
+	text-align: center;
+	line-height: 34px;
+	font-size: 14px;
+	color: #fff;
+	overflow: hidden;
+}
+
+.bjKf_v2019_5BBox ul li .bjKf_v2019_5B_xf div {
+	background: url(images/znkf/bjs_kf_5B_07.png) no-repeat;
+	width: 93px;
+	padding-right: 8px;
+	height: 34px;
+}
+
+/*需要覆盖的样式 开始*/
+.bjKf_v2019_5BLi1 a img {
+	display: block;
+	width: 24px;
+	height: 24px;
+	position: absolute;
+	left: 8px;
+	top: 10px;
+}
+
+.bjKf_v2019_5BLi2 a img {
+	display: block;
+	width: 22px;
+	height: 24px;
+	position: absolute;
+	left: 9px;
+	top: 10px;
+}
+
+.bjKf_v2019_5BLi3 a img {
+	display: block;
+	width: 26px;
+	height: 26px;
+	position: absolute;
+	left: 7px;
+	top: 9px;
+}
+
+.bjKf_v2019_5BLi4 a img {
+	display: block;
+	width: 24px;
+	height: 21px;
+	position: absolute;
+	left: 8px;
+	top: 11px;
+}
+
+.bjKf_v2019_5BLi5 a img {
+	display: block;
+	width: 23px;
+	height: 19px;
+	position: absolute;
+	left: 8.5px;
+	top: 12.5px;
+}
+
+.bjKf_v2019_5BLi6 a img {
+	display: block;
+	width: 23px;
+	height: 19px;
+	position: absolute;
+	left: 8.5px;
+	top: 12.5px;
+}
+
+.bjKf_v2019_5BLi70 img {
+	display: block;
+	width: 24px;
+	height: 24px;
+	position: absolute;
+	left: 8.5px;
+	top: 12.5px;
+}
+
+
+/*需要覆盖的样式 结束*/
+.bjKf_v2019_5BLi70 .bjKf_v2019_5B_xf {
+	height: 120px !important;
+	top: -18px !important;
+	color: #aa0b05 !important;
+	font-size: 12px;
+	white-space: nowrap;
+	line-height: 1.5 !important;
+}
+
+.bjKf_v2019_5BLi70 .bjKf_v2019_5B_xf p{
+	padding-left: 24px;
+	padding-top: 3px;
+}
+
+.bjKf_v2019_5BLi70 .bjKf_v2019_5B_xf .line{
+	height: 2px;
+	width: 200px;
+	background: url(images/znkf/znkf_line.png) no-repeat;
+	background-size:  200px auto;
+	padding-top: 0px;
+	margin-top: 5px;
+	margin-left: 25px;
+}
+.znkf_icon_tel{
+	display: inline-block;
+	width: 16px;
+	height: 16px;
+	vertical-align: middle;
+	background: url(images/znkf/znkf_icon_tel.png) no-repeat;
+	background-size: 16px 16px;
+	margin-right: 5px;
+	margin-left: 7px;
+	
+}
+.znkf_icon_ck{
+	display: inline-block;
+	width: 16px;
+	height: 16px;
+	vertical-align: middle;
+	background: url(images/znkf/znkf_icon_ck.png) no-repeat;
+	background-size: 16px 16px;
+	margin-right: 5px;
+	margin-left: 7px;
+}
+.bjKf_v2019_5BLi70 .bjKf_v2019_5B_xf div {
+	width: 260px !important;
+	height: 90px !important;
+	background: url(images/znkf/bjs_kf_bg.png) no-repeat !important;
+	background-size: 260px 90px !important;
+	text-align: left !important;
+	padding-top: 6px;
+}
+.bjKf_v2019_5BLi7,
+.bjKf_v2019_5BLi8,
+.bjKf_v2019_5BLisz{
+	text-align: center;
+	line-height: 20px;
+	height: 40px !important;
+	margin: 41px 0;
+	color: #fff;
+	font-size: 12px;
+}
+
+.bjKf_v2019_5BLi7 .bjKf_v2019_5B_xf {
+	height: 93px !important;
+	top: -25px !important;
+}
+
+.bjKf_v2019_5BLi7 .bjKf_v2019_5B_xf div {
+	height: 93px !important;
+	background: url(images/znkf/bjs_kf_5B_img2_03.png) no-repeat !important;
+
+}
+
+.bjKf_v2019_5BLi8 .bjKf_v2019_5B_xf {
+	height: 285px !important;
+	top: -25px !important;
+}
+
+.bjKf_v2019_5BLi8 .bjKf_v2019_5B_xf div {
+	height: 285px !important;
+	width: 710px !important;
+	background: url(images/znkf/bjs_kf_5B_img3_03.png) no-repeat !important;
+	background-size: 710px 285px !important;
+}
+
+
+.bjKf_v2019_5BBox ul li.bjKf_v2019_5BLisz .bjKf_v2019_5B_xf div{
+	font-size: 12px;
+	width: 170px;
+	text-indent: -5px;
+	background: url(images/znkf/bjs_kf_5B_sz.png) no-repeat !important;
+}
+
+/*需要覆盖的样式 开始*/
+.bjKf_v2019_5BLi9 a img {
+	display: block;
+	width: 21px;
+	height: 21px;
+	position: absolute;
+	left: 9.5px;
+	top: 11.5px;
+}
+
+/*需要覆盖的样式 结束*/
