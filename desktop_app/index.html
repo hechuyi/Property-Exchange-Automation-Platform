@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>产权交易所自动录入</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="startupGate" class="startup-gate hidden">
+    <section class="startup-card">
+      <div class="eyebrow">启动检查</div>
+      <h1>浏览器运行环境未就绪</h1>
+      <p id="startupGateBody" class="hero-copy"></p>
+      <div id="startupGateMeta" class="progress-meta" style="white-space: pre-line;"></div>
+      <div class="hero-actions" style="margin-top: 18px;">
+        <button id="startupCheckBtn" class="action primary" type="button">重新检测</button>
+        <button id="startupInstallBtn" class="action" type="button">安装浏览器</button>
+        <button id="startupOpenSettingsBtn" class="action" type="button">打开设置</button>
+        <button id="startupDismissBtn" class="action ghost" type="button">暂时忽略</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="shell">
+    <aside class="rail">
+      <div class="rail-brand">
+        <div class="brand-mark">PE</div>
+        <div>
+          <div class="brand-title">产权交易所自动录入</div>
+          <div class="brand-subtitle">Desktop control surface</div>
+        </div>
+      </div>
+
+      <button class="rail-button active" type="button" data-panel="overview">总览</button>
+      <button class="rail-button" type="button" data-panel="tasks">任务</button>
+      <button class="rail-button" type="button" data-panel="records">记录</button>
+      <button class="rail-button" type="button" data-panel="mappings">映射</button>
+      <button class="rail-button" type="button" data-panel="settings">设置</button>
+    </aside>
+
+    <main class="workspace">
+      <section class="hero">
+        <div class="hero-main">
+          <div class="eyebrow">桌面前端</div>
+          <h1>自动录入与导出控制台</h1>
+          <p class="hero-copy">当前页面保留一键执行、导出、手动导入、记录检索和映射回刷的统一入口。</p>
+        </div>
+        <div id="heroRuntimeStatus" class="hero-status warn">运行环境检查中</div>
+      </section>
+
+      <section id="panel-overview" class="panel active">
+        <div class="stats-grid">
+          <button id="statPendingMappingCard" class="stat-card" type="button">
+            <div class="stat-label">待补映射</div>
+            <div id="statPendingMapping" class="stat-value">0</div>
+          </button>
+          <div class="stat-card">
+            <div class="stat-label">最近状态</div>
+            <div id="statLatestStatus" class="stat-value">暂无任务</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">已下载</div>
+            <div id="statDownloaded" class="stat-value">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">已写入</div>
+            <div id="statPersisted" class="stat-value">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">已跳过</div>
+            <div id="statSkipped" class="stat-value">0</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="eyebrow">首页动作</div>
+              <h2>一键执行与导出</h2>
+            </div>
+            <div id="todayHint" class="inline-status"></div>
+          </div>
+          <div id="homePrimaryActions" class="hero-actions">
+            <button id="runOneClickBtn" class="action primary" type="button">一键执行</button>
+            <button id="runExportBtn" class="action" type="button">导出 Excel</button>
+            <button id="runManualImportBtn" class="action" type="button">手动导入解析</button>
+            <button id="forceStopBtn" class="action ghost" type="button">强制停止</button>
+          </div>
+          <div class="form-grid compact-form" style="margin-top: 18px;">
+            <label><span>开始日期</span><input id="startDateInput" type="date" /></label>
+            <label><span>结束日期</span><input id="endDateInput" type="date" /></label>
+            <label><span>交易所</span><input id="exchangeInput" type="text" /></label>
+            <label><span>业务类型</span>
+              <select id="projectTypeInput">
+                <option value="all">全部</option>
+                <option value="equity_transfer">股权转让</option>
+                <option value="physical_asset">实物资产</option>
+                <option value="capital_increase">增资扩股</option>
+                <option value="pre_disclosure">预披露</option>
+              </select>
+            </label>
+            <label><span>并发数</span><input id="concurrencyInput" type="number" min="1" step="1" /></label>
+          </div>
+          <div id="runResult" class="inline-status" style="margin-top: 12px;"></div>
+        </div>
+
+        <div class="dual-grid" style="margin-top: 18px;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">进度</div>
+                <h2 id="progressPhase">暂无任务</h2>
+              </div>
+              <div id="progressPercent" class="hero-status">0%</div>
+            </div>
+            <div class="progress-track">
+              <div id="progressTrackFill" class="progress-track-fill"></div>
+            </div>
+            <div id="progressMeta" class="progress-meta"></div>
+            <div id="progressHint" class="progress-hint"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">运行环境</div>
+                <h2 id="browserRuntimeState">未检测</h2>
+              </div>
+              <div class="hero-actions">
+                <button id="checkBrowserRuntimeBtn" class="action" type="button">检测</button>
+                <button id="installBrowserRuntimeBtn" class="action" type="button">安装浏览器</button>
+                <button id="refreshBtn" class="action ghost" type="button">刷新</button>
+              </div>
+            </div>
+            <div id="browserRuntimeMeta" class="progress-meta" style="white-space: pre-line;"></div>
+            <div class="hero-actions" style="margin-top: 12px;">
+              <button id="openArchiveBtn" class="action" type="button">打开归档</button>
+              <button id="openWorkspaceBtn" class="action" type="button">打开工作区</button>
+              <button id="openExportBtn" class="action" type="button">打开导出目录</button>
+              <button id="openDbBtn" class="action" type="button">打开数据库</button>
+              <button id="locateDbBtn" class="action ghost" type="button">定位数据库</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-tasks" class="panel">
+        <div class="dual-grid">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">任务列表</div>
+                <h2>当前任务</h2>
+              </div>
+            </div>
+            <div id="jobList" class="mapping-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">任务明细</div>
+                <h2>事件流</h2>
+              </div>
+            </div>
+            <div id="jobEvents" class="mapping-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-records" class="panel">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="eyebrow">记录检索</div>
+              <h2>业务记录</h2>
+            </div>
+            <button id="refreshRecordsBtn" class="action ghost" type="button">刷新记录</button>
+          </div>
+          <div class="records-toolbar">
+            <label><span>状态</span>
+              <select id="recordsStateFilter">
+                <option value="all">全部</option>
+                <option value="ready">已录入</option>
+                <option value="pending_mapping">待补映射</option>
+                <option value="skipped">已跳过</option>
+                <option value="parse_failed">解析失败</option>
+                <option value="postprocess_failed">处理失败</option>
+                <option value="conflict">归档重名</option>
+              </select>
+            </label>
+            <label><span>业务类型</span>
+              <select id="recordsProjectTypeFilter">
+                <option value="all">全部</option>
+                <option value="equity_transfer">股权转让</option>
+                <option value="physical_asset">实物资产</option>
+                <option value="capital_increase">增资扩股</option>
+                <option value="pre_disclosure">预披露</option>
+              </select>
+            </label>
+            <label><span>日期起</span><input id="recordsDateFromInput" type="date" /></label>
+            <label><span>日期止</span><input id="recordsDateToInput" type="date" /></label>
+            <label class="wide"><span>关键字</span><input id="recordsKeywordInput" type="text" /></label>
+          </div>
+          <div id="recordsSummary" class="inline-status"></div>
+          <div class="records-toolbar" style="margin-top: 12px;">
+            <button id="recordsPrevPageBtn" class="action" type="button">上一页</button>
+            <button id="recordsNextPageBtn" class="action" type="button">下一页</button>
+            <label><span>每页条数</span><input id="recordsPageSizeInput" type="number" min="1" step="1" /></label>
+            <div id="recordsPageIndicator" class="inline-status"></div>
+          </div>
+          <div id="recordsTable" class="records-table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="panel-mappings" class="panel">
+        <div class="dual-grid">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">待补映射</div>
+                <h2>未完成规则</h2>
+              </div>
+              <button id="importPendingMappingBtn" class="action" type="button">导入规则</button>
+            </div>
+            <div id="pendingMappingsSummary" class="inline-status"></div>
+            <div id="pendingMappings" class="mapping-list"></div>
+            <div id="mappingResult" class="inline-status"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">规则编辑</div>
+                <h2>新增或回刷</h2>
+              </div>
+              <div class="hero-actions">
+                <button id="saveMappingBtn" class="action primary" type="button">保存规则</button>
+                <button id="clearMappingBtn" class="action ghost" type="button">清空</button>
+              </div>
+            </div>
+            <div class="mapping-form-grid">
+              <label><span>规则类型</span>
+                <select id="mappingRuleKindInput">
+                  <option value="transferor_group">转让方 -> 集团</option>
+                  <option value="transferor_type">转让方 -> 类型</option>
+                  <option value="group_group">集团 -> 集团</option>
+                  <option value="group_type">集团 -> 类型</option>
+                </select>
+              </label>
+              <label><span id="mappingSourceLabel">转让方名称</span><input id="mappingSourceInput" type="text" /></label>
+              <label><span id="mappingTargetLabel">集团名称</span><input id="mappingTargetInput" type="text" /></label>
+              <label class="wide"><span>备注</span><input id="mappingNotesInput" type="text" /></label>
+            </div>
+            <div class="hero-actions" style="margin-top: 14px;">
+              <button id="runPendingMappingRefreshBtn" class="action" type="button">一键重处理当前所有待补项</button>
+              <button id="saveDraftMappingsBtn" class="action" type="button">保存已填写规则</button>
+            </div>
+            <div style="margin-top: 12px;">
+              <div class="records-toolbar">
+                <label><span>搜索</span><input id="mappingSearchInput" type="text" /></label>
+                <label><span>规则筛选</span>
+                  <select id="mappingRuleFilterInput">
+                    <option value="all">全部</option>
+                    <option value="transferor_group">转让方 -> 集团</option>
+                    <option value="transferor_type">转让方 -> 类型</option>
+                    <option value="group_group">集团 -> 集团</option>
+                    <option value="group_type">集团 -> 类型</option>
+                  </select>
+                </label>
+                <button id="toggleSavedMappingsBtn" class="action ghost" type="button">收起规则表</button>
+              </div>
+              <div id="mappingEntriesSummary" class="inline-status"></div>
+              <div id="mappingEntriesTableWrap" class="records-table-wrap compact-list">
+                <div id="mappingEntries" class="mapping-list"></div>
+              </div>
+            </div>
+            <div id="mappingDrafts" class="mapping-draft-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-settings" class="panel">
+        <div class="dual-grid">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">基础设置</div>
+                <h2>默认参数</h2>
+              </div>
+              <div class="hero-actions">
+                <button id="saveBasicSettingsBtn" class="action primary" type="button">保存基础设置</button>
+                <button id="saveAdvancedSettingsBtn" class="action" type="button">保存高级设置</button>
+              </div>
+            </div>
+            <div class="form-grid compact-form">
+              <label><span>默认交易所</span><input id="basicExchangeInput" type="text" /></label>
+              <label><span>默认业务类型</span>
+                <select id="basicProjectTypeInput">
+                  <option value="all">全部</option>
+                  <option value="equity_transfer">股权转让</option>
+                  <option value="physical_asset">实物资产</option>
+                  <option value="capital_increase">增资扩股</option>
+                  <option value="pre_disclosure">预披露</option>
+                </select>
+              </label>
+              <label><span>默认并发数</span><input id="basicConcurrencyInput" type="number" min="1" step="1" /></label>
+              <label><span>工作区根目录</span><input id="basicWorkspaceRootInput" type="text" /></label>
+              <label><span>归档根目录</span><input id="basicArchiveRootInput" type="text" /></label>
+              <label><span>导出根目录</span><input id="basicExportRootInput" type="text" /></label>
+            </div>
+            <div class="hero-actions" style="margin-top: 12px;">
+              <span class="inline-status">设置会同步到首页动作区，运行环境按钮只保留在首页卡片中。</span>
+            </div>
+            <div id="settingsResult" class="inline-status"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">高级设置</div>
+                <h2>运行时路径</h2>
+              </div>
+            </div>
+            <div class="form-grid compact-form">
+              <label><span>App Home</span><input id="advancedAppHomeInput" type="text" /></label>
+              <label><span>数据库</span><input id="advancedDbInput" type="text" /></label>
+              <label><span>后处理配置</span><input id="advancedPostprocessConfigInput" type="text" /></label>
+              <label><span>日志目录</span><input id="advancedLogDirInput" type="text" /></label>
+              <label><span>缓存目录</span><input id="advancedCacheDirInput" type="text" /></label>
+              <label><span>自动下载根目录</span><input id="advancedRawAutoRootInput" type="text" /></label>
+              <label><span>手动导入根目录</span><input id="advancedRawManualRootInput" type="text" /></label>
+              <label><span>浏览器缓存目录</span><input id="advancedBrowserCacheDirInput" type="text" /></label>
+              <label><span>保存 JSON</span><input id="advancedSaveJsonInput" type="checkbox" /></label>
+            </div>
+            <div id="browserRuntimeState" class="runtime-state warn">未检测</div>
+            <div id="browserRuntimeMeta" class="progress-meta" style="white-space: pre-line;"></div>
+            <div class="inline-status" style="margin-top: 12px;">数据库和目录操作入口已放在首页运行环境卡片中。</div>
+          </div>
+        </div>
+      </section>
+
+      <div id="manualImportResult" class="inline-status"></div>
+      <div id="exportResult" class="inline-status"></div>
+
+      <div id="mappingConflictDialog" class="startup-gate hidden">
+        <section class="startup-card">
+          <h2>映射覆盖确认</h2>
+          <div id="mappingConflictSummary" class="progress-meta"></div>
+          <div class="mapping-list" style="margin-top: 12px;">
+            <div>规则类型：<span id="mappingConflictRuleValue"></span></div>
+            <div>来源：<span id="mappingConflictSourceValue"></span></div>
+            <div>当前值：<span id="mappingConflictExistingValue"></span></div>
+            <div>新值：<span id="mappingConflictNextValue"></span></div>
+            <div>影响：<span id="mappingConflictImpactValue"></span></div>
+          </div>
+          <div class="hero-actions" style="margin-top: 18px;">
+            <button id="mappingConflictConfirmBtn" class="action primary" type="button">确认覆盖</button>
+            <button id="mappingConflictCancelBtn" class="action ghost" type="button">取消</button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

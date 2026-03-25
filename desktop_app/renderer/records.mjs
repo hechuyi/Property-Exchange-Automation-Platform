@@ -4,8 +4,9 @@ function countValue(value) {
 }
 
 export function buildRecordsQuery({
+  recordFamily = "listing",
   state = "all",
-  projectType = "equity_transfer",
+  projectType = "all",
   keyword = "",
   dateFrom = "",
   dateTo = "",
@@ -13,6 +14,7 @@ export function buildRecordsQuery({
   pageSize = 50,
 } = {}) {
   const query = new URLSearchParams({
+    record_family: recordFamily,
     state,
     project_type: projectType,
     page: String(page),
@@ -32,7 +34,7 @@ export function buildRecordsQuery({
 
 export function formatRecordsSummary(payload = {}) {
   const summary = payload.summary || {};
-  const stateCounts = summary.state_counts || {};
+  const stateCounts = summary.filtered_state_counts || summary.state_counts || {};
   return [
     `共 ${countValue(summary.total_count ?? payload.total_count)} 条`,
     `第 ${countValue(payload.page || summary.page || 1)} / ${countValue(payload.page_count || summary.page_count || 0)} 页`,

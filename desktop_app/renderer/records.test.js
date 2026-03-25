@@ -8,7 +8,18 @@ async function loadRecordsModule() {
   return import(moduleUrl);
 }
 
-test("formatRecordsSummary distinguishes total rows from current page rows", async () => {
+test("buildRecordsQuery defaults to listing + all", async () => {
+  const { buildRecordsQuery } = await loadRecordsModule();
+  const query = buildRecordsQuery();
+
+  assert.equal(query.get("record_family"), "listing");
+  assert.equal(query.get("state"), "all");
+  assert.equal(query.get("project_type"), "all");
+  assert.equal(query.get("page"), "1");
+  assert.equal(query.get("page_size"), "50");
+});
+
+test("formatRecordsSummary prefers filtered_state_counts over page_state_counts for overview copy", async () => {
   const { formatRecordsSummary } = await loadRecordsModule();
   const text = formatRecordsSummary({
     page: 1,
@@ -16,8 +27,13 @@ test("formatRecordsSummary distinguishes total rows from current page rows", asy
     summary: {
       visible_count: 2,
       total_count: 3,
-      state_counts: {
+      filtered_state_counts: {
+        ready: 7,
+        pending_mapping: 1,
+      },
+      page_state_counts: {
         ready: 2,
+        pending_mapping: 9,
       },
     },
   });
@@ -25,5 +41,7 @@ test("formatRecordsSummary distinguishes total rows from current page rows", asy
   assert.match(text, /共 3 条/);
   assert.match(text, /第 1 \/ 2 页/);
   assert.match(text, /本页 2 条/);
-  assert.match(text, /已录入 2 条/);
+  assert.match(text, /已录入 7 条/);
+  assert.match(text, /待补映射 1 条/);
+  assert.doesNotMatch(text, /已录入 2 条/);
 });
