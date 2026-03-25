@@ -311,6 +311,131 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertIn("page_url:https://example.test/failed/blank-code", failed_tokens)
         self.assertIn("project_id:CQFAILEDNOCODE001", failed_tokens)
 
+    def test_failed_record_identity_anchor_does_not_change_when_source_file_changes(self) -> None:
+        original_source = os.path.join(self.temp_dir.name, "failed-original.html")
+        moved_source = os.path.join(self.temp_dir.name, "failed-moved.html")
+        with open(original_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed original</body></html>")
+        with open(moved_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed moved</body></html>")
+
+        created = self.store.upsert_failed_record(
+            project_code="",
+            source_file=original_source,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom",
+            payload={
+                "original_evidence_path": original_source,
+                "candidate_tokens": ["project_id:CQFAILED001", "page_url:https://example.test/failed/1"],
+            },
+        )
+        before = self.store.get_record(created["record_id"])
+        self.store.update_record_source_file(created["record_id"], moved_source)
+        after = self.store.get_record(created["record_id"])
+
+        self.assertEqual(before["record_id"], after["record_id"])
+        self.assertEqual(before["identity_anchor"], after["identity_anchor"])
+        self.assertEqual(before["business_key"], after["business_key"])
+        self.assertEqual(after["source_file"], moved_source)
+        self.assertEqual(after["source_identity_json"]["original_evidence_path"], original_source)
+        self.assertEqual(
+            after["source_identity_json"]["candidate_tokens"],
+            ["project_id:CQFAILED001", "page_url:https://example.test/failed/1"],
+        )
+
+    def test_reimport_same_failed_source_reuses_same_record_and_adds_revision(self) -> None:
+        original_source = os.path.join(self.temp_dir.name, "failed-reimport-original.html")
+        reimport_source = os.path.join(self.temp_dir.name, "failed-reimport-new.html")
+        with open(original_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed reimport original</body></html>")
+        with open(reimport_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed reimport new</body></html>")
+
+        first = self.store.upsert_failed_record(
+            project_code="",
+            source_file=original_source,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom-1",
+            payload={
+                "original_evidence_path": original_source,
+                "candidate_tokens": ["project_id:CQREIMPORT001"],
+            },
+        )
+        second = self.store.upsert_failed_record(
+            project_code="",
+            source_file=reimport_source,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom-2",
+            payload={
+                "original_evidence_path": original_source,
+                "candidate_tokens": ["project_id:CQREIMPORT001"],
+            },
+        )
+        record = self.store.get_record(first["record_id"])
+
+        self.assertEqual(first["record_id"], second["record_id"])
+        self.assertGreater(second["revision_id"], first["revision_id"])
+        self.assertEqual(record["identity_anchor"], self.store.get_record(second["record_id"])["identity_anchor"])
+        self.assertEqual(record["source_identity_json"]["original_evidence_path"], original_source)
+
+    def test_failed_record_candidate_tokens_remain_visible_after_source_file_update(self) -> None:
+        original_source = os.path.join(self.temp_dir.name, "failed-tokens-original.html")
+        moved_source = os.path.join(self.temp_dir.name, "failed-tokens-moved.html")
+        with open(original_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed tokens original</body></html>")
+        with open(moved_source, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed tokens moved</body></html>")
+
+        created = self.store.upsert_failed_record(
+            project_code="",
+            source_file=original_source,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom",
+            payload={
+                "original_evidence_path": original_source,
+                "candidate_tokens": [
+                    "project_id:CQFAILEDTOKENS001",
+                    "page_url:https://example.test/failed/tokens",
+                ],
+            },
+        )
+        before_tokens = self.store.list_existing_candidate_tokens(states=["parse_failed"])
+        self.store.update_record_source_file(created["record_id"], moved_source)
+        after_tokens = self.store.list_existing_candidate_tokens(states=["parse_failed"])
+
+        self.assertIn("project_id:CQFAILEDTOKENS001", before_tokens)
+        self.assertIn("page_url:https://example.test/failed/tokens", before_tokens)
+        self.assertIn("project_id:CQFAILEDTOKENS001", after_tokens)
+        self.assertIn("page_url:https://example.test/failed/tokens", after_tokens)
+
+    def test_list_job_events_raises_key_error_for_missing_job(self) -> None:
+        with self.assertRaises(KeyError):
+            self.store.list_job_events("missing-job-id")
+
+    def test_job_event_count_can_report_total_count_separately_from_returned_rows(self) -> None:
+        job_id = self.store.create_job("one_click")
+        self.store.append_event(
+            ItemProgressEvent(job_id=job_id, stage="downloaded", status="ok", payload={"row": 1})
+        )
+        self.store.append_event(
+            ItemProgressEvent(job_id=job_id, stage="parsed", status="ok", payload={"row": 2})
+        )
+        self.store.append_event(
+            ItemProgressEvent(job_id=job_id, stage="failed", status="failed", payload={"row": 3})
+        )
+
+        rows = self.store.list_job_events(job_id, limit=2)
+        counts = self.store.get_job_event_counts(job_id)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(counts["total_count"], 3)
+        self.assertEqual(counts["ok"], 2)
+        self.assertEqual(counts["failed"], 1)
+
     def test_store_recreates_schema_after_database_file_is_deleted(self) -> None:
         self.store.set_setting("ui.basic", {"default_exchange": "all"})
 

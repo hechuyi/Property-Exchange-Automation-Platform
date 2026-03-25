@@ -12,6 +12,8 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
+from desktop_backend.record_identity import build_identity_anchor, build_source_identity_payload
+
 from .streaming_models import IngestedRecord, ItemProgressEvent
 
 
@@ -45,6 +47,9 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE TABLE IF NOT EXISTS records (
     record_id TEXT PRIMARY KEY,
     business_key TEXT NOT NULL UNIQUE,
+    record_family TEXT NOT NULL DEFAULT 'listing',
+    identity_anchor TEXT NOT NULL DEFAULT '',
+    source_identity_json TEXT NOT NULL DEFAULT '{}',
     project_code TEXT NOT NULL DEFAULT '',
     project_name TEXT NOT NULL DEFAULT '',
     project_type TEXT NOT NULL DEFAULT '',
@@ -180,6 +185,31 @@ def _record_business_key(project_code: str, source_file: str) -> str:
     return f"source:{digest}"
 
 
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _unique_text_values(*values: Any) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [value]
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+    return out
+
+
 def _candidate_identity_token(kind: str, value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -213,6 +243,114 @@ def _normalize_date_text(raw_value: str) -> str:
     )
 
 
+def _build_failed_source_identity(
+    *,
+    project_code: str,
+    source_file: str,
+    state: str,
+    payload: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    data = dict(payload or {})
+    nested_source_identity = data.get("source_identity")
+    if not isinstance(nested_source_identity, dict):
+        nested_source_identity = {}
+    parser_payload = data.get("parser_payload")
+    if not isinstance(parser_payload, dict):
+        parser_payload = {}
+    postprocess_payload = data.get("postprocess_payload")
+    if not isinstance(postprocess_payload, dict):
+        postprocess_payload = {}
+
+    original_evidence_path = _first_non_empty(
+        data.get("original_evidence_path"),
+        nested_source_identity.get("original_evidence_path"),
+        nested_source_identity.get("original_source_file"),
+        data.get("source_file"),
+        parser_payload.get("source_file"),
+        source_file,
+    )
+    source_url = _first_non_empty(
+        data.get("source_url"),
+        data.get("page_url"),
+        nested_source_identity.get("source_url"),
+        parser_payload.get("page_url"),
+        postprocess_payload.get("page_url"),
+    )
+    resolved_project_code = _first_non_empty(
+        data.get("project_code"),
+        nested_source_identity.get("project_code"),
+        parser_payload.get("project_code"),
+        parser_payload.get("项目编号"),
+        postprocess_payload.get("project_code"),
+        postprocess_payload.get("项目编号"),
+        project_code,
+    )
+    resolved_project_name = _first_non_empty(
+        data.get("project_name"),
+        nested_source_identity.get("project_name"),
+        parser_payload.get("project_name"),
+        parser_payload.get("项目名称"),
+        postprocess_payload.get("project_name"),
+        postprocess_payload.get("项目名称"),
+    )
+    resolved_exchange = _first_non_empty(
+        data.get("exchange"),
+        nested_source_identity.get("exchange"),
+        parser_payload.get("exchange"),
+        parser_payload.get("交易所"),
+        postprocess_payload.get("exchange"),
+        postprocess_payload.get("交易所"),
+    )
+    listing_date = _first_non_empty(
+        data.get("listing_date"),
+        nested_source_identity.get("listing_date"),
+        parser_payload.get("listing_date"),
+        parser_payload.get("挂牌开始日期"),
+        parser_payload.get("预披露开始日期"),
+        postprocess_payload.get("listing_date"),
+        postprocess_payload.get("挂牌开始日期"),
+        postprocess_payload.get("预披露开始日期"),
+    )
+    candidate_tokens = _unique_text_values(
+        nested_source_identity.get("candidate_tokens"),
+        data.get("candidate_tokens"),
+    )
+    for kind, value in (
+        ("project_code", resolved_project_code),
+        (
+            "project_id",
+            _first_non_empty(
+                data.get("project_id"),
+                nested_source_identity.get("project_id"),
+                parser_payload.get("project_id"),
+                postprocess_payload.get("project_id"),
+            ),
+        ),
+        ("page_url", source_url),
+    ):
+        token = _candidate_identity_token(kind, value)
+        if token and token not in candidate_tokens:
+            candidate_tokens.append(token)
+
+    source_identity = build_source_identity_payload(
+        record_family=_first_non_empty(data.get("record_family"), nested_source_identity.get("record_family"), "listing"),
+        source_file=original_evidence_path,
+        source_url=source_url,
+        project_code=resolved_project_code,
+        project_name=resolved_project_name,
+        exchange=resolved_exchange,
+        listing_date=listing_date,
+        candidate_tokens=candidate_tokens,
+    )
+    source_identity["original_evidence_path"] = original_evidence_path
+    source_identity["original_source_file"] = _first_non_empty(
+        nested_source_identity.get("original_source_file"),
+        original_evidence_path,
+    )
+    source_identity["record_state"] = str(state or "").strip()
+    return source_identity
+
+
 class StreamingStore:
     """Thin sqlite-backed store with JSON payload columns."""
 
@@ -236,6 +374,19 @@ class StreamingStore:
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_SQL)
+        existing_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(records)").fetchall()
+        }
+        migration_columns = [
+            ("record_family", "TEXT NOT NULL DEFAULT 'listing'"),
+            ("identity_anchor", "TEXT NOT NULL DEFAULT ''"),
+            ("source_identity_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ]
+        for column_name, column_spec in migration_columns:
+            if column_name in existing_columns:
+                continue
+            conn.execute(f"ALTER TABLE records ADD COLUMN {column_name} {column_spec}")
 
     def create_job(self, job_type: str, *, metadata: Dict[str, Any] | None = None) -> str:
         job_id = uuid.uuid4().hex
@@ -767,6 +918,7 @@ class StreamingStore:
 
     def upsert_record(self, record: IngestedRecord) -> Dict[str, Any]:
         business_key = _record_business_key(record.project_code, record.source_file)
+        record_family = str(record.record_family or "listing").strip() or "listing"
         now = _utcnow()
         listing_date = _normalize_date_text(record.listing_date)
         findings_json = [asdict(item) for item in record.findings]
@@ -785,14 +937,18 @@ class StreamingStore:
                 conn.execute(
                     """
                     INSERT INTO records (
-                        record_id, business_key, project_code, project_name, project_type,
+                        record_id, business_key, record_family, identity_anchor, source_identity_json,
+                        project_code, project_name, project_type,
                         exchange, listing_date, state, source_file, archive_path,
                         latest_revision_id, last_error_type, last_error_message, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', ?, ?)
                     """,
                     (
                         record_id,
                         business_key,
+                        record_family,
+                        "",
+                        "{}",
                         record.project_code,
                         record.project_name,
                         record.project_type,
@@ -842,12 +998,16 @@ class StreamingStore:
             conn.execute(
                 """
                 INSERT INTO records (
-                    record_id, business_key, project_code, project_name, project_type,
+                    record_id, business_key, record_family, identity_anchor, source_identity_json,
+                    project_code, project_name, project_type,
                     exchange, listing_date, state, source_file, archive_path,
                     latest_revision_id, last_error_type, last_error_message, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(record_id) DO UPDATE SET
                     business_key = excluded.business_key,
+                    record_family = excluded.record_family,
+                    identity_anchor = excluded.identity_anchor,
+                    source_identity_json = excluded.source_identity_json,
                     project_code = excluded.project_code,
                     project_name = excluded.project_name,
                     project_type = excluded.project_type,
@@ -864,6 +1024,9 @@ class StreamingStore:
                 (
                     record_id,
                     business_key,
+                    record_family,
+                    "",
+                    "{}",
                     record.project_code,
                     record.project_name,
                     record.project_type,
@@ -897,28 +1060,60 @@ class StreamingStore:
         payload: Dict[str, Any] | None = None,
         severity: str = "error",
     ) -> Dict[str, Any]:
-        business_key = _record_business_key(project_code, source_file)
+        source_identity = _build_failed_source_identity(
+            project_code=project_code,
+            source_file=source_file,
+            state=state,
+            payload=payload,
+        )
+        identity_anchor = build_identity_anchor(record_state=state, source_identity=source_identity)
+        business_key = f"failed:{identity_anchor}"
         now = _utcnow()
         with self._connect() as conn:
             existing = conn.execute(
-                "SELECT record_id FROM records WHERE business_key = ?",
+                """
+                SELECT record_id, latest_revision_id, identity_anchor, source_identity_json, record_family
+                FROM records
+                WHERE business_key = ?
+                """,
                 (business_key,),
             ).fetchone()
             record_id = existing["record_id"] if existing is not None else uuid.uuid4().hex
+            stored_identity_anchor = _first_non_empty(existing["identity_anchor"] if existing is not None else "", identity_anchor)
+            stored_source_identity = source_identity
+            stored_record_family = _first_non_empty(
+                existing["record_family"] if existing is not None else "",
+                source_identity.get("record_family"),
+                "listing",
+            )
+            if existing is not None:
+                existing_source_identity = _json_loads(existing["source_identity_json"], default={})
+                if isinstance(existing_source_identity, dict) and existing_source_identity:
+                    stored_source_identity = existing_source_identity
             if existing is None:
                 conn.execute(
                     """
                     INSERT INTO records (
-                        record_id, business_key, project_code, state, source_file,
-                        latest_revision_id, last_error_type, last_error_message, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                        record_id, business_key, record_family, identity_anchor, source_identity_json,
+                        project_code, project_name, project_type, exchange, listing_date,
+                        state, source_file, archive_path, latest_revision_id,
+                        last_error_type, last_error_message, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
                     """,
                     (
                         record_id,
                         business_key,
+                        stored_record_family,
+                        stored_identity_anchor,
+                        _json_dumps(stored_source_identity),
                         str(project_code or ""),
+                        "",
+                        "",
+                        "",
+                        "",
                         state,
                         source_file,
+                        "",
                         error_type,
                         error_message,
                         now,
@@ -947,9 +1142,11 @@ class StreamingStore:
             conn.execute(
                 """
                 INSERT INTO records (
-                    record_id, business_key, project_code, state, source_file,
-                    latest_revision_id, last_error_type, last_error_message, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    record_id, business_key, record_family, identity_anchor, source_identity_json,
+                    project_code, project_name, project_type, exchange, listing_date,
+                    state, source_file, archive_path, latest_revision_id,
+                    last_error_type, last_error_message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(record_id) DO UPDATE SET
                     project_code = excluded.project_code,
                     state = excluded.state,
@@ -957,14 +1154,34 @@ class StreamingStore:
                     latest_revision_id = excluded.latest_revision_id,
                     last_error_type = excluded.last_error_type,
                     last_error_message = excluded.last_error_message,
+                    record_family = CASE
+                        WHEN record_family = '' THEN excluded.record_family
+                        ELSE record_family
+                    END,
+                    identity_anchor = CASE
+                        WHEN identity_anchor = '' THEN excluded.identity_anchor
+                        ELSE identity_anchor
+                    END,
+                    source_identity_json = CASE
+                        WHEN source_identity_json = '{}' THEN excluded.source_identity_json
+                        ELSE source_identity_json
+                    END,
                     updated_at = excluded.updated_at
                 """,
                 (
                     record_id,
                     business_key,
+                    stored_record_family,
+                    stored_identity_anchor,
+                    _json_dumps(stored_source_identity),
                     str(project_code or ""),
+                    "",
+                    "",
+                    "",
+                    "",
                     state,
                     source_file,
+                    "",
                     revision_id,
                     error_type,
                     error_message,
@@ -972,7 +1189,12 @@ class StreamingStore:
                     now,
                 ),
             )
-        return {"record_id": record_id, "revision_id": revision_id, "business_key": business_key}
+        return {
+            "record_id": record_id,
+            "revision_id": revision_id,
+            "business_key": business_key,
+            "identity_anchor": stored_identity_anchor,
+        }
 
     def get_job(self, job_id: str) -> Dict[str, Any]:
         with self._connect() as conn:
@@ -1018,6 +1240,7 @@ class StreamingStore:
         ]
 
     def list_job_events(self, job_id: str, *, limit: int = 200) -> List[Dict[str, Any]]:
+        self.get_job(job_id)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1044,6 +1267,30 @@ class StreamingStore:
             }
             for row in rows
         ]
+
+    def get_job_event_counts(self, job_id: str) -> Dict[str, int]:
+        self.get_job(job_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS c
+                FROM job_events
+                WHERE job_id = ?
+                GROUP BY status
+                """,
+                (job_id,),
+            ).fetchall()
+            total_row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM job_events
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        counts = {str(row["status"]): int(row["c"]) for row in rows}
+        counts["total_count"] = int(total_row["c"]) if total_row is not None else 0
+        return counts
 
     def count_pending_mappings(self) -> int:
         with self._connect() as conn:
@@ -1085,7 +1332,12 @@ class StreamingStore:
         with self._connect() as conn:
             record_rows = conn.execute(
                 f"""
-                SELECT records.project_code, records.source_file, revisions.parser_payload_json, revisions.postprocess_payload_json
+                SELECT
+                    records.project_code,
+                    records.source_file,
+                    records.source_identity_json,
+                    revisions.parser_payload_json,
+                    revisions.postprocess_payload_json
                 FROM records
                 LEFT JOIN record_revisions AS revisions
                   ON revisions.revision_id = records.latest_revision_id
@@ -1104,6 +1356,16 @@ class StreamingStore:
                 for row in record_rows
                 if str(row["source_file"] or "").strip()
             }
+            for row in record_rows:
+                source_identity = _json_loads(row["source_identity_json"], default={})
+                if not isinstance(source_identity, dict):
+                    continue
+                original_evidence_path = str(source_identity.get("original_evidence_path") or "").strip()
+                original_source_file = str(source_identity.get("original_source_file") or "").strip()
+                if original_evidence_path:
+                    allowed_source_files.add(original_evidence_path)
+                if original_source_file:
+                    allowed_source_files.add(original_source_file)
         for row in record_rows:
             parser_payload = _json_loads(row["parser_payload_json"], default={})
             postprocess_payload = _json_loads(row["postprocess_payload_json"], default={})
@@ -1114,6 +1376,12 @@ class StreamingStore:
                 )
                 if token:
                     tokens.add(token)
+            source_identity = _json_loads(row["source_identity_json"], default={})
+            if isinstance(source_identity, dict):
+                for token in _unique_text_values(source_identity.get("candidate_tokens")):
+                    normalized_token = str(token or "").strip()
+                    if normalized_token:
+                        tokens.add(normalized_token)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1232,23 +1500,43 @@ class StreamingStore:
     def update_record_source_file(self, record_id: str, source_file: str) -> None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT project_code, latest_revision_id FROM records WHERE record_id = ?",
+                """
+                SELECT project_code, business_key, latest_revision_id, identity_anchor
+                FROM records
+                WHERE record_id = ?
+                """,
                 (str(record_id),),
             ).fetchone()
             if row is None:
                 raise KeyError(record_id)
-            business_key = _record_business_key(str(row["project_code"] or ""), str(source_file or ""))
-            now = _utcnow()
-            conn.execute(
-                """
-                UPDATE records
-                SET source_file = ?,
-                    business_key = ?,
-                    updated_at = ?
-                WHERE record_id = ?
-                """,
-                (str(source_file or ""), business_key, now, str(record_id)),
+            failed_identity = str(row["identity_anchor"] or "").strip()
+            business_key = (
+                str(row["business_key"] or "").strip()
+                if failed_identity
+                else _record_business_key(str(row["project_code"] or ""), str(source_file or ""))
             )
+            now = _utcnow()
+            if failed_identity:
+                conn.execute(
+                    """
+                    UPDATE records
+                    SET source_file = ?,
+                        updated_at = ?
+                    WHERE record_id = ?
+                    """,
+                    (str(source_file or ""), now, str(record_id)),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE records
+                    SET source_file = ?,
+                        business_key = ?,
+                        updated_at = ?
+                    WHERE record_id = ?
+                    """,
+                    (str(source_file or ""), business_key, now, str(record_id)),
+                )
             latest_revision_id = row["latest_revision_id"]
             if latest_revision_id is not None:
                 conn.execute(
@@ -1292,19 +1580,6 @@ class StreamingStore:
                 updated += 1
         return updated
 
-    def get_job_event_counts(self, job_id: str) -> Dict[str, int]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT status, COUNT(*) AS c
-                FROM job_events
-                WHERE job_id = ?
-                GROUP BY status
-                """,
-                (job_id,),
-            ).fetchall()
-        return {str(row["status"]): int(row["c"]) for row in rows}
-
     def iter_latest_records(
         self,
         *,
@@ -1346,6 +1621,10 @@ class StreamingStore:
         query = f"""
             SELECT
                 records.record_id,
+                records.business_key,
+                records.record_family,
+                records.identity_anchor,
+                records.source_identity_json,
                 records.project_code,
                 records.project_name,
                 records.project_type,
@@ -1374,6 +1653,10 @@ class StreamingStore:
             out.append(
                 {
                     "record_id": row["record_id"],
+                    "business_key": row["business_key"],
+                    "record_family": row["record_family"],
+                    "identity_anchor": row["identity_anchor"],
+                    "source_identity_json": _json_loads(row["source_identity_json"], default={}),
                     "project_code": row["project_code"],
                     "project_name": row["project_name"],
                     "project_type": row["project_type"],

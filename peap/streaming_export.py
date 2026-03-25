@@ -143,6 +143,9 @@ def run_ready_export(
     writer=None,
 ) -> ExportRunResult:
     writer = writer or _write_workbook_default
+    record_family = str(request.record_family or "listing").strip() or "listing"
+    if record_family != "listing":
+        raise ValueError(f"unsupported record_family: {record_family}")
     output_dir = os.path.abspath(request.output_dir)
     os.makedirs(output_dir, exist_ok=True)
     cursor_key = request.cursor_key or _default_cursor_key(request)

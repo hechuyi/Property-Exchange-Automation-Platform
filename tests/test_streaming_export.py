@@ -128,6 +128,19 @@ class StreamingExportTest(unittest.TestCase):
         self.assertEqual(row["转让方"], "上海测试公司")
         self.assertEqual(row["挂牌次数"], 3)
 
+    def test_run_ready_export_rejects_non_listing_record_family(self) -> None:
+        request = ExportRequest(
+            date_from="2026-03-21",
+            date_to="2026-03-21",
+            business_types=["股权转让"],
+            mode="incremental",
+            output_dir=f"{self.temp_dir.name}/exports",
+            record_family="deal",
+        )
+
+        with self.assertRaises(ValueError):
+            run_ready_export(self.store, request, writer=lambda *_args, **_kwargs: None)
+
 
 if __name__ == "__main__":
     unittest.main()
