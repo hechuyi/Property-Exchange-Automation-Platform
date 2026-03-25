@@ -9,11 +9,16 @@ import secrets
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .app_config import AppConfig
 from .app_service import AppService
+from .http_contract import (
+    build_job_events_envelope,
+    build_not_found_payload,
+    normalize_job_event_limit,
+)
 
 DESKTOP_API_TOKEN_HEADER = "X-PEAP-Desktop-Token"
 
@@ -54,6 +59,162 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {}
 
 
+def _header_value(headers: Mapping[str, Any] | None, name: str) -> str:
+    if headers is None:
+        return ""
+    if hasattr(headers, "get"):
+        try:
+            value = headers.get(name)  # type: ignore[call-arg]
+        except Exception:
+            value = None
+        if value is not None:
+            return str(value)
+    needle = str(name).lower()
+    try:
+        items = headers.items()
+    except Exception:
+        return ""
+    for key, value in items:
+        if str(key).lower() == needle:
+            return str(value)
+    return ""
+
+
+def _query_value(query: dict[str, list[str]], name: str, default: str = "") -> str:
+    values = query.get(name) or []
+    if not values:
+        return default
+    value = str(values[0] or "").strip()
+    return value if value else default
+
+
+def _parse_job_id(path: str) -> tuple[str, bool]:
+    parts = [part for part in urlparse(path).path.split("/") if part]
+    if len(parts) >= 3 and parts[0] == "api" and parts[1] == "jobs":
+        if len(parts) == 4 and parts[3] == "events":
+            return parts[2], True
+        if len(parts) == 3:
+            return parts[2], False
+    return "", False
+
+
+def _not_found(resource: str, resource_id: str = "") -> tuple[int, dict[str, Any]]:
+    return HTTPStatus.NOT_FOUND, build_not_found_payload(resource=resource, resource_id=resource_id)
+
+
+def dispatch_api_request(
+    service: AppService,
+    *,
+    method: str,
+    path: str,
+    headers: Mapping[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    api_token: str = "",
+) -> tuple[int, dict[str, Any]]:
+    parsed = urlparse(path)
+    route = parsed.path
+    query = parse_qs(parsed.query)
+    method_name = str(method or "").upper()
+    if method_name == "OPTIONS":
+        return HTTPStatus.NO_CONTENT, {}
+    if not _is_authorized(headers, route, api_token=api_token):
+        return HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}
+
+    try:
+        if method_name == "GET":
+            if route == "/api/ready":
+                return HTTPStatus.OK, service.readiness()
+            if route == "/api/health":
+                return HTTPStatus.OK, service.health()
+            if route == "/api/overview":
+                return HTTPStatus.OK, service.overview()
+            if route == "/api/jobs":
+                limit = int(_query_value(query, "limit", "20"))
+                return HTTPStatus.OK, {"jobs": service.list_jobs(limit=limit)}
+            job_id, is_events_route = _parse_job_id(route)
+            if job_id:
+                if is_events_route:
+                    service.get_job(job_id)
+                    event_limit = normalize_job_event_limit(_query_value(query, "limit", "200"))
+                    raw_events = list(service.get_job_events(job_id, limit=event_limit + 1))
+                    truncated = len(raw_events) > event_limit
+                    events = raw_events[:event_limit] if truncated else raw_events
+                    total_count = len(raw_events)
+                    return HTTPStatus.OK, build_job_events_envelope(events, total_count=total_count)
+                job = dict(service.get_job(job_id))
+                job.pop("events", None)
+                return HTTPStatus.OK, job
+            if route == "/api/mappings":
+                return HTTPStatus.OK, {
+                    "entries": service.list_mapping_entries(),
+                    "pending": service.list_pending_mappings(),
+                }
+            if route == "/api/records":
+                limit = _query_value(query, "limit", "50")
+                payload = {
+                    "state": _query_value(query, "state", "all"),
+                    "project_type": _query_value(query, "project_type", "all"),
+                    "record_family": _query_value(query, "record_family", "listing"),
+                    "date_from": _query_value(query, "date_from"),
+                    "date_to": _query_value(query, "date_to"),
+                    "keyword": _query_value(query, "keyword"),
+                    "limit": limit,
+                    "page": _query_value(query, "page", "1"),
+                    "page_size": _query_value(query, "page_size", limit),
+                }
+                return HTTPStatus.OK, service.list_records(payload)
+            if route == "/api/settings/basic":
+                return HTTPStatus.OK, service.get_basic_settings()
+            if route == "/api/settings/advanced":
+                return HTTPStatus.OK, service.get_advanced_settings()
+            if route == "/api/runtime/dependencies":
+                return HTTPStatus.OK, service.get_runtime_dependencies()
+        if method_name in {"POST", "PUT"}:
+            request_body = dict(body or {})
+            if route == "/api/jobs/one-click":
+                return HTTPStatus.ACCEPTED, service.launch_one_click(request_body)
+            if route == "/api/jobs/manual-import":
+                return HTTPStatus.ACCEPTED, service.launch_manual_import(request_body)
+            if route == "/api/exports":
+                return HTTPStatus.OK, service.run_export(request_body)
+            if route == "/api/mappings":
+                return HTTPStatus.OK, service.upsert_mapping(request_body)
+            if route == "/api/mappings/preview":
+                return HTTPStatus.OK, service.preview_mapping_upsert(request_body)
+            if route == "/api/mappings/reprocess-pending":
+                return HTTPStatus.OK, service.launch_pending_mapping_refresh(request_body)
+            if route.startswith("/api/records/") and route.endswith("/reprocess"):
+                record_id = route.split("/")[3]
+                return HTTPStatus.OK, service.reprocess_record(record_id)
+            if route == "/api/settings/basic":
+                return HTTPStatus.OK, service.set_basic_settings(request_body)
+            if route == "/api/settings/advanced":
+                return HTTPStatus.OK, service.set_advanced_settings(request_body)
+            if route == "/api/runtime/install-browser":
+                return HTTPStatus.ACCEPTED, service.launch_browser_runtime_install(request_body)
+    except KeyError:
+        resource_id = ""
+        resource = "job"
+        if route.startswith("/api/jobs/"):
+            resource_id, _ = _parse_job_id(route)
+        return _not_found(resource, resource_id)
+    except Exception as exc:  # noqa: BLE001
+        return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+    return _not_found("endpoint", route)
+
+
+def _is_authorized(headers: Mapping[str, Any] | None, path: str, *, api_token: str) -> bool:
+    if path == "/api/ready":
+        return True
+    expected_token = str(api_token or "").strip()
+    if not expected_token:
+        return True
+    provided_token = _header_value(headers, DESKTOP_API_TOKEN_HEADER).strip()
+    if not provided_token:
+        return False
+    return secrets.compare_digest(provided_token, expected_token)
+
+
 def build_handler(service: AppService, *, api_token: str = ""):
     class AppHandler(BaseHTTPRequestHandler):
         server_version = "PEAPAppBackend/0.1"
@@ -64,76 +225,15 @@ def build_handler(service: AppService, *, api_token: str = ""):
         def do_OPTIONS(self) -> None:  # noqa: N802
             _json_response(self, HTTPStatus.NO_CONTENT, {})
 
-        def _is_authorized(self, path: str) -> bool:
-            if path == "/api/ready":
-                return True
-            expected_token = str(api_token or "").strip()
-            if not expected_token:
-                return True
-            provided_token = str(self.headers.get(DESKTOP_API_TOKEN_HEADER) or "").strip()
-            if not provided_token:
-                return False
-            return secrets.compare_digest(provided_token, expected_token)
-
         def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            path = parsed.path
-            query = parse_qs(parsed.query)
-            if not self._is_authorized(path):
-                return _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
-            try:
-                if path == "/api/ready":
-                    return _json_response(self, HTTPStatus.OK, service.readiness())
-                if path == "/api/health":
-                    return _json_response(self, HTTPStatus.OK, service.health())
-                if path == "/api/overview":
-                    return _json_response(self, HTTPStatus.OK, service.overview())
-                if path == "/api/jobs":
-                    limit = int((query.get("limit") or ["20"])[0])
-                    return _json_response(self, HTTPStatus.OK, {"jobs": service.list_jobs(limit=limit)})
-                if path.startswith("/api/jobs/") and path.endswith("/events"):
-                    job_id = path.split("/")[3]
-                    return _json_response(self, HTTPStatus.OK, {"events": service.get_job_events(job_id)})
-                if path.startswith("/api/jobs/"):
-                    job_id = path.split("/")[3]
-                    return _json_response(self, HTTPStatus.OK, service.get_job(job_id))
-                if path == "/api/mappings":
-                    return _json_response(
-                        self,
-                        HTTPStatus.OK,
-                        {
-                            "entries": service.list_mapping_entries(),
-                            "pending": service.list_pending_mappings(),
-                        },
-                    )
-                if path == "/api/records":
-                    return _json_response(
-                        self,
-                        HTTPStatus.OK,
-                        service.list_records(
-                            {
-                                "state": (query.get("state") or ["all"])[0],
-                                "project_type": (query.get("project_type") or ["all"])[0],
-                                "date_from": (query.get("date_from") or [""])[0],
-                                "date_to": (query.get("date_to") or [""])[0],
-                                "keyword": (query.get("keyword") or [""])[0],
-                                "limit": (query.get("limit") or ["50"])[0],
-                                "page": (query.get("page") or ["1"])[0],
-                                "page_size": (query.get("page_size") or [(query.get("limit") or ["50"])[0]])[0],
-                            }
-                        ),
-                    )
-                if path == "/api/settings/basic":
-                    return _json_response(self, HTTPStatus.OK, service.get_basic_settings())
-                if path == "/api/settings/advanced":
-                    return _json_response(self, HTTPStatus.OK, service.get_advanced_settings())
-                if path == "/api/runtime/dependencies":
-                    return _json_response(self, HTTPStatus.OK, service.get_runtime_dependencies())
-            except KeyError:
-                return _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not_found"})
-            except Exception as exc:  # noqa: BLE001
-                return _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-            return _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            status, payload = dispatch_api_request(
+                service,
+                method="GET",
+                path=self.path,
+                headers=self.headers,
+                api_token=api_token,
+            )
+            return _json_response(self, status, payload)
 
         def do_POST(self) -> None:  # noqa: N802
             self._handle_write()
@@ -142,38 +242,16 @@ def build_handler(service: AppService, *, api_token: str = ""):
             self._handle_write()
 
         def _handle_write(self) -> None:
-            parsed = urlparse(self.path)
-            path = parsed.path
-            if not self._is_authorized(path):
-                return _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
-            try:
-                payload = _read_json(self)
-                if path == "/api/jobs/one-click":
-                    return _json_response(self, HTTPStatus.ACCEPTED, service.launch_one_click(payload))
-                if path == "/api/jobs/manual-import":
-                    return _json_response(self, HTTPStatus.ACCEPTED, service.launch_manual_import(payload))
-                if path == "/api/exports":
-                    return _json_response(self, HTTPStatus.OK, service.run_export(payload))
-                if path == "/api/mappings":
-                    return _json_response(self, HTTPStatus.OK, service.upsert_mapping(payload))
-                if path == "/api/mappings/preview":
-                    return _json_response(self, HTTPStatus.OK, service.preview_mapping_upsert(payload))
-                if path == "/api/mappings/reprocess-pending":
-                    return _json_response(self, HTTPStatus.OK, service.launch_pending_mapping_refresh(payload))
-                if path.startswith("/api/records/") and path.endswith("/reprocess"):
-                    record_id = path.split("/")[3]
-                    return _json_response(self, HTTPStatus.OK, service.reprocess_record(record_id))
-                if path == "/api/settings/basic":
-                    return _json_response(self, HTTPStatus.OK, service.set_basic_settings(payload))
-                if path == "/api/settings/advanced":
-                    return _json_response(self, HTTPStatus.OK, service.set_advanced_settings(payload))
-                if path == "/api/runtime/install-browser":
-                    return _json_response(self, HTTPStatus.ACCEPTED, service.launch_browser_runtime_install(payload))
-            except KeyError:
-                return _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not_found"})
-            except Exception as exc:  # noqa: BLE001
-                return _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-            return _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            payload = _read_json(self)
+            status, response_payload = dispatch_api_request(
+                service,
+                method=self.command,
+                path=self.path,
+                headers=self.headers,
+                body=payload,
+                api_token=api_token,
+            )
+            return _json_response(self, status, response_payload)
 
     return AppHandler
 

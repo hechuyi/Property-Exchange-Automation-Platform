@@ -1,138 +1,166 @@
 from __future__ import annotations
 
-import json
-import threading
 import unittest
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 
-from desktop_backend.app_backend import build_handler
+from desktop_backend.app_backend import dispatch_api_request
+from desktop_backend.http_contract import build_not_found_payload
 
 
-class FakeService:
-    def readiness(self):
-        return {"ok": True, "mode": "ready"}
+class FakeAppService:
+    def __init__(self) -> None:
+        self.last_records_payload = None
+        self.last_export_payload = None
+        self.last_event_limit = None
 
-    def health(self):
-        return {"ok": True, "mode": "health"}
+    def get_job(self, job_id: str):
+        if job_id != "job-1":
+            raise KeyError(job_id)
+        return {
+            "job_id": job_id,
+            "job_type": "export_excel",
+            "status": "running",
+            "summary": {"visible_count": 3},
+            "events": [{"event_id": "inline-event"}],
+        }
 
-    def overview(self):
-        return {"ok": True, "mode": "overview"}
+    def get_job_events(self, job_id: str, *, limit: int = 200):
+        if job_id != "job-1":
+            raise KeyError(job_id)
+        self.last_event_limit = limit
+        return [{"event_id": f"event-{index}"} for index in range(limit)]
 
-    def preview_mapping_upsert(self, payload):
-        return {"ok": True, "mode": "mapping_preview", "payload": payload}
+    def list_records(self, payload):
+        self.last_records_payload = payload
+        return {"rows": [], "scope": payload, "record_family": payload["record_family"]}
 
-    def launch_pending_mapping_refresh(self, payload):
-        return {"ok": True, "mode": "pending_refresh", "payload": payload}
+    def run_export(self, payload):
+        self.last_export_payload = payload
+        return {
+            "status": "empty",
+            "empty_reason_code": "no_matching_records",
+            "scope_state_counts": {"pending_mapping": 0},
+            "scope": payload["scope"],
+        }
 
 
-class AppBackendHandlerTest(unittest.TestCase):
-    def test_ready_endpoint_returns_lightweight_readiness_payload(self) -> None:
-        service = FakeService()
-        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(service, api_token="test-token"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join, 1)
+class AppBackendDispatchTest(unittest.TestCase):
+    def test_get_job_returns_summary_without_inline_events(self) -> None:
+        service = FakeAppService()
 
-        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/ready", timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-
-        self.assertEqual(response.status, 200)
-        self.assertEqual(payload, {"ok": True, "mode": "ready"})
-
-    def test_non_ready_requests_require_desktop_api_token(self) -> None:
-        service = FakeService()
-        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(service, api_token="test-token"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join, 1)
-
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{server.server_port}/api/overview",
+        status, payload = dispatch_api_request(
+            service,
             method="GET",
-        )
-
-        with self.assertRaises(urllib.error.HTTPError) as raised:
-            urllib.request.urlopen(request, timeout=2)
-
-        self.assertEqual(raised.exception.code, 401)
-        payload = json.loads(raised.exception.read().decode("utf-8"))
-        self.assertEqual(payload["error"], "unauthorized")
-
-    def test_non_ready_requests_accept_matching_desktop_api_token(self) -> None:
-        service = FakeService()
-        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(service, api_token="test-token"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join, 1)
-
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{server.server_port}/api/overview",
-            method="GET",
+            path="/api/jobs/job-1",
             headers={"X-PEAP-Desktop-Token": "test-token"},
+            api_token="test-token",
         )
 
-        with urllib.request.urlopen(request, timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(status, 200)
+        self.assertNotIn("events", payload)
+        self.assertEqual(payload["job_id"], "job-1")
+        self.assertEqual(payload["summary"], {"visible_count": 3})
 
-        self.assertEqual(response.status, 200)
-        self.assertEqual(payload, {"ok": True, "mode": "overview"})
+    def test_get_job_events_returns_events_envelope_with_counts_and_truncated_flag(self) -> None:
+        service = FakeAppService()
 
-    def test_mapping_preview_endpoint_uses_service_preview_flow(self) -> None:
-        service = FakeService()
-        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(service, api_token="test-token"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join, 1)
+        status, payload = dispatch_api_request(
+            service,
+            method="GET",
+            path="/api/jobs/job-1/events?limit=2",
+            headers={"X-PEAP-Desktop-Token": "test-token"},
+            api_token="test-token",
+        )
 
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{server.server_port}/api/mappings/preview",
+        self.assertEqual(status, 200)
+        self.assertEqual(service.last_event_limit, 3)
+        self.assertEqual(payload["events"], [{"event_id": "event-0"}, {"event_id": "event-1"}])
+        self.assertEqual(payload["returned_count"], 2)
+        self.assertEqual(payload["total_count"], 3)
+        self.assertTrue(payload["truncated"])
+
+    def test_missing_job_and_missing_job_events_both_return_404(self) -> None:
+        service = FakeAppService()
+
+        summary_status, summary_payload = dispatch_api_request(
+            service,
+            method="GET",
+            path="/api/jobs/missing-job",
+            headers={"X-PEAP-Desktop-Token": "test-token"},
+            api_token="test-token",
+        )
+        events_status, events_payload = dispatch_api_request(
+            service,
+            method="GET",
+            path="/api/jobs/missing-job/events",
+            headers={"X-PEAP-Desktop-Token": "test-token"},
+            api_token="test-token",
+        )
+
+        expected = build_not_found_payload(resource="job", resource_id="missing-job")
+        self.assertEqual(summary_status, 404)
+        self.assertEqual(summary_payload, expected)
+        self.assertEqual(events_status, 404)
+        self.assertEqual(events_payload, expected)
+
+    def test_records_endpoint_parses_record_family_scope_fields(self) -> None:
+        service = FakeAppService()
+
+        status, payload = dispatch_api_request(
+            service,
+            method="GET",
+            path="/api/records?record_family=deal&state=all&project_type=all&date_from=2026-03-01&date_to=2026-03-25&keyword=%E5%8D%8E%E6%B6%A6&limit=25&page=2",
+            headers={"X-PEAP-Desktop-Token": "test-token"},
+            api_token="test-token",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(service.last_records_payload["record_family"], "deal")
+        self.assertEqual(service.last_records_payload["page_size"], "25")
+        self.assertEqual(service.last_records_payload["page"], "2")
+        self.assertEqual(payload["record_family"], "deal")
+
+    def test_exports_endpoint_requires_scope_payload(self) -> None:
+        service = FakeAppService()
+        request_payload = {
+            "scope": {
+                "record_family": "listing",
+                "state": "all",
+                "project_type": "all",
+                "keyword": "",
+                "date_from": "",
+                "date_to": "",
+                "page": 1,
+                "page_size": 50,
+            },
+            "mode": "rebuild",
+            "cursor_key": "",
+            "output_dir": "/tmp/export",
+        }
+
+        status, payload = dispatch_api_request(
+            service,
             method="POST",
+            path="/api/exports",
             headers={
                 "X-PEAP-Desktop-Token": "test-token",
                 "Content-Type": "application/json",
             },
-            data=json.dumps({"source_name": "华润", "target_value": "央企"}).encode("utf-8"),
+            body=request_payload,
+            api_token="test-token",
         )
 
-        with urllib.request.urlopen(request, timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-
-        self.assertEqual(response.status, 200)
-        self.assertEqual(payload["mode"], "mapping_preview")
-        self.assertEqual(payload["payload"]["source_name"], "华润")
-
-    def test_pending_mapping_refresh_endpoint_uses_service_batch_launcher(self) -> None:
-        service = FakeService()
-        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(service, api_token="test-token"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join, 1)
-
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{server.server_port}/api/mappings/reprocess-pending",
-            method="POST",
-            headers={
-                "X-PEAP-Desktop-Token": "test-token",
-                "Content-Type": "application/json",
+        self.assertEqual(status, 200)
+        self.assertEqual(service.last_export_payload, request_payload)
+        self.assertEqual(
+            payload,
+            {
+                "status": "empty",
+                "empty_reason_code": "no_matching_records",
+                "scope_state_counts": {"pending_mapping": 0},
+                "scope": request_payload["scope"],
             },
-            data=json.dumps({"scope": "pending"}).encode("utf-8"),
         )
 
-        with urllib.request.urlopen(request, timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
 
-        self.assertEqual(response.status, 200)
-        self.assertEqual(payload["mode"], "pending_refresh")
-        self.assertEqual(payload["payload"]["scope"], "pending")
+if __name__ == "__main__":
+    unittest.main()
