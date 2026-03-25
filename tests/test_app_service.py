@@ -105,6 +105,19 @@ class AppServiceTest(unittest.TestCase):
             runtime_dependencies=self.runtime_dependencies,
         )
 
+    def _wait_for_job_status(self, job_id: str, *, timeout: float = 1.0) -> dict[str, object]:
+        deadline = time.time() + timeout
+        terminal_statuses = {"success", "success_with_warnings", "failed", "interrupted"}
+        latest: dict[str, object] | None = None
+        while time.time() < deadline:
+            latest = self.service.get_job(job_id)
+            if str(latest.get("status") or "") in terminal_statuses:
+                return latest
+            time.sleep(0.02)
+        if latest is None:
+            latest = self.service.get_job(job_id)
+        self.fail(f"job {job_id} did not reach terminal status within {timeout} seconds: {latest}")
+
     def _insert_ready_record(self, *, record_id: str = "rec-1", project_code: str = "G32025SH1000194") -> None:
         source_file = os.path.join(self.temp_dir.name, f"{record_id}.html")
         with open(source_file, "w", encoding="utf-8") as handle:
@@ -220,6 +233,24 @@ class AppServiceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "已有执行中的任务：手动导入解析"):
             self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
+
+    def test_launch_one_click_requires_real_job_id_before_success_return(self) -> None:
+        def fake_run_streaming_daily_pipeline(
+            args,
+            *,
+            config_obj,
+            emit_console,
+            job_created_callback,
+            job_type,
+            archive_root,
+            export_root,
+            auto_export,
+        ):
+            return None
+
+        with patch("peap.streaming_daily_pipeline.run_streaming_daily_pipeline", side_effect=fake_run_streaming_daily_pipeline):
+            with self.assertRaisesRegex(RuntimeError, "job_id"):
+                self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
 
     def test_default_advanced_settings_use_bundled_postprocess_config(self) -> None:
         advanced = self.service.get_advanced_settings()
@@ -414,7 +445,8 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(len(payload["rows"]), 1)
         self.assertEqual(payload["rows"][0]["project_code"], "GR2026BJ1001611")
         self.assertEqual(payload["summary"]["visible_count"], 1)
-        self.assertEqual(payload["summary"]["state_counts"]["pending_mapping"], 1)
+        self.assertEqual(payload["summary"]["filtered_state_counts"]["pending_mapping"], 1)
+        self.assertEqual(payload["summary"]["page_state_counts"]["pending_mapping"], 1)
 
     def test_list_records_returns_pagination_metadata(self) -> None:
         self._insert_ready_record(record_id="rec-page-1", project_code="G32025SH1000101")
@@ -455,6 +487,8 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["visible_count"], 2)
         self.assertEqual(payload["summary"]["total_count"], 3)
         self.assertEqual(payload["summary"]["page_count"], 2)
+        self.assertEqual(payload["summary"]["filtered_state_counts"]["ready"], 3)
+        self.assertEqual(payload["summary"]["page_state_counts"]["ready"], 2)
         self.assertTrue(payload["has_more"])
 
     def test_upsert_mapping_starts_background_refresh_for_all_affected_latest_records(self) -> None:
@@ -676,6 +710,25 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["discovered_count"], 4)
         self.assertCountEqual(discovered, ["a.html", "b.htm", "c.mhtml", os.path.join("nested", "d.html")])
 
+    def test_manual_import_all_failed_resolves_to_failed_not_success_with_warnings(self) -> None:
+        import_root = os.path.join(self.temp_dir.name, "manual_import_failed")
+        os.makedirs(import_root, exist_ok=True)
+        source_file = os.path.join(import_root, "broken.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        with patch.object(
+            self.service,
+            "_ingest_manual_import_file",
+            return_value={"state": "parse_failed", "record_id": "rec-failed", "project_code": "CODE-FAILED"},
+            create=True,
+        ):
+            payload = self.service.launch_manual_import({"input_dir": import_root})
+
+        job = self._wait_for_job_status(str(payload["job_id"]))
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["summary"]["failed_count"], 1)
+
     def test_manual_import_uses_effective_postprocess_rules_config(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "manual-import.html")
         with open(source_file, "w", encoding="utf-8") as handle:
@@ -741,6 +794,54 @@ class AppServiceTest(unittest.TestCase):
 
         self.assertNotIn("project_type", captured["extra"])
         self.assertEqual(captured["extra"]["project_type_fallback"], "股权转让")
+
+    def test_reprocess_failed_record_uses_original_evidence_path(self) -> None:
+        original_file = os.path.join(self.temp_dir.name, "original-failed-evidence.html")
+        with open(original_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>original evidence</body></html>")
+        current_file = os.path.join(self.temp_dir.name, "current-failed-record.html")
+        with open(current_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>current file</body></html>")
+
+        failed = self.service.store.upsert_failed_record(
+            project_code="FAILED-REPROCESS-001",
+            source_file=current_file,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="boom",
+            payload={
+                "source_identity": {
+                    "original_evidence_path": original_file,
+                    "original_source_file": original_file,
+                },
+                "source_file": current_file,
+            },
+        )
+        captured: dict[str, object] = {}
+
+        class FakeRunner:
+            def __init__(self, *, store, archive_root, rules_config=None, dependencies=None) -> None:
+                pass
+
+            def ingest(self, item):
+                captured["source_file"] = item.source_file
+                return {
+                    "state": "ready",
+                    "record_id": failed["record_id"],
+                    "project_code": "FAILED-REPROCESS-001",
+                    "archive_path": item.source_file,
+                }
+
+        with patch("desktop_backend.app_service.StreamingIngestRunner", FakeRunner):
+            result = self.service.reprocess_record(str(failed["record_id"]))
+
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(captured["source_file"], original_file)
+
+        os.remove(original_file)
+        with patch("desktop_backend.app_service.StreamingIngestRunner", FakeRunner):
+            with self.assertRaisesRegex(FileNotFoundError, "original evidence"):
+                self.service.reprocess_record(str(failed["record_id"]))
 
     def test_set_advanced_settings_keeps_fixed_app_runtime_paths(self) -> None:
         updated = self.service.set_advanced_settings(
@@ -875,7 +976,7 @@ class AppServiceTest(unittest.TestCase):
     def test_run_export_recovers_after_database_file_deleted(self) -> None:
         os.remove(self.service.db_path)
 
-        payload = self.service.run_export({"date_from": "2026-03-22", "date_to": "2026-03-22"})
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-22", "date_to": "2026-03-22"}})
 
         self.assertEqual(payload["status"], "empty")
         self.assertIn("没有可导出的记录", payload["message"])
@@ -981,6 +1082,30 @@ class AppServiceTest(unittest.TestCase):
         overview = self.service.overview()
         self.assertEqual(overview["latest_progress"]["phase_code"], "completed")
         self.assertEqual(overview["latest_progress"]["phase_label"], "已完成")
+
+    def test_terminal_progress_clears_current_item_context(self) -> None:
+        job_id = self.service.store.create_job("one_click", metadata={})
+        self.service.store.append_event(
+            ItemProgressEvent(
+                job_id=job_id,
+                stage="prepare_tasks",
+                status="running",
+                payload={
+                    "label": "正在扫描网页",
+                    "task_label": "北交所 - 股权转让",
+                    "task_index": 2,
+                    "task_total": 4,
+                },
+            )
+        )
+        self.service.store.finish_job(job_id, status="success", summary={})
+
+        overview = self.service.overview()
+
+        self.assertEqual(overview["latest_progress"]["phase_code"], "completed")
+        self.assertEqual(overview["latest_progress"]["current_task_label"], "")
+        self.assertEqual(overview["latest_progress"]["task_index"], 0)
+        self.assertEqual(overview["latest_progress"]["task_total"], 0)
 
     def test_list_records_returns_export_aligned_rows(self) -> None:
         self._insert_ready_record()
@@ -1148,6 +1273,24 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(overview["latest_progress"]["latest_stage_code"], "save_pages")
         self.assertEqual(overview["latest_progress"]["latest_stage_summary"]["detail_candidates"], 10)
         self.assertEqual(overview["latest_progress"]["latest_stage_summary"]["detail_date_skipped"], 10)
+
+    def test_export_progress_uses_export_semantics_not_archive_semantics(self) -> None:
+        job_id = self.service.store.create_job("export_excel", metadata={})
+        self.service.store.update_job_counts(job_id, downloaded_inc=3, persisted_inc=1)
+        self.service.store.append_event(
+            ItemProgressEvent(
+                job_id=job_id,
+                stage="exporting",
+                status="running",
+                payload={"label": "正在导出 Excel"},
+            )
+        )
+
+        overview = self.service.overview()
+
+        self.assertEqual(overview["latest_progress"]["phase_code"], "exporting")
+        self.assertEqual(overview["latest_progress"]["phase_label"], "正在导出 Excel")
+        self.assertEqual(overview["latest_progress"]["archive_pending_count"], 0)
 
     def test_overview_repairs_missing_archive_files_from_raw_source(self) -> None:
         raw_dir = os.path.join(self.temp_dir.name, "raw")
@@ -1523,6 +1666,25 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(captured["pending_records"][0]["record_id"], "rec-launch-legacy-normalize")
         self.assertEqual(captured["ready_records"], [])
 
+    def test_mapping_refresh_zero_actual_repairs_resolves_to_failed(self) -> None:
+        self._insert_record_with_mapping_source(
+            record_id="rec-zero-repair",
+            state="pending_mapping",
+            transferor="待回刷企业",
+            group_name="待回刷集团",
+        )
+
+        with patch.object(
+            self.service,
+            "reprocess_record",
+            return_value={"record_id": "rec-zero-repair", "project_code": "CODE-rec-zero-repair", "state": "pending_mapping"},
+        ):
+            payload = self.service.launch_pending_mapping_refresh({})
+
+        job = self._wait_for_job_status(str(payload["job_id"]))
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["summary"]["pending_mapping_count"], 1)
+
     def test_run_export_reports_pending_mapping_blockers_when_no_ready_rows(self) -> None:
         self.service.store.upsert_record(
             IngestedRecord(
@@ -1542,9 +1704,11 @@ class AppServiceTest(unittest.TestCase):
             )
         )
 
-        payload = self.service.run_export({"date_from": "2026-03-20", "date_to": "2026-03-20"})
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20"}})
 
         self.assertEqual(payload["status"], "empty")
+        self.assertEqual(payload["empty_reason_code"], "pending_mapping_blocked")
+        self.assertEqual(payload["scope_state_counts"]["pending_mapping"], 1)
         self.assertIn("待补映射 1 条", payload["message"])
 
     def test_run_export_creates_export_job_and_events(self) -> None:
@@ -1558,7 +1722,7 @@ class AppServiceTest(unittest.TestCase):
             ]
 
         with patch("desktop_backend.app_service.run_ready_export", return_value=_FakeExportResult()):
-            payload = self.service.run_export({"date_from": "2026-03-21", "date_to": "2026-03-21"})
+            payload = self.service.run_export({"scope": {"date_from": "2026-03-21", "date_to": "2026-03-21"}})
 
         self.assertTrue(payload["job_id"])
         self.assertEqual(payload["job_type"], "export_excel")
@@ -1582,9 +1746,125 @@ class AppServiceTest(unittest.TestCase):
             return _FakeExportResult()
 
         with patch("desktop_backend.app_service.run_ready_export", side_effect=fake_run_ready_export):
-            self.service.run_export({"date_from": "2026-03-20", "date_to": "2026-03-20"})
+            self.service.run_export({"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20"}})
 
         self.assertEqual(captured["mode"], "rebuild")
+
+    def test_list_records_and_run_export_share_same_scope_contract(self) -> None:
+        self._insert_ready_record(record_id="rec-scope-contract", project_code="G32025SH1001999")
+        scope = {
+            "record_family": "listing",
+            "state": "all",
+            "project_type": "equity_transfer",
+            "keyword": "",
+            "date_from": "2026-03-21",
+            "date_to": "2026-03-21",
+            "page": 2,
+            "page_size": 5,
+        }
+        list_payload = self.service.list_records({"scope": scope})
+        captured: dict[str, object] = {}
+
+        class _FakeExportResult:
+            export_id = "exp-scope"
+            cursor_key = "cursor-scope"
+            artifacts = []
+            new_records = 0
+            changed_records = 0
+
+        def fake_run_ready_export(store, request):
+            captured["record_family"] = request.record_family
+            captured["date_from"] = request.date_from
+            captured["date_to"] = request.date_to
+            captured["business_types"] = list(request.business_types)
+            return _FakeExportResult()
+
+        with patch("desktop_backend.app_service.run_ready_export", side_effect=fake_run_ready_export):
+            export_payload = self.service.run_export({"scope": scope})
+
+        self.assertEqual(
+            list_payload["scope"],
+            {
+                "record_family": "listing",
+                "state": "all",
+                "project_type": "equity_transfer",
+                "keyword": "",
+                "date_from": "2026-03-21",
+                "date_to": "2026-03-21",
+                "page": 2,
+                "page_size": 5,
+            },
+        )
+        self.assertEqual(export_payload["scope"], list_payload["scope"])
+        self.assertEqual(captured["record_family"], "listing")
+        self.assertEqual(captured["date_from"], "2026-03-21")
+        self.assertEqual(captured["date_to"], "2026-03-21")
+        self.assertEqual(captured["business_types"], ["股权转让"])
+
+    def test_list_records_summary_splits_filtered_counts_and_page_counts(self) -> None:
+        self._insert_ready_record(record_id="rec-summary-split-1", project_code="G32025SH1003001")
+        self._insert_ready_record(record_id="rec-summary-split-2", project_code="G32025SH1003002")
+        pending_source_file = os.path.join(self.temp_dir.name, "rec-summary-split-pending.html")
+        with open(pending_source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>pending summary split</body></html>")
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-summary-split-pending",
+                revision_hash="hash-rec-summary-split-pending",
+                project_code="G32025SH1003003",
+                project_name="待补映射项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="pending_mapping",
+                source_file=pending_source_file,
+                archive_path=pending_source_file,
+                parser_payload={"项目编号": "G32025SH1003003", "项目名称": "待补映射项目"},
+                postprocess_payload={"项目编号": "G32025SH1003003", "项目名称": "待补映射项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+
+        payload = self.service.list_records({"scope": {"state": "all", "project_type": "equity_transfer", "page": 1, "page_size": 1}})
+
+        self.assertEqual(payload["summary"]["filtered_state_counts"], {"pending_mapping": 1, "ready": 2})
+        self.assertEqual(payload["summary"]["page_state_counts"], {payload["rows"][0]["state"]: 1})
+        self.assertEqual(payload["summary"]["total_count"], 3)
+        self.assertEqual(payload["summary"]["visible_count"], 1)
+        self.assertEqual(payload["summary"]["page"], 1)
+        self.assertEqual(payload["summary"]["page_size"], 1)
+        self.assertEqual(payload["summary"]["page_count"], 3)
+        self.assertNotIn("state_counts", payload["summary"])
+
+    def test_overview_and_list_records_do_not_rewrite_failed_record_identity(self) -> None:
+        failed_source_file = os.path.join(self.temp_dir.name, "failed-original-source.html")
+        with open(failed_source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>failed original source</body></html>")
+
+        failed = self.service.store.upsert_failed_record(
+            project_code="FAILED-IDENTITY-001",
+            source_file=failed_source_file,
+            state="parse_failed",
+            error_type="parse_failed",
+            error_message="parse boom",
+            payload={
+                "source_identity": {
+                    "original_evidence_path": failed_source_file,
+                    "original_source_file": failed_source_file,
+                },
+                "source_file": failed_source_file,
+            },
+        )
+
+        self.service.overview()
+        payload = self.service.list_records({"scope": {"state": "all", "project_type": "all"}})
+        record = self.service.store.get_record(str(failed["record_id"]))
+        row = next(item for item in payload["rows"] if item["record_id"] == str(failed["record_id"]))
+
+        self.assertEqual(record["source_file"], failed_source_file)
+        self.assertEqual(record["source_identity_json"]["original_evidence_path"], failed_source_file)
+        self.assertEqual(record["source_identity_json"]["original_source_file"], failed_source_file)
+        self.assertEqual(row["source_file"], failed_source_file)
 
 
 if __name__ == "__main__":

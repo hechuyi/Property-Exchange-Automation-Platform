@@ -23,6 +23,9 @@ from peap.streaming_ingest import StreamingIngestRunner, copy_snapshot_to_archiv
 from peap.streaming_models import ExportRequest, ItemProgressEvent, ItemSavedPayload
 from peap.streaming_store import StreamingStore
 
+from .progress_contract import build_progress_view
+from .record_identity import FAILED_RECORD_STATES, pick_reprocess_evidence_path
+from .record_scope import normalize_record_scope, record_scope_to_dict
 from .runtime_dependencies import RuntimeDependencyManager
 
 
@@ -147,6 +150,16 @@ def _summary_count(summary: Dict[str, Any], key: str) -> int:
     return _coerce_int(summary.get(key), default=0)
 
 
+def _state_counts(rows: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for row in rows:
+        state = str(row.get("state") or "").strip()
+        if not state:
+            continue
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
 def _normalize_exchange_label(raw_value: str) -> str:
     text = str(raw_value or "").strip()
     lowered = text.lower()
@@ -169,6 +182,44 @@ def _resolve_project_type_filter(raw_value: str) -> tuple[str | None, str | None
         label = PROJECT_TYPE_LABELS[value]
         return label, PROJECT_TYPE_TO_KIND.get(label)
     return value, PROJECT_TYPE_TO_KIND.get(value)
+
+
+def _scope_project_types(scope) -> list[str]:
+    normalized_scope = normalize_record_scope(record_scope_to_dict(scope))
+    if normalized_scope.record_family != "listing":
+        return []
+    project_type_label, _ = _resolve_project_type_filter(normalized_scope.project_type)
+    if project_type_label and project_type_label != "all":
+        return [project_type_label]
+    return list(PROJECT_TYPE_LABELS.values())
+
+
+def _normalize_request_scope(
+    payload: Dict[str, Any] | None,
+    *,
+    require_explicit_scope: bool,
+):
+    raw_payload = dict(payload or {})
+    if require_explicit_scope:
+        if "scope" not in raw_payload:
+            raise ValueError("scope is required")
+        scope_input = raw_payload.get("scope")
+    else:
+        scope_input = raw_payload.get("scope", raw_payload)
+    normalized_scope = normalize_record_scope(scope_input)
+    if (
+        not require_explicit_scope
+        and "scope" not in raw_payload
+        and "limit" in raw_payload
+        and not (isinstance(scope_input, dict) and "page_size" in scope_input)
+    ):
+        normalized_scope = normalize_record_scope(
+            {
+                **record_scope_to_dict(normalized_scope),
+                "page_size": raw_payload.get("limit"),
+            }
+        )
+    return raw_payload, normalized_scope, record_scope_to_dict(normalized_scope)
 
 
 def _first_value(payload: Dict[str, Any], fields: list[str]) -> str:
@@ -364,6 +415,8 @@ class AppService:
         removed_raw = 0
         rewired_download_events = 0
         for record in self.store.iter_latest_records(sort="recent"):
+            if str(record.get("state") or "").strip() in FAILED_RECORD_STATES:
+                continue
             archive_path = str(record.get("archive_path") or "").strip()
             source_file = str(record.get("source_file") or "").strip()
             archive_exists = bool(archive_path) and os.path.isfile(archive_path)
@@ -668,6 +721,9 @@ class AppService:
             }
 
         job_id = str(latest_job.get("job_id") or "")
+        job_type = str(latest_job.get("job_type") or "")
+        job_metadata = dict(latest_job.get("metadata") or {})
+        record_family = str(job_metadata.get("record_family") or "listing").strip() or "listing"
         status_counts = self.store.get_job_event_counts(job_id) if job_id else {}
         recent_events = self.store.list_job_events(job_id, limit=40) if job_id else []
         latest_phase_event = next(
@@ -694,7 +750,9 @@ class AppService:
         exception_count = int(latest_job.get("exception_count") or 0)
         pending_mapping_count = int(status_counts.get("pending_mapping", 0))
         skipped_count = int(status_counts.get("skipped", 0))
-        archive_pending_count = max(downloaded_count - persisted_count - skipped_count - exception_count, 0)
+        latest_phase_code = str(latest_phase_event.get("stage") or "") if latest_phase_event is not None else ""
+        is_export_phase = latest_phase_code == "exporting"
+        archive_pending_count = 0 if is_export_phase else max(downloaded_count - persisted_count - skipped_count - exception_count, 0)
         current_task_label = str(latest_phase_payload.get("task_label") or "").strip()
         task_index = _coerce_int(latest_phase_payload.get("task_index"), default=0)
         task_total = _coerce_int(latest_phase_payload.get("task_total"), default=0)
@@ -720,7 +778,10 @@ class AppService:
             phase_label = "执行失败"
             phase_percent = 100
         elif job_status == "running":
-            if archive_pending_count > 0:
+            if is_export_phase:
+                phase_code = "exporting"
+                phase_label = str(latest_phase_payload.get("label") or JOB_PHASE_LABELS["exporting"])
+            elif archive_pending_count > 0:
                 phase_code = "archive_pending"
                 phase_label = "正在存档"
                 current_task_label = ""
@@ -770,9 +831,42 @@ class AppService:
             else:
                 phase_label = "本次未产生可录入记录"
 
-        return {
+        raw_progress = {
+            "job_id": job_id,
+            "job_type": job_type,
+            "record_family": record_family,
+            "job_status": job_status,
             "phase_code": phase_code,
             "phase_label": phase_label,
+            "current_item_label": current_task_label,
+            "current_index": task_index,
+            "current_total": task_total,
+            "latest_stage_code": str(latest_stage_event.get("stage") or "") if latest_stage_event is not None else "",
+            "latest_stage_label": str(latest_stage_payload.get("label") or "") if latest_stage_event is not None else "",
+            "latest_stage_summary": latest_stage_summary,
+            "summary": {
+                "downloaded_count": downloaded_count,
+                "persisted_count": persisted_count,
+                "exception_count": exception_count,
+                "pending_mapping_count": pending_mapping_count,
+                "skipped_count": skipped_count,
+                "archive_pending_count": archive_pending_count,
+                "archive_completed_count": 0 if is_export_phase else persisted_count,
+            },
+        }
+        progress_view = build_progress_view(
+            job={
+                "job_id": job_id,
+                "job_type": job_type,
+                "status": job_status,
+                "record_family": record_family,
+            },
+            raw_progress=raw_progress,
+        )
+
+        return {
+            "phase_code": str(progress_view.get("phase_code") or ""),
+            "phase_label": str(progress_view.get("phase_label") or ""),
             "job_status": job_status,
             "downloaded_count": downloaded_count,
             "persisted_count": persisted_count,
@@ -780,32 +874,33 @@ class AppService:
             "pending_mapping_count": pending_mapping_count,
             "skipped_count": skipped_count,
             "archive_pending_count": archive_pending_count,
-            "archive_completed_count": persisted_count,
-            "current_task_label": current_task_label,
-            "task_index": task_index,
-            "task_total": task_total,
+            "archive_completed_count": 0 if is_export_phase else persisted_count,
+            "current_task_label": str(progress_view.get("current_item_label") or ""),
+            "task_index": _coerce_int(progress_view.get("current_index"), default=0),
+            "task_total": _coerce_int(progress_view.get("current_total"), default=0),
             "phase_percent": phase_percent,
             "job_id": job_id,
-            "latest_stage_code": str(latest_stage_event.get("stage") or "") if latest_stage_event is not None else "",
-            "latest_stage_label": str(latest_stage_payload.get("label") or "") if latest_stage_event is not None else "",
+            "latest_stage_code": str(progress_view.get("latest_stage_code") or ""),
+            "latest_stage_label": str(progress_view.get("latest_stage_label") or ""),
             "latest_stage_summary": latest_stage_summary,
         }
 
     def list_records(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        raw_payload, normalized_scope, scope = _normalize_request_scope(payload, require_explicit_scope=False)
         self._normalize_legacy_views()
         self._repair_missing_archives_once()
-        payload = dict(payload or {})
-        states = _normalize_record_states(str(payload.get("state") or "all"))
-        page = _coerce_limit(payload.get("page"), default=1, maximum=9999)
-        page_size = _coerce_limit(payload.get("page_size") or payload.get("limit"), default=50, maximum=200)
-        keyword = str(payload.get("keyword") or "").strip().lower()
-        date_from = str(payload.get("date_from") or "").strip()
-        date_to = str(payload.get("date_to") or "").strip()
-        project_type_label, project_kind = _resolve_project_type_filter(str(payload.get("project_type") or "all"))
+        states = _normalize_record_states(normalized_scope.state)
+        page = _coerce_limit(normalized_scope.page, default=1, maximum=9999)
+        page_size = _coerce_limit(normalized_scope.page_size, default=50, maximum=200)
+        keyword = str(normalized_scope.keyword or "").strip().lower()
+        date_from = str(normalized_scope.date_from or "").strip()
+        date_to = str(normalized_scope.date_to or "").strip()
+        project_type_label, project_kind = _resolve_project_type_filter(normalized_scope.project_type)
         records = self.store.iter_latest_records(
             states=states,
             date_from=date_from or None,
             date_to=date_to or None,
+            record_family=normalized_scope.record_family,
             sort="recent",
         )
         filtered_rows: list[Dict[str, Any]] = []
@@ -850,8 +945,11 @@ class AppService:
         offset = max(0, (page - 1) * page_size)
         rows = filtered_rows[offset : offset + page_size]
         page_count = (total_count + page_size - 1) // page_size if total_count else 0
+        filtered_state_counts = _state_counts(filtered_rows)
+        page_state_counts = _state_counts(rows)
         return {
             "db_path": self.db_path,
+            "scope": scope,
             "columns": (
                 [column for column in get_output_columns_for_kind(project_kind) if column != "ID"]
                 if project_kind
@@ -867,15 +965,13 @@ class AppService:
             "page_count": page_count,
             "has_more": page < page_count,
             "summary": {
-                "visible_count": len(rows),
+                "filtered_state_counts": filtered_state_counts,
+                "page_state_counts": page_state_counts,
                 "total_count": total_count,
+                "visible_count": len(rows),
                 "page": page,
                 "page_size": page_size,
                 "page_count": page_count,
-                "state_counts": {
-                    state: sum(1 for row in rows if str(row.get("state") or "") == state)
-                    for state in sorted({str(row.get("state") or "") for row in rows})
-                },
             },
             "rows": rows,
         }
@@ -1142,11 +1238,13 @@ class AppService:
             "source_name": source_name,
         }
 
-    def _run_mapping_refresh_job(self, *, job_id: str, record_ids: list[str]) -> None:
+    def _run_mapping_refresh_job(self, *, job_id: str, record_ids: list[str], reprocess_fn=None) -> None:
         refreshed = 0
         pending = 0
         skipped = 0
         failed = 0
+        accepted_completed = 0
+        reprocess = reprocess_fn or self.reprocess_record
         for index, record_id in enumerate(record_ids, start=1):
             self.store.append_event(
                 ItemProgressEvent(
@@ -1164,7 +1262,7 @@ class AppService:
                 )
             )
             try:
-                result = self.reprocess_record(record_id)
+                result = reprocess(record_id)
                 state = str(result.get("state") or "")
             except Exception as exc:  # noqa: BLE001
                 failed += 1
@@ -1187,6 +1285,9 @@ class AppService:
                 pending += 1
             elif state == "skipped":
                 skipped += 1
+                accepted_completed += 1
+            elif state in {"ready", "conflict"}:
+                accepted_completed += 1
             elif state not in {"ready", "conflict"}:
                 failed += 1
             self.store.update_job_counts(
@@ -1211,9 +1312,9 @@ class AppService:
             )
 
         final_status = "success"
-        if failed > 0:
-            final_status = "success_with_warnings" if refreshed > 0 else "failed"
-        elif pending > 0 or skipped > 0:
+        if accepted_completed <= 0:
+            final_status = "failed"
+        elif failed > 0 or pending > 0 or skipped > 0:
             final_status = "success_with_warnings"
         self.store.finish_job(
             job_id,
@@ -1248,6 +1349,7 @@ class AppService:
             },
         )
         record_ids = [str(item["record_id"]) for item in affected_records]
+        reprocess_fn = self.reprocess_record
 
         def _run_mapping_refresh_wrapper() -> None:
             try:
@@ -1255,6 +1357,7 @@ class AppService:
                     self._run_mapping_refresh_job(
                         job_id=job_id,
                         record_ids=record_ids,
+                        reprocess_fn=reprocess_fn,
                     )
             finally:
                 self._release_mutating_job("mapping_refresh")
@@ -1280,6 +1383,7 @@ class AppService:
                 },
             )
             record_ids = [str(item["record_id"]) for item in affected_records]
+            reprocess_fn = self.reprocess_record
 
             def _run_pending_mapping_refresh_wrapper() -> None:
                 try:
@@ -1287,6 +1391,7 @@ class AppService:
                         self._run_mapping_refresh_job(
                             job_id=job_id,
                             record_ids=record_ids,
+                            reprocess_fn=reprocess_fn,
                         )
                 finally:
                     self._release_mutating_job("mapping_refresh")
@@ -1312,6 +1417,7 @@ class AppService:
         pending = 0
         skipped = 0
         failed = 0
+        accepted_completed = 0
         for index, file_path in enumerate(files, start=1):
             self.store.append_event(
                 ItemProgressEvent(
@@ -1350,6 +1456,9 @@ class AppService:
                 pending += 1
             elif state == "skipped":
                 skipped += 1
+                accepted_completed += 1
+            elif state in {"ready", "conflict"}:
+                accepted_completed += 1
             elif state not in {"ready", "conflict"}:
                 failed += 1
             self.store.update_job_counts(
@@ -1370,9 +1479,9 @@ class AppService:
             )
 
         final_status = "success"
-        if failed > 0:
-            final_status = "success_with_warnings" if imported > 0 else "failed"
-        elif pending > 0 or skipped > 0:
+        if accepted_completed <= 0:
+            final_status = "failed"
+        elif failed > 0 or pending > 0 or skipped > 0:
             final_status = "success_with_warnings"
         self.store.finish_job(
             job_id,
@@ -1489,9 +1598,22 @@ class AppService:
         record = self.store.get_record(record_id)
         archive_root = self.get_basic_settings()["archive_root"]
         runner = self._build_ingest_runner(archive_root=archive_root)
-        preferred_source = str(record.get("archive_path") or "").strip()
-        if not preferred_source or not os.path.isfile(preferred_source):
-            preferred_source = str(record["source_file"])
+        state = str(record.get("state") or "").strip()
+        if state in FAILED_RECORD_STATES:
+            preferred_source = pick_reprocess_evidence_path(
+                {
+                    **record,
+                    "source_identity": record.get("source_identity_json"),
+                }
+            )
+            if not preferred_source or not os.path.isfile(preferred_source):
+                raise FileNotFoundError(f"original evidence missing for failed record: {record_id}")
+        else:
+            preferred_source = str(record.get("archive_path") or "").strip()
+            if not preferred_source or not os.path.isfile(preferred_source):
+                preferred_source = str(record["source_file"])
+            if not preferred_source or not os.path.isfile(preferred_source):
+                raise FileNotFoundError(f"source file missing for record: {record_id}")
         result = runner.ingest(
             ItemSavedPayload(
                 source_file=preferred_source,
@@ -1515,16 +1637,18 @@ class AppService:
             return self._reprocess_record(record_id)
 
     def run_export(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        raw_payload, normalized_scope, scope = _normalize_request_scope(payload, require_explicit_scope=True)
         self._normalize_legacy_views()
         self._repair_missing_archives_once()
         with self._mutating_job_scope("export_excel"):
             request = ExportRequest(
-                date_from=str(payload.get("date_from") or "").strip() or None,
-                date_to=str(payload.get("date_to") or "").strip() or None,
-                business_types=list(payload.get("business_types") or []),
-                mode=str(payload.get("mode") or "rebuild"),
-                cursor_key=str(payload.get("cursor_key") or ""),
-                output_dir=str(payload.get("output_dir") or self.get_basic_settings()["export_root"]),
+                date_from=str(normalized_scope.date_from or "").strip() or None,
+                date_to=str(normalized_scope.date_to or "").strip() or None,
+                business_types=_scope_project_types(normalized_scope),
+                mode=str(raw_payload.get("mode") or "rebuild"),
+                cursor_key=str(raw_payload.get("cursor_key") or ""),
+                output_dir=str(raw_payload.get("output_dir") or self.get_basic_settings()["export_root"]),
+                record_family=normalized_scope.record_family,
             )
             job_id = self.store.create_job(
                 "export_excel",
@@ -1533,6 +1657,8 @@ class AppService:
                     "date_to": request.date_to or "",
                     "business_types": list(request.business_types or []),
                     "output_dir": request.output_dir,
+                    "record_family": request.record_family,
+                    "scope": scope,
                 },
             )
             self.store.append_event(
@@ -1549,6 +1675,7 @@ class AppService:
                 summary = {
                     "job_id": job_id,
                     "job_type": "export_excel",
+                    "scope": scope,
                     "export_id": "",
                     "cursor_key": request.cursor_key,
                     "new_records": 0,
@@ -1574,23 +1701,30 @@ class AppService:
             artifacts = [item.file_path for item in result.artifacts]
             export_status = "completed" if artifacts else "empty"
             message = f"导出完成，共生成 {len(artifacts)} 个文件"
+            empty_reason_code = ""
+            scope_state_counts: Dict[str, int] = {}
             if not artifacts:
-                state_counts = self.store.count_records_by_state(
+                scope_state_counts = self.store.count_records_by_state(
                     date_from=request.date_from,
                     date_to=request.date_to,
                     business_types=request.business_types,
+                    record_family=request.record_family,
                 )
-                pending_count = int(state_counts.get("pending_mapping", 0))
-                skipped_count = int(state_counts.get("skipped", 0))
+                pending_count = int(scope_state_counts.get("pending_mapping", 0))
+                skipped_count = int(scope_state_counts.get("skipped", 0))
                 if pending_count > 0:
+                    empty_reason_code = "pending_mapping_blocked"
                     message = f"当前条件下没有可导出的记录；待补映射 {pending_count} 条"
                 elif skipped_count > 0:
+                    empty_reason_code = "skipped_only"
                     message = f"当前条件下没有可导出的记录；已跳过 {skipped_count} 条"
                 else:
+                    empty_reason_code = "no_matching_records"
                     message = "当前条件下没有可导出的记录"
             summary = {
                 "job_id": job_id,
                 "job_type": "export_excel",
+                "scope": scope,
                 "export_id": result.export_id,
                 "cursor_key": result.cursor_key,
                 "new_records": result.new_records,
@@ -1599,6 +1733,9 @@ class AppService:
                 "status": export_status,
                 "message": message,
             }
+            if not artifacts:
+                summary["empty_reason_code"] = empty_reason_code
+                summary["scope_state_counts"] = scope_state_counts
             self.store.update_job_counts(
                 job_id,
                 downloaded_inc=int(result.new_records) + int(result.changed_records),
@@ -1695,6 +1832,8 @@ class AppService:
                 self._threads[thread.name] = thread
             ready.wait(timeout=2.0)
             response["job_type"] = job_type
+            if not str(response.get("job_id") or "").strip():
+                raise RuntimeError(f"{job_type} job did not provide job_id")
             return response
         except Exception:
             self._release_mutating_job(job_type)
