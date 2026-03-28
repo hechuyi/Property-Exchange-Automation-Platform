@@ -26,6 +26,7 @@ ItemStage = Literal[
 RecordState = Literal[
     "ready",
     "pending_mapping",
+    "mapping_conflict",
     "skipped",
     "parse_failed",
     "postprocess_failed",

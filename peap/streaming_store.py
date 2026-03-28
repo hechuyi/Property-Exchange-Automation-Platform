@@ -740,7 +740,7 @@ class StreamingStore:
                 FROM records
                 JOIN record_revisions AS revisions
                   ON revisions.revision_id = records.latest_revision_id
-                WHERE records.state IN ('ready', 'pending_mapping', 'conflict')
+                WHERE records.state IN ('ready', 'pending_mapping', 'mapping_conflict', 'conflict')
                 """
             ).fetchall()
             open_pending_rows = conn.execute(
@@ -773,11 +773,12 @@ class StreamingStore:
                     findings=findings,
                 )
                 finding_types = {str(item.type or "") for item in normalized_findings}
-                new_state = (
-                    "pending_mapping"
-                    if {"mapping_missing", "mapping_ambiguous", "mapping_conflict", "project_type_unknown"} & finding_types
-                    else "ready"
-                )
+                if "mapping_conflict" in finding_types:
+                    new_state = "mapping_conflict"
+                elif {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"} & finding_types:
+                    new_state = "pending_mapping"
+                else:
+                    new_state = "ready"
                 new_findings_json = _json_dumps([asdict(item) for item in normalized_findings])
                 new_payload_json = _json_dumps(normalized_payload)
 
@@ -816,7 +817,7 @@ class StreamingStore:
                     )
                     updated_findings += 1
 
-                if new_state == "pending_mapping" and record_id not in open_pending:
+                if new_state in {"pending_mapping", "mapping_conflict"} and record_id not in open_pending:
                     conn.execute(
                         """
                         INSERT INTO mapping_pending (
@@ -833,7 +834,7 @@ class StreamingStore:
                     )
                     open_pending.add(record_id)
                     inserted_pending += 1
-                if new_state != "pending_mapping" and record_id in open_pending:
+                if new_state not in {"pending_mapping", "mapping_conflict"} and record_id in open_pending:
                     conn.execute(
                         """
                         UPDATE mapping_pending
@@ -1083,6 +1084,26 @@ class StreamingStore:
                     ),
                 )
                 revision_id = int(cur.lastrowid)
+            elif revision_id is not None:
+                conn.execute(
+                    """
+                    UPDATE record_revisions
+                    SET parser_payload_json = ?,
+                        postprocess_payload_json = ?,
+                        findings_json = ?,
+                        state = ?,
+                        source_file = ?
+                    WHERE revision_id = ?
+                    """,
+                    (
+                        _json_dumps(record.parser_payload),
+                        _json_dumps(record.postprocess_payload),
+                        _json_dumps(findings_json),
+                        record.state,
+                        record.source_file,
+                        int(revision_id),
+                    ),
+                )
 
             conn.execute(
                 """

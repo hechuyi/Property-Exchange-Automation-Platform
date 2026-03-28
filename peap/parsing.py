@@ -208,6 +208,48 @@ def _is_cbex_otc_page(html_text: str) -> bool:
     return False
 
 
+def _can_recover_cbex_otc_page(html_text: str) -> bool:
+    markers = (
+        r'<textarea[^>]+id=["\']jsonobj["\']',
+        r'class=["\']projectcode["\']',
+        r'class=["\']object["\']',
+        r'class=["\']bd_detail_num["\']',
+        r"\bprojectcode\b",
+    )
+    for pattern in markers:
+        if re.search(pattern, html_text, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _resolved_project_type(
+    *,
+    data: Mapping[str, Any],
+    standard_payload: Mapping[str, Any] | None,
+) -> str:
+    value = (
+        (standard_payload or {}).get("project_type")
+        or data.get(KEY_PROJECT_TYPE)
+        or TYPE_UNKNOWN
+    )
+    text = str(value or "").strip()
+    return text or TYPE_UNKNOWN
+
+
+def _has_cbex_otc_identity(
+    *,
+    data: Mapping[str, Any],
+    standard_payload: Mapping[str, Any] | None,
+) -> bool:
+    values = (
+        data.get(KEY_PROJECT_CODE),
+        data.get("项目名称"),
+        (standard_payload or {}).get("project_code"),
+        (standard_payload or {}).get("project_name"),
+    )
+    return any(str(value or "").strip() for value in values)
+
+
 def parse_file(
     file_path: str,
     *,
@@ -219,8 +261,9 @@ def parse_file(
     if read_result is None:
         raise ParseError(f"read-failed: {file_path}")
 
-    if _is_cbex_otc_page(read_result.content):
-        raise SkipParse(f"skip-cbex-otc-page: {file_path}")
+    is_cbex_otc_page = _is_cbex_otc_page(read_result.content)
+    if is_cbex_otc_page and not _can_recover_cbex_otc_page(read_result.content):
+        raise ParseError(f"cbex-otc-page-unrecoverable: {file_path}")
 
     exchange_type = detect_exchange(read_result.content)
     if not exchange_type:
@@ -245,7 +288,12 @@ def parse_file(
         apply_finance_fallback(data, read_result.content, soup=shared_soup)
         apply_group_fallback(data, read_result.content, soup=shared_soup)
 
-    status, project_type = detect_category_from_path(file_path)
+    status, path_project_type = detect_category_from_path(file_path)
+    project_type = _resolved_project_type(data=data, standard_payload=standard_payload)
+    if not is_cbex_otc_page and project_type in ("", TYPE_UNKNOWN):
+        project_type = str(path_project_type or "").strip() or TYPE_UNKNOWN
+    if is_cbex_otc_page and not _has_cbex_otc_identity(data=data, standard_payload=standard_payload):
+        raise ParseError(f"cbex-otc-page-unrecoverable: {file_path}")
     if exchange_type == "public_resource":
         status = STATUS_DEAL
         if project_type in ("", TYPE_UNKNOWN):

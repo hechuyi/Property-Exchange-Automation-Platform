@@ -2,7 +2,7 @@
 
 ## 中央监督执行状态（2026-03-25）
 
-- Status: 已完成 `Task 0`、`Task 1`、`Task 2`、`Task 3`、`Task 4`；`Task 5`、`Task 6` 待执行。
+- Status: 已完成 `Task 0`、`Task 1`、`Task 2`、`Task 3`、`Task 4`、`Task 5`、`Task 6`。
 - Supervisor: 主控工作区 `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform`
 - Worktree assignments:
   - `Task 1` -> `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/task-1-shared-contracts` on `codex-task-1-shared-contracts`
@@ -24,10 +24,17 @@
   - `Task 2 review fix`: `ec458a5 fix: close task2 contract review gaps`
   - `Task 3`: `61be917 feat: align desktop service with semantic contracts`
   - `Task 4`: `5a2f1c2 feat: normalize desktop http contracts`
+  - `Task 5`: `35d2494 feat: modularize desktop renderer semantic contracts`
+  - `Task 5 review fix`: `79bad66 fix: restore task5 semantic contracts`
   - `Task 1` verification: `python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract -v`
   - `Task 2` verification: `python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract tests.test_streaming_store tests.test_streaming_export -v`
   - `Task 3` verification: `python3 -m unittest tests.test_app_service -v`
   - `Task 4` verification: `python3 -m unittest tests.test_app_backend -v`
+  - `Task 5` verification: `node --test desktop_app/renderer/records.test.js desktop_app/renderer/exports.test.js desktop_app/renderer/tasks.test.js`
+  - `Task 5 layout regression`: `node --test desktop_app/layout_contract.test.js`
+  - `Task 5 merge proof`: `git merge --ff-only codex-task-5-frontend-contracts`
+  - `Task 6` verification: `python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract tests.test_streaming_store tests.test_streaming_export tests.test_app_service tests.test_app_backend -v`
+  - `Task 6` frontend verification: `node --test desktop_app/layout_contract.test.js desktop_app/renderer/records.test.js desktop_app/renderer/exports.test.js desktop_app/renderer/tasks.test.js`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -709,6 +716,8 @@ git commit -m "feat: normalize desktop http contracts"
 
 **Owner intent:** 只负责前端纯函数抽离和 wiring，不改 backend/store。
 
+**Execution status (2026-03-25):** 已完成。实现 worker: `task5_implementer`；中央监督者完成两轮复核后以 `git merge --ff-only codex-task-5-frontend-contracts` 合入。证明命令：`node --test desktop_app/renderer/records.test.js desktop_app/renderer/exports.test.js desktop_app/renderer/tasks.test.js`、`node --test desktop_app/layout_contract.test.js`。
+
 **Files:**
 - Modify: `desktop_app/index.html`
 - Modify: `desktop_app/renderer.js`
@@ -729,7 +738,7 @@ git commit -m "feat: normalize desktop http contracts"
 - `desktop_backend/app_backend.py`
 - `peap/streaming_store.py`
 
-- [ ] **Step 1: 先写 Node 侧纯函数回归**
+- [x] **Step 1: 先写 Node 侧纯函数回归**
 
 至少覆盖以下断言:
 
@@ -743,7 +752,7 @@ test("eventTitle prefers terminal status semantics over stage semantics", ...)
 test("manual_import and mapping_refresh progress copy do not mention archive counts", ...)
 ```
 
-- [ ] **Step 2: 抽出 `records.mjs` 的 scope 纯逻辑**
+- [x] **Step 2: 抽出 `records.mjs` 的 scope 纯逻辑**
 
 具体要求:
 - 默认 `projectType` 改为 `"all"`
@@ -751,7 +760,7 @@ test("manual_import and mapping_refresh progress copy do not mention archive cou
 - `formatRecordsSummary()` 改为读取 `filtered_state_counts`
 - 保留 `page_state_counts` 仅作本页辅助，不作为主 summary 文案来源
 
-- [ ] **Step 3: 新建 `exports.mjs`**
+- [x] **Step 3: 新建 `exports.mjs`**
 
 至少提供:
 
@@ -765,7 +774,7 @@ formatEmptyExportMessage(result)
 - `scope` 必须包含 `record_family/state/project_type/keyword/date_from/date_to/page/page_size`
 - 空导出提示必须由 `empty_reason_code + scope_state_counts` 生成
 
-- [ ] **Step 4: 新建 `tasks.mjs`**
+- [x] **Step 4: 新建 `tasks.mjs`**
 
 至少提供:
 
@@ -783,24 +792,24 @@ formatEventTitle(event)
 - 任务标题和事件标题优先使用终态语义，不允许 `stage="failed"` 覆盖 `status="interrupted"`
 - `manual_import` / `mapping_refresh` / `export_excel` 各自使用自己的语义文案，不共享“归档中”假通用文案
 
-- [ ] **Step 5: 在 `renderer.js` 中只保留 wiring**
+- [x] **Step 5: 在 `renderer.js` 中只保留 wiring**
 
 具体要求:
 - 进度条 copy、任务 copy、导出请求构造、空导出解释都改为调用新模块
 - `renderer.js` 不再自己判断 `interrupted` / `failed` / `archive_pending` 的最终 copy
 - 当前 UI 仍只展示 `listing`，但状态中必须显式携带 `record_family`
 
-- [ ] **Step 6: 调整首屏默认筛选**
+- [x] **Step 6: 调整首屏默认筛选**
 
 在 [`desktop_app/index.html`](/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/desktop_app/index.html) 和前端默认状态里，把记录页业务类型默认值改成“全部”，不要默认锁到股权转让。
 
-- [ ] **Step 7: 运行 Node 测试**
+- [x] **Step 7: 运行 Node 测试**
 
 Run: `node --test desktop_app/renderer/records.test.js desktop_app/renderer/exports.test.js desktop_app/renderer/tasks.test.js`
 
 Expected: 通过，并且所有语义判断都在纯模块层被锁住。
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add desktop_app/index.html desktop_app/renderer.js desktop_app/renderer/records.mjs desktop_app/renderer/records.test.js desktop_app/renderer/exports.mjs desktop_app/renderer/exports.test.js desktop_app/renderer/tasks.mjs desktop_app/renderer/tasks.test.js
@@ -817,6 +826,8 @@ git commit -m "feat: modularize desktop renderer semantic contracts"
 
 **Owner:** 中央监督者，仅你自己执行，不分发
 
+**Execution status (2026-03-25):** 已完成。执行者：中央监督者。证明命令：`python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract tests.test_streaming_store tests.test_streaming_export tests.test_app_service tests.test_app_backend -v`、`node --test desktop_app/layout_contract.test.js desktop_app/renderer/records.test.js desktop_app/renderer/exports.test.js desktop_app/renderer/tasks.test.js`。
+
 **Files:**
 - Modify: `docs/real_operation_test_report_2026-03-23.md`
 - Modify: `todo.md`
@@ -831,11 +842,11 @@ git commit -m "feat: modularize desktop renderer semantic contracts"
 **Do not touch:**
 - 非必要不要再改产品代码；只有在合并冲突修正时才允许最小修补
 
-- [ ] **Step 1: 审核每张卡是否真的守住写集**
+- [x] **Step 1: 审核每张卡是否真的守住写集**
 
 如果某个 worker 越权改了别的卡文件，先打回，不要直接手工兜底合并。
 
-- [ ] **Step 2: 按依赖顺序合并并做全量验证**
+- [x] **Step 2: 按依赖顺序合并并做全量验证**
 
 Run: `python3 -m unittest tests.test_source_registry tests.test_record_scope tests.test_progress_contract tests.test_record_identity tests.test_http_contract tests.test_streaming_store tests.test_streaming_export tests.test_app_service tests.test_app_backend -v`
 
@@ -843,18 +854,18 @@ Run: `node --test desktop_app/layout_contract.test.js desktop_app/renderer/recor
 
 Expected: 全绿。如果失败，先定位是契约冲突、实现 bug，还是测试假设过期，不要糊里糊涂回滚。
 
-- [ ] **Step 3: 更新真实报告，不写“设计更优雅了”这种无效结论**
+- [x] **Step 3: 更新真实报告，不写“设计更优雅了”这种无效结论**
 
 在 [`docs/real_operation_test_report_2026-03-23.md`](/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/docs/real_operation_test_report_2026-03-23.md) 中只记录:
 - 哪些旧 finding 真关闭了
 - 关闭依据是什么测试
 - 如果还有 blocker，它属于任务语义、范围语义、对象身份，还是 fallback/cap
 
-- [ ] **Step 4: 收紧 `todo.md`**
+- [x] **Step 4: 收紧 `todo.md`**
 
 只保留真正阻断发布信任的项。删掉已经被契约回归覆盖的页面级噪音。
 
-- [ ] **Step 5: 回写本卡包状态**
+- [x] **Step 5: 回写本卡包状态**
 
 在本文件顶部或每张卡下方标记:
 - 是否完成

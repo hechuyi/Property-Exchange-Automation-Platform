@@ -10,10 +10,10 @@
 - `peap_postprocess/ppe_config/postprocess.yaml`
 
 2. Mapping templates:
-- `peap_postprocess/ppe_config/transferor_group_mapping_template.csv`
-- `peap_postprocess/ppe_config/transferor_type_mapping_template.csv`
-- `peap_postprocess/ppe_config/group_group_mapping_template.csv`
-- `peap_postprocess/ppe_config/group_type_mapping_template.csv`
+- `peap_postprocess/ppe_config/transferor_group_mapping.template.csv`
+- `peap_postprocess/ppe_config/transferor_type_mapping.template.csv`
+- `peap_postprocess/ppe_config/group_group_mapping.template.csv`
+- `peap_postprocess/ppe_config/group_type_mapping.template.csv`
 
 ## 2. Standard Run Flow
 
@@ -61,7 +61,7 @@ Each rule uses:
   "enabled": true,
   "priority": 50,
   "params": {
-    "group_type_mapping_file": "../ppe_config/group_type_mapping_template.csv"
+    "group_type_mapping_file": "../ppe_config/group_type_mapping.template.csv"
   }
 }
 ```
@@ -103,7 +103,7 @@ Priority order:
 
 ## 5. Mapping Table Filling
 
-## 5.1 transferor_group_mapping_template.csv
+## 5.1 transferor_group_mapping.template.csv
 
 Header: `transferor_name,group_name`
 
@@ -116,7 +116,7 @@ Transferor A,Group A
 Transferor B,Group A
 ```
 
-## 5.2 transferor_type_mapping_template.csv
+## 5.2 transferor_type_mapping.template.csv
 
 Header: `transferor_name,source_type,notes`
 
@@ -131,13 +131,13 @@ Transferor A,\u592e\u4f01,
 Transferor B,\u5e02\u5c5e,
 ```
 
-## 5.3 group_group_mapping_template.csv
+## 5.3 group_group_mapping.template.csv
 
 Header: `group_name,parent_group_name,notes`
 
 Used to normalize group names to parent groups.
 
-## 5.4 group_type_mapping_template.csv
+## 5.4 group_type_mapping.template.csv
 
 Header: `group_name,source_type,notes`
 

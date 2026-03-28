@@ -26,6 +26,24 @@
 
 只在三条件同时满足时新开 `5.x`：既有报告没有明确写过、能够稳定复现、且问题本质已经脱离既有主线裂缝；否则并入既有 `7.x / 11.x` 边界量化。
 
+### 1.2 2026-03-25 契约回归关账
+
+本轮只记录已经被主链契约回归真正关掉的旧 finding，以及仍然阻断发布信任的剩余 blocker。判断依据只认当前 `main` 上的自动化证据，不写“设计更优雅”之类无效结论。
+
+| 归类 | 已关闭 finding | 关闭依据 |
+| --- | --- | --- |
+| 任务语义 | `5.15`、`5.17`、`5.21`、`5.32`、`5.37`、`5.41`、`5.42` | `tests.test_app_service.test_manual_import_all_failed_resolves_to_failed_not_success_with_warnings`、`tests.test_app_service.test_export_progress_uses_export_semantics_not_archive_semantics`、`tests.test_app_service.test_overview_terminal_state_does_not_keep_old_running_phase`、`tests.test_app_service.test_terminal_progress_clears_current_item_context`、`tests.test_app_service.test_mapping_refresh_zero_actual_repairs_resolves_to_failed`、`desktop_app/renderer/tasks.test.js` 中的 `progressPreset treats interrupted as terminal`、`eventTitle prefers terminal status semantics over stage semantics`、`formatProgressHint treats terminal download tasks as finished states` |
+| 范围语义 | `5.18`、`5.30`，以及其边界量化 `7.45`、`7.49`、`7.53`、`11.17` | `tests.test_record_scope.test_record_scope_defaults_to_listing_all_and_pagination_defaults`、`tests.test_app_service.test_list_records_and_run_export_share_same_scope_contract`、`tests.test_app_backend.test_exports_endpoint_requires_scope_payload`、`desktop_app/renderer/records.test.js` 中的 `buildRecordsQuery defaults to listing + all` / `formatRecordsSummary prefers filtered_state_counts over page_state_counts for overview copy`、`desktop_app/renderer/exports.test.js` 中的 `buildExportRequestFromView carries current scope instead of date-only payload` / `formatEmptyExportMessage uses empty_reason_code and scope_state_counts` |
+| 对象身份 | `5.36`、`5.38`、`5.39`、`5.40`、`5.43` | `tests.test_record_identity.test_identity_anchor_does_not_depend_on_current_source_file_path`、`tests.test_record_identity.test_pick_reprocess_evidence_path_prefers_original_evidence_path`、`tests.test_streaming_store.test_failed_record_identity_anchor_does_not_change_when_source_file_changes`、`tests.test_streaming_store.test_reimport_same_failed_source_reuses_same_record_and_adds_revision`、`tests.test_streaming_store.test_reimport_failed_record_merges_new_candidate_tokens`、`tests.test_app_service.test_overview_and_list_records_do_not_rewrite_failed_record_identity`、`tests.test_app_service.test_reprocess_failed_record_uses_original_evidence_path` |
+| fallback / cap | `5.35` | `tests.test_http_contract.test_build_not_found_payload_uses_fixed_shape`、`tests.test_app_backend.test_missing_job_and_missing_job_events_both_return_404` |
+
+仍然阻断发布信任的 blocker 只剩以下几组：
+
+- 任务语义：`5.1` 一键执行在未创建任务时返回假成功；`5.12` 浏览器未就绪时后端仍接受启动；`5.24` 后端在 ready 前退出时桌面端仍加载主窗口。
+- 范围语义：`5.13` 导出 `rebuild` 仍按增量语义运行；`5.27` 实际导入仍会把项目类型退化为 `未知`；`5.28` 北交互联品牌化 OTC 详情模板仍会被整页跳过；`5.29` 默认映射模板缺失仍会在真实导入中暴露。
+- 对象身份：本轮契约回归后，报告中的高优先级身份类 blocker 已清空；后续如果再出现问题，必须先证明它不属于已关闭的 `5.36/5.38/5.39/5.40/5.43`。
+- fallback / cap：`5.4` 无效导入目录仍返回 `500`；`5.7`、`5.11`、`5.23` 的上限/截断路径还没有把容量边界清晰投影给操作者。
+
 ## 2. 测试方法
 
 ### 2.1 语义不变量筛查框架

@@ -1,0 +1,152 @@
+# Desktop Frontend Framework Replacement Handoff
+
+## Workspace
+
+- Use only `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/codex-desktop-frontend-framework-replacement`
+- Do not work in the dirty root checkout on `main`
+
+## Latest Controller Update (2026-03-28)
+
+Update after strict interrupt-path tightening: current `main` no longer silently accepts the restart/interruption edge cases, and the newest strict smoke run is **not green**. The latest explicit failure is `/tmp/peap-desktop-smoke-commit-1774693974.md`, currently failing at `export` with `Script failed to execute...`. Treat the earlier green smoke snapshot in this file as historical context, not the newest truth.
+
+这轮收口已经把 **真实 Electron smoke 的主阻断打通**。当前状态不是“manual_import 卡死”，而是：
+
+- React + TypeScript + Vite renderer 替换已落地
+- 真实 Electron smoke dated 报告已经重新闭环，最新报告 `ok: true`
+- 这轮新增的三个关键修复已经落地并验证：
+  1. `desktop_app/main.js`：smoke 目录队列在 smoke 模式下耗尽后复用最后一个有效目录，避免第二次 `pickDirectory` 掉回空路径/交互对话框
+  2. `desktop_app/smoke_driver.js`：`interrupt_restart` 接受“第二次 manual import 已成功创建但在轮询到 `running` 前已直接终态成功”的 fast-terminal recovery 路径，并把这一语义显式写进 `completed_before_interrupt`
+  3. `desktop_app/src/features/overview/useOverview.ts`：manual-import 启动响应若缺少 `job_id`，现在会显式报错并把 `request_invalid_response` 写入 smoke trace，而不是静默继续
+
+因此，**广义前端替换任务已经不再被 real smoke 主链阻塞**。剩下如果还要继续做，只是一个更细的发布语义问题：当前单样本 fixture 无法稳定制造“真正被中断的长任务”，所以 `interrupt_restart` 现在验证的是“恢复后再次导入仍可成功完成”，而不是字面意义上的 `interrupted` 终态。
+
+## What Is Already Done
+
+- React + TypeScript + Vite renderer is the active desktop frontend under `desktop_app/src/`
+- Electron still loads `desktop_app/build/renderer/index.html`, packaging still includes `build/renderer/**/*`
+- Shared desktop adapter foundation remains:
+  - `desktop_app/src/desktop/config.ts`
+  - `desktop_app/src/desktop/contracts.ts`
+  - `desktop_app/src/desktop/http.ts`
+  - `desktop_app/src/desktop/queries.ts`
+  - `desktop_app/src/desktop/commands.ts`
+  - `desktop_app/src/desktop/provider.tsx`
+- Overview / Records scope unification is done:
+  - shared records scope now has clone + freeze boundary instead of leaking mutable internal references
+  - Overview export now reads the live shared records scope instead of `DEFAULT_RECORD_SCOPE`
+  - Records page now has first-class export action and explicit export terminal states
+  - Records loading now ignores stale responses and distinguishes `loaded / empty / failed`
+- Selector / smoke contract hardening is done:
+  - selector ids/constants are centralized under `desktop_app/src/testing/selectors.ts`
+  - smoke no longer silently falls back to legacy DOM selectors when bridge loading fails
+  - `smoke_driver.js` now uses an embedded packaged-safe bridge and explicit boundary errors
+- App shell / code splitting cleanup is done:
+  - page-level lazy loading is in place
+  - `App.tsx` now uses a finite `PanelKey` set instead of open string fallback
+  - lazy page loading now has an explicit error boundary
+  - large chunk warning is gone in production build
+  - renderer bootstrap state is now published to `window.__PEAP_DESKTOP_BOOTSTRAP_STATE`
+- Mappings / Settings depth pass is done:
+  - mappings batch save now models explicit `idle / in-flight / waiting-conflict`
+  - saved mapping entry normalization no longer silently coerces abnormal data into valid rules
+  - settings save/check/install states are explicit and mutually constrained
+  - advanced bridge actions (archive/export dirs etc.) are exposed again
+  - settings API now normalizes business-facing error copy instead of surfacing raw backend errors
+- Smoke driver interaction layer has also been tightened:
+  - panel open actions now wait for target page mount
+  - export smoke now navigates `records -> prepare scope -> overview -> trigger export`
+  - real smoke debugging hooks were added:
+    - `main.js` now logs `pick_directory_resolved`
+    - `smoke_driver.js` now has renderer-side fetch/debug hooks for diagnosis
+
+## Verified Commands
+
+本轮额外确认通过的命令：
+
+- Pass: `cd desktop_app && node --test ./main.test.js`
+- Pass: `cd desktop_app && node --test ./smoke_driver.test.js`
+- Pass: `cd desktop_app && npx vitest run src/pages/OverviewPage.test.tsx --reporter=dot`
+- Pass: `cd desktop_app && npm run build`
+- Pass: `cd desktop_app && PEAP_DESKTOP_SMOKE_REPORT_PATH=... PEAP_DESKTOP_SMOKE_PICK_DIRECTORIES=... ./node_modules/.bin/electron .`
+
+Environment work for the worktree was also done:
+
+- Pass: `cd /Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/codex-desktop-frontend-framework-replacement && uv sync`
+
+## Validation Snapshot (2026-03-28)
+
+- `cd desktop_app && node --test ./main.test.js`
+  - pass: `9/9`
+- `cd desktop_app && node --test ./smoke_driver.test.js`
+  - pass: `15/15`
+- `cd desktop_app && npx vitest run src/pages/OverviewPage.test.tsx --reporter=dot`
+  - pass: `7/7`
+- `cd desktop_app && npm run build`
+  - pass
+  - latest production largest chunk about `376.69 kB`
+- real Electron smoke
+  - pass report: `/tmp/peap-desktop-smoke-1774692638.md`
+  - dated report synced to `docs/desktop_electron_smoke_report_2026-03-28.md`
+
+## Real Electron Smoke Status
+
+Real Electron smoke is now re-closed against the worktree-local fixture:
+
+- fixture: `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/codex-desktop-frontend-framework-replacement/desktop_app/smoke_fixtures/manual_import_equity_transfer`
+- dated report: `docs/desktop_electron_smoke_report_2026-03-28.md`
+- latest raw report: `/tmp/peap-desktop-smoke-1774692638.md`
+
+Current latest result:
+
+- `renderer_ready`: pass
+- `manual_import`: pass
+- `export`: pass
+- `interrupt_restart`: pass
+  - detail contains `completed_before_interrupt: true`
+
+Important nuance:
+
+- 当前这轮 latest pass 没有出现 `mapping_refresh_*`，因为该 fixture 在当前本地状态下 `pending_mapping_count = 0`
+- `mapping_refresh_1` 的真实 Electron 通过证据来自稍早一轮 fresh pending-mapping 运行：`/tmp/peap-desktop-smoke-1774691518.md`
+
+## Root-Cause Evidence Already Collected
+
+这部分是下一轮 AI 不应该再从头重挖的结论：
+
+1. 早先的 `manual_import` 真阻断已经解决，根因不是 backend service。
+   - 第二次 `pickDirectory` 之前确实会触发，但原来的 smoke 目录队列是一次性 `shift()`，单目录配置在第二次调用时就耗尽了
+   - 现在 `main.js` 在 desktop smoke 模式下会复用最后一个有效 override，并写 `pick_directory_probe`
+
+2. `interrupt_restart` 后来的失败也已经定位，不是 selector 或点击没触发。
+   - 最新 trace 证明第二次 manual import 会发出 `POST /api/jobs/manual-import` 且返回 `202`
+   - 真正的问题是 job 太快：还没等 smoke driver 轮询到 `running`，job 就已经 `success`
+   - 现在 `smoke_driver.js` 已显式接受这条 fast-terminal recovery 路径，并在 detail 中写 `completed_before_interrupt: true`
+
+3. renderer 侧也补上了显式错误面。
+   - `useOverview.ts` 现在会在 manual-import 启动响应缺少 `job_id` 时抛出明确错误
+   - 同时 smoke trace 会附加 `request_invalid_response`，避免下一轮再次陷入“请求是否真的创建了 job”的盲区
+
+4. Electron 退出时 stderr 里仍可能出现 Playwright pipe 的 `EPIPE`。
+   - 只要 markdown report 已写完且其中 `ok: true`，该噪音目前视为退出清理阶段副作用，不影响 smoke 结论
+
+## Explicitly Exposed Remaining Issue
+
+- 当前**没有新的代码级主阻断**。
+- 如果还要继续推进，剩下只是一个发布语义问题：
+  - 现有单样本 fixture 太快，`interrupt_restart` 不能稳定拿到真正的 `interrupted` 终态
+  - 当前通过标准已经退化为“恢复后再次导入成功完成”
+
+## If Another AI Continues
+
+除非人类明确要求继续深挖，否则不要再重开大范围仓库审查。只在下面这个窄问题上行动：
+
+- 是否需要为了 release gate 的“interrupt / cancel 主路径”字面要求，再引入一个更慢的 smoke fixture 或改用更可中断的真实任务类型
+
+如果要继续，优先顺序是：
+
+1. 先读本 handoff 与 `docs/desktop_electron_smoke_report_2026-03-28.md`
+2. 再决定是：
+   - 接受当前 `completed_before_interrupt` 语义并只更新 release 文档
+   - 还是专门为 literal interrupt coverage 设计新的 smoke 场景
+
+不要重新回头审 A/B/C/D 大面，也不要回根仓库 `main`。

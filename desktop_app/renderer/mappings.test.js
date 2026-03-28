@@ -283,7 +283,8 @@ test("runBatchMappingUpsertFlow summarizes saves conflicts and surfaced failures
   assert.equal(result.refreshJobs.length, 2);
   assert.deepEqual(Array.from(result.savedRecordIds), ["rec-1", "rec-2"]);
   assert.match(result.failureMessages[0], /失败公司/);
-  assert.match(result.failureMessages[0], /preview endpoint failed/);
+  assert.match(result.failureMessages[0], /规则保存失败|保存失败/);
+  assert.doesNotMatch(result.failureMessages[0], /preview endpoint failed/);
   assert.deepEqual(calls, [
     [
       "preview",
@@ -348,6 +349,24 @@ test("runBatchMappingUpsertFlow summarizes saves conflicts and surfaced failures
       },
     ],
   ]);
+});
+
+test("formatMappingConflictSummary uses affected capacity fields when present", async () => {
+  const { formatMappingConflictSummary } = await loadMappingsModule();
+  const text = formatMappingConflictSummary({
+    target_field: "source_type",
+    source_name: "华润",
+    target_value: "央企",
+    existing_entry: { source_type: "地方国企" },
+    affected_count: 12,
+    affected_returned_count: 12,
+    affected_total_count: 30,
+    truncated: true,
+    affected_pending_count: 7,
+  });
+
+  assert.match(text, /回刷 12 条记录/);
+  assert.match(text, /只显示前 12 条记录，仍有剩余 18 条/);
 });
 
 test("runBatchMappingUpsertFlow marks duplicate drafts with the same rule as resolved together", async () => {
@@ -439,4 +458,34 @@ test("isMappingInteractionActive only treats mapping form and drafts as active e
     }),
     false,
   );
+});
+
+test("runBatchMappingUpsertFlow surfaces business-facing failure copy", async () => {
+  const { runBatchMappingUpsertFlow } = await loadMappingsModule();
+  const result = await runBatchMappingUpsertFlow({
+    drafts: [
+      {
+        recordId: "rec-x",
+        ruleKind: "transferor_group",
+        sourceName: "失败公司",
+        targetValue: "华润集团",
+        notes: "",
+      },
+    ],
+    mappingRuleConfig: MAPPING_RULE_CONFIG,
+    previewMapping: async () => ({
+      conflict: false,
+      mode: "create",
+      affected_count: 1,
+      affected_pending_count: 0,
+    }),
+    saveMapping: async () => {
+      throw new Error("preview endpoint failed");
+    },
+  });
+
+  assert.equal(result.failedCount, 1);
+  assert.match(result.failureMessages[0], /失败公司/);
+  assert.match(result.failureMessages[0], /保存失败|重处理失败|业务处理失败/);
+  assert.doesNotMatch(result.failureMessages[0], /preview endpoint failed/);
 });

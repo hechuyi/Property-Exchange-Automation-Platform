@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from desktop_backend.app_config import AppConfig
-from desktop_backend.app_service import AppService
+from desktop_backend.app_service import AppService, AppUserFacingError
+from desktop_backend.product_errors import UserInputError
 from peap.streaming_models import IngestedRecord, ItemProgressEvent, PostProcessFinding
 
 
@@ -227,12 +228,62 @@ class AppServiceTest(unittest.TestCase):
         self.assertFalse(bool(captured["with_refresh"]))
         self.assertTrue(str(captured["postprocess_config"]).endswith("postprocess_external_template.json"))
 
+    def test_launch_one_click_runs_pipeline_with_configured_playwright_cache_env(self) -> None:
+        captured: dict[str, object] = {}
+        previous_pw = os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+        previous_peap = os.environ.pop("PEAP_PLAYWRIGHT_BROWSERS_PATH", None)
+        self.addCleanup(lambda: os.environ.__setitem__("PLAYWRIGHT_BROWSERS_PATH", previous_pw) if previous_pw is not None else os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None))
+        self.addCleanup(lambda: os.environ.__setitem__("PEAP_PLAYWRIGHT_BROWSERS_PATH", previous_peap) if previous_peap is not None else os.environ.pop("PEAP_PLAYWRIGHT_BROWSERS_PATH", None))
+
+        def fake_run_streaming_daily_pipeline(
+            args,
+            *,
+            config_obj,
+            emit_console,
+            job_created_callback,
+            job_type,
+            archive_root,
+            export_root,
+            auto_export,
+        ):
+            captured["playwright"] = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+            captured["peap"] = os.environ.get("PEAP_PLAYWRIGHT_BROWSERS_PATH", "")
+            job_created_callback("job-cache-env", self.service.db_path)
+            return None
+
+        with patch("peap.streaming_daily_pipeline.run_streaming_daily_pipeline", side_effect=fake_run_streaming_daily_pipeline):
+            payload = self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
+
+        self.assertEqual(payload["job_id"], "job-cache-env")
+        self.assertEqual(captured["playwright"], self.config.PLAYWRIGHT_BROWSERS_PATH)
+        self.assertEqual(captured["peap"], self.config.PLAYWRIGHT_BROWSERS_PATH)
+
+    def test_service_init_syncs_process_playwright_cache_env_from_config(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PEAP_APP_HOME": self.app_home,
+                "PEAP_DOCUMENTS_HOME": self.docs_home,
+            },
+            clear=True,
+        ):
+            config = AppConfig.from_env(project_root=self.temp_dir.name)
+            os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+            os.environ.pop("PEAP_PLAYWRIGHT_BROWSERS_PATH", None)
+
+            AppService(config_obj=config, runtime_dependencies=FakeRuntimeDependencies())
+
+            self.assertEqual(os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), config.PLAYWRIGHT_BROWSERS_PATH)
+            self.assertEqual(os.environ.get("PEAP_PLAYWRIGHT_BROWSERS_PATH"), config.PLAYWRIGHT_BROWSERS_PATH)
+
     def test_launch_one_click_rejects_when_mutating_job_running(self) -> None:
         self.service._reserve_mutating_job("manual_import")
         self.addCleanup(self.service._release_mutating_job, "manual_import")
 
-        with self.assertRaisesRegex(RuntimeError, "已有执行中的任务：手动导入解析"):
+        with self.assertRaises(AppUserFacingError) as exc_info:
             self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
+        self.assertEqual(exc_info.exception.http_status, 409)
+        self.assertEqual(exc_info.exception.error_code, "mutating_job_in_progress")
 
     def test_launch_one_click_requires_real_job_id_before_success_return(self) -> None:
         def fake_run_streaming_daily_pipeline(
@@ -252,11 +303,40 @@ class AppServiceTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "job_id"):
                 self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
 
+    def test_launch_one_click_rejects_when_browser_runtime_not_ready(self) -> None:
+        service = AppService(
+            config_obj=self.config,
+            runtime_dependencies=FakeMissingRuntimeDependencies(),
+        )
+
+        with self.assertRaises(AppUserFacingError) as captured:
+            service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
+        self.assertEqual(captured.exception.error_code, "browser_runtime_missing")
+
+    def test_launch_one_click_rejects_invalid_start_date(self) -> None:
+        with self.assertRaisesRegex(UserInputError, "invalid start_date"):
+            self.service.launch_one_click({"start_date": "2026/03/22", "end_date": "2026-03-22"})
+
+    def test_launch_one_click_rejects_invalid_concurrency(self) -> None:
+        with self.assertRaisesRegex(UserInputError, "invalid concurrency"):
+            self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22", "concurrency": "abc"})
+
+    def test_launch_one_click_rejects_reversed_date_range(self) -> None:
+        with self.assertRaisesRegex(UserInputError, "start_date must be on or before end_date"):
+            self.service.launch_one_click({"start_date": "2026-03-23", "end_date": "2026-03-22"})
+
     def test_default_advanced_settings_use_bundled_postprocess_config(self) -> None:
         advanced = self.service.get_advanced_settings()
 
         self.assertTrue(advanced["postprocess_config"].endswith("postprocess_external_template.json"))
         self.assertTrue(os.path.isfile(advanced["postprocess_config"]))
+
+    def test_health_and_overview_expose_product_profile(self) -> None:
+        health = self.service.health()
+        overview = self.service.overview()
+
+        self.assertEqual(health["product_profile"]["profile_id"], "desktop_listing")
+        self.assertEqual(overview["product_profile"]["profile_id"], "desktop_listing")
 
     def test_readiness_does_not_query_runtime_dependencies(self) -> None:
         runtime_dependencies = CountingRuntimeDependencies()
@@ -400,6 +480,173 @@ class AppServiceTest(unittest.TestCase):
 
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["project_code"], "G32025SH1000194-4")
+        self.assertEqual(pending[0]["recommended_rule"]["rule_kind"], "group_type")
+        self.assertEqual(pending[0]["recommended_rule"]["source_name"], "上海电气集团")
+
+    def test_list_pending_mappings_exposes_conflict_candidates(self) -> None:
+        self._insert_record_with_mapping_source(
+            record_id="rec-map-conflict",
+            state="mapping_conflict",
+            transferor="中铁二院工程集团有限责任公司",
+            group_name="中铁",
+        )
+        self.service.store.upsert_mapping_entry(
+            company_name="中铁二院工程集团有限责任公司",
+            source_type="科研院所",
+            metadata={"match_field": "transferor", "target_field": "source_type"},
+        )
+        self.service.store.upsert_mapping_entry(
+            company_name="中铁",
+            source_type="央企",
+            metadata={"match_field": "group", "target_field": "source_type"},
+        )
+
+        pending = self.service.list_pending_mappings()
+
+        self.assertEqual(pending[0]["state"], "mapping_conflict")
+        self.assertTrue(pending[0]["has_conflict"])
+        self.assertEqual(pending[0]["gap_codes"], ["has_conflict"])
+        self.assertGreaterEqual(len(pending[0]["candidate_resolutions"]), 2)
+
+    def test_list_pending_mappings_exposes_non_mapping_blocker_when_record_state_still_pending(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "project-type-unknown.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>unknown type</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-non-mapping-blocker",
+                revision_hash="hash-non-mapping-blocker",
+                project_code="GA2026BJ1004440",
+                project_name="报废设备",
+                project_type="实物资产",
+                exchange="beijing",
+                listing_date="2026-03-26",
+                state="pending_mapping",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={
+                    "项目编号": "GA2026BJ1004440",
+                    "项目名称": "报废设备",
+                    "项目类型": "实物资产",
+                    "转让方": "测试主体",
+                    "隶属集团": "测试集团",
+                    "类型": "央企",
+                },
+                postprocess_payload={
+                    "项目编号": "GA2026BJ1004440",
+                    "项目名称": "报废设备",
+                    "项目类型": "未知",
+                    "转让方": "测试主体",
+                    "隶属集团": "测试集团",
+                    "类型": "央企",
+                },
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="项目类型未识别，暂不能进入导出",
+                        evidence={"project_type": "未知"},
+                    ),
+                    PostProcessFinding(
+                        severity="info",
+                        type="mapping_applied",
+                        message="mapping applied for company=测试主体",
+                        evidence={"company_name": "测试主体"},
+                    ),
+                ],
+            )
+        )
+
+        pending = self.service.list_pending_mappings()
+
+        self.assertEqual(pending[0]["gap_codes"], ["non_mapping_blocker"])
+        self.assertEqual(pending[0]["blocking_reason_code"], "project_type_unknown")
+        self.assertEqual(pending[0]["status_detail"], "项目类型未识别，暂不能进入导出")
+
+    def test_list_pending_mappings_humanizes_missing_project_type_template_error(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "missing-template.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>missing template</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-missing-template",
+                revision_hash="hash-missing-template",
+                project_code="CODE-MISSING-TEMPLATE",
+                project_name="模板缺失项目",
+                project_type="股权转让",
+                exchange="chongqing",
+                listing_date="2026-03-26",
+                state="pending_mapping",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "CODE-MISSING-TEMPLATE", "项目名称": "模板缺失项目", "转让方": "测试主体", "类型": "央企"},
+                postprocess_payload={"项目编号": "CODE-MISSING-TEMPLATE", "项目名称": "模板缺失项目", "转让方": "测试主体", "隶属集团": "测试集团", "类型": "央企"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="entity_type_mapping_file not found: ../ppe_config/group_type_mapping_template.csv",
+                        evidence={},
+                    )
+                ],
+            )
+        )
+
+        pending = self.service.list_pending_mappings()
+        item = next(entry for entry in pending if entry["record_id"] == "rec-missing-template")
+
+        self.assertEqual(item["blocking_reason_code"], "project_type_mapping_template_missing")
+        self.assertEqual(item["status_detail"], "项目类型映射模板缺失，当前记录无法完成类型归属")
+
+    def test_list_pending_mappings_humanizes_source_type_table_error_from_real_record_shape(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "missing-template-real-shape.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>missing template real shape</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-missing-template-real-shape",
+                revision_hash="hash-missing-template-real-shape",
+                project_code="CODE-MISSING-TEMPLATE-REAL",
+                project_name="模板缺失项目-真实形态",
+                project_type="股权转让",
+                exchange="chongqing",
+                listing_date="2026-03-26",
+                state="pending_mapping",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "CODE-MISSING-TEMPLATE-REAL", "项目名称": "模板缺失项目-真实形态", "转让方": "测试主体", "类型": "央企"},
+                postprocess_payload={"项目编号": "CODE-MISSING-TEMPLATE-REAL", "项目名称": "模板缺失项目-真实形态", "转让方": "测试主体", "隶属集团": "测试集团", "类型": "央企"},
+                findings=[
+                    PostProcessFinding(
+                        severity="info",
+                        type="mapping_applied",
+                        message="mapping applied for company=测试主体",
+                        evidence={"company_name": "测试主体"},
+                    ),
+                    PostProcessFinding(
+                        severity="warn",
+                        type="source_type_table_error",
+                        message="entity_type_mapping_file not found: ../ppe_config/group_type_mapping_template.csv",
+                        evidence={},
+                    ),
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="项目类型未识别，暂不能进入导出",
+                        evidence={"project_type": "未知"},
+                    ),
+                ],
+            )
+        )
+
+        pending = self.service.list_pending_mappings()
+        item = next(entry for entry in pending if entry["record_id"] == "rec-missing-template-real-shape")
+
+        self.assertEqual(item["blocking_reason_code"], "project_type_mapping_template_missing")
+        self.assertEqual(item["status_detail"], "项目类型映射模板缺失，当前记录无法完成类型归属")
 
     def test_list_records_supports_keyword_and_date_filters_with_summary(self) -> None:
         self._insert_ready_record(record_id="rec-filter-a", project_code="G32025SH1000194")
@@ -447,6 +694,46 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["visible_count"], 1)
         self.assertEqual(payload["summary"]["filtered_state_counts"]["pending_mapping"], 1)
         self.assertEqual(payload["summary"]["page_state_counts"]["pending_mapping"], 1)
+
+    def test_list_records_pending_mapping_prefers_blocking_warning_over_mapping_applied_info(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "pending-with-info.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>pending with info</body></html>")
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-pending-info",
+                revision_hash="hash-pending-info",
+                project_code="CODE-PENDING-INFO",
+                project_name="待处理项目",
+                project_type="股权转让",
+                exchange="beijing",
+                listing_date="2026-03-26",
+                state="pending_mapping",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "CODE-PENDING-INFO", "项目名称": "待处理项目"},
+                postprocess_payload={"项目编号": "CODE-PENDING-INFO", "项目名称": "待处理项目"},
+                findings=[
+                    PostProcessFinding(
+                        severity="info",
+                        type="mapping_applied",
+                        message="mapping applied for company=测试主体",
+                        evidence={},
+                    ),
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="项目类型未识别，暂不能进入导出",
+                        evidence={},
+                    ),
+                ],
+            )
+        )
+
+        payload = self.service.list_records({"state": "all", "project_type": "all", "page": 1, "page_size": 50})
+        row = next(item for item in payload["rows"] if item["record_id"] == "rec-pending-info")
+        self.assertIn("暂不能进入导出", row["status_detail"])
+        self.assertNotIn("mapping applied", row["status_detail"])
 
     def test_list_records_returns_pagination_metadata(self) -> None:
         self._insert_ready_record(record_id="rec-page-1", project_code="G32025SH1000101")
@@ -569,6 +856,36 @@ class AppServiceTest(unittest.TestCase):
         self.assertTrue(bool(overwrite_preview["conflict"]))
         self.assertEqual(overwrite_preview["existing_entry"]["source_type"], "央企")
 
+    def test_resolve_mapping_conflict_uses_selected_resolution_as_rule_save(self) -> None:
+        with patch.object(self.service, "upsert_mapping", return_value={"job_id": "job-1", "affected_count": 2}) as mocked:
+            payload = self.service.resolve_mapping_conflict(
+                {
+                    "record_id": "rec-1",
+                    "selected_resolution": {
+                        "rule_kind": "group_type",
+                        "match_field": "group",
+                        "target_field": "source_type",
+                        "source_name": "中铁",
+                        "target_value": "央企",
+                    },
+                }
+            )
+
+        mocked.assert_called_once_with(
+            {
+                "source_name": "中铁",
+                "match_field": "group",
+                "target_field": "source_type",
+                "target_value": "央企",
+                "notes": "",
+                "authoritative": True,
+                "resolution_record_id": "rec-1",
+                "resolution_source": "mapping_conflict",
+            }
+        )
+        self.assertEqual(payload["record_id"], "rec-1")
+        self.assertEqual(payload["job_id"], "job-1")
+
     def test_preview_mapping_upsert_rejects_blank_or_invalid_rule_payload(self) -> None:
         with self.assertRaisesRegex(ValueError, "source_name is required"):
             self.service.preview_mapping_upsert(
@@ -606,6 +923,46 @@ class AppServiceTest(unittest.TestCase):
                     "target_value": "央企",
                 }
             )
+
+    def test_preview_mapping_upsert_does_not_fallback_to_all_records_when_source_matches_none(self) -> None:
+        self._insert_ready_record(record_id="rec-preview-a", project_code="CODE-A")
+        self._insert_record_with_mapping_source(
+            record_id="rec-preview-b",
+            state="pending_mapping",
+            transferor="上海电气集团恒联企业发展有限公司",
+            group_name="上海电气集团",
+        )
+
+        preview = self.service.preview_mapping_upsert(
+            {
+                "source_name": "完全不存在的主体",
+                "match_field": "transferor",
+                "target_field": "group_name",
+                "target_value": "虚拟集团",
+            }
+        )
+
+        self.assertEqual(preview["affected_count"], 0)
+        self.assertEqual(preview["affected_pending_count"], 0)
+        self.assertTrue(preview["scope_miss"])
+        self.assertEqual(preview["scope_miss_reason_code"], "mapping_source_not_found")
+
+    def test_upsert_mapping_returns_explicit_scope_miss_without_launching_refresh(self) -> None:
+        self._insert_ready_record(record_id="rec-upsert-a", project_code="CODE-UPSERT-A")
+
+        payload = self.service.upsert_mapping(
+            {
+                "source_name": "完全不存在的主体",
+                "match_field": "transferor",
+                "target_field": "group_name",
+                "target_value": "虚拟集团",
+            }
+        )
+
+        self.assertEqual(payload["affected_count"], 0)
+        self.assertEqual(payload["job_id"], "")
+        self.assertTrue(payload["scope_miss"])
+        self.assertEqual(payload["scope_miss_reason_code"], "mapping_source_not_found")
 
     def test_launch_pending_mapping_refresh_reprocesses_all_current_pending_records(self) -> None:
         self._insert_record_with_mapping_source(
@@ -648,14 +1005,16 @@ class AppServiceTest(unittest.TestCase):
         self.service._reserve_mutating_job("manual_import")
         self.addCleanup(self.service._release_mutating_job, "manual_import")
 
-        with self.assertRaisesRegex(RuntimeError, "已有执行中的任务：手动导入解析"):
+        with self.assertRaises(AppUserFacingError) as exc_info:
             self.service.launch_pending_mapping_refresh({})
+        self.assertEqual(exc_info.exception.http_status, 409)
+        self.assertEqual(exc_info.exception.error_code, "mutating_job_in_progress")
 
     def test_upsert_mapping_rejects_when_mutating_job_running(self) -> None:
         self.service._reserve_mutating_job("manual_import")
         self.addCleanup(self.service._release_mutating_job, "manual_import")
 
-        with self.assertRaisesRegex(RuntimeError, "已有执行中的任务：手动导入解析"):
+        with self.assertRaises(AppUserFacingError) as exc_info:
             self.service.upsert_mapping(
                 {
                     "source_name": "华润",
@@ -664,6 +1023,8 @@ class AppServiceTest(unittest.TestCase):
                     "target_value": "央企",
                 }
             )
+        self.assertEqual(exc_info.exception.http_status, 409)
+        self.assertEqual(exc_info.exception.error_code, "mutating_job_in_progress")
 
     def test_reprocess_record_rejects_when_mutating_job_running(self) -> None:
         self._insert_record_with_mapping_source(
@@ -675,8 +1036,10 @@ class AppServiceTest(unittest.TestCase):
         self.service._reserve_mutating_job("manual_import")
         self.addCleanup(self.service._release_mutating_job, "manual_import")
 
-        with self.assertRaisesRegex(RuntimeError, "已有执行中的任务：手动导入解析"):
+        with self.assertRaises(AppUserFacingError) as exc_info:
             self.service.reprocess_record("rec-reprocess-lock")
+        self.assertEqual(exc_info.exception.http_status, 409)
+        self.assertEqual(exc_info.exception.error_code, "mutating_job_in_progress")
 
     def test_launch_manual_import_starts_job_and_discovers_html_variants(self) -> None:
         import_root = os.path.join(self.temp_dir.name, "manual_import")
@@ -710,6 +1073,19 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["discovered_count"], 4)
         self.assertCountEqual(discovered, ["a.html", "b.htm", "c.mhtml", os.path.join("nested", "d.html")])
 
+    def test_launch_manual_import_rejects_when_mutating_job_running(self) -> None:
+        import_root = os.path.join(self.temp_dir.name, "manual_import_conflict")
+        os.makedirs(import_root, exist_ok=True)
+        self.service._reserve_mutating_job("one_click")
+        self.addCleanup(self.service._release_mutating_job, "one_click")
+
+        with self.assertRaises(AppUserFacingError) as exc_info:
+            self.service.launch_manual_import({"input_dir": import_root})
+
+        self.assertEqual(exc_info.exception.http_status, 409)
+        self.assertEqual(exc_info.exception.error_code, "mutating_job_in_progress")
+        self.assertEqual(exc_info.exception.details["active_job_type"], "one_click")
+
     def test_manual_import_all_failed_resolves_to_failed_not_success_with_warnings(self) -> None:
         import_root = os.path.join(self.temp_dir.name, "manual_import_failed")
         os.makedirs(import_root, exist_ok=True)
@@ -728,6 +1104,121 @@ class AppServiceTest(unittest.TestCase):
         job = self._wait_for_job_status(str(payload["job_id"]))
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["summary"]["failed_count"], 1)
+
+    def test_manual_import_failed_event_exposes_error_message(self) -> None:
+        import_root = os.path.join(self.temp_dir.name, "manual_import_failed_message")
+        os.makedirs(import_root, exist_ok=True)
+        source_file = os.path.join(import_root, "broken.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        job_id = self.service.store.create_job(
+            "manual_import",
+            metadata={"input_dir": import_root, "discovered_count": 1},
+        )
+        with patch.object(
+            self.service,
+            "_ingest_manual_import_file",
+            return_value={
+                "state": "parse_failed",
+                "record_id": "rec-failed",
+                "project_code": "CODE-FAILED",
+                "last_error_message": "bs4 is missing",
+            },
+            create=True,
+        ):
+            self.service._run_manual_import_job(job_id=job_id, files=[source_file])
+
+        job = self._wait_for_job_status(str(job_id))
+        self.assertEqual(job["status"], "failed")
+        events = self.service.get_job_events(str(job_id), limit=20)
+        terminal = next(event for event in events if event["status"] == "parse_failed")
+        self.assertEqual(terminal["error_message"], "bs4 is missing")
+
+    def test_manual_import_pending_mapping_resolves_to_success_with_warnings(self) -> None:
+        import_root = os.path.join(self.temp_dir.name, "manual_import_pending")
+        os.makedirs(import_root, exist_ok=True)
+        source_file = os.path.join(import_root, "pending.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        job_id = self.service.store.create_job(
+            "manual_import",
+            metadata={"input_dir": import_root, "discovered_count": 1},
+        )
+        with patch.object(
+            self.service,
+            "_ingest_manual_import_file",
+            return_value={"state": "pending_mapping", "record_id": "rec-pending", "project_code": "CODE-PENDING"},
+            create=True,
+        ):
+            self.service._run_manual_import_job(job_id=job_id, files=[source_file])
+
+        job = self._wait_for_job_status(job_id)
+        self.assertEqual(job["status"], "success_with_warnings")
+        self.assertEqual(job["summary"]["pending_mapping_count"], 1)
+        self.assertEqual(job["summary"]["failed_count"], 0)
+
+    def test_manual_import_smoke_delay_applies_only_to_marked_fixture_paths(self) -> None:
+        source_dir = os.path.join(self.temp_dir.name, "manual_import_smoke_delay_equity_transfer")
+        os.makedirs(source_dir, exist_ok=True)
+        source_file = os.path.join(source_dir, "pending.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        job_id = self.service.store.create_job(
+            "manual_import",
+            metadata={"input_dir": source_dir, "discovered_count": 1},
+        )
+        with patch.dict(os.environ, {"PEAP_SMOKE_MANUAL_IMPORT_DELAY_MS": "25"}, clear=False):
+            with patch("desktop_backend.app_service.time.sleep") as sleep_mock:
+                with patch.object(
+                    self.service,
+                    "_ingest_manual_import_file",
+                    return_value={"state": "pending_mapping", "record_id": "rec-pending", "project_code": "CODE-PENDING"},
+                    create=True,
+                ):
+                    self.service._run_manual_import_job(job_id=job_id, files=[source_file])
+
+        sleep_mock.assert_any_call(0.025)
+
+    def test_manual_import_does_not_override_interrupted_terminal_status(self) -> None:
+        import_root = os.path.join(self.temp_dir.name, "manual_import_interrupted")
+        os.makedirs(import_root, exist_ok=True)
+        source_file = os.path.join(import_root, "ready.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        job_id = self.service.store.create_job(
+            "manual_import",
+            metadata={"input_dir": import_root, "discovered_count": 1},
+        )
+        original_update_job_counts = self.service.store.update_job_counts
+        interrupted = False
+
+        def update_job_counts_and_interrupt(*args, **kwargs):
+            nonlocal interrupted
+            original_update_job_counts(*args, **kwargs)
+            if interrupted:
+                return
+            interrupted = True
+            self.service.store.interrupt_running_jobs(reason="desktop backend restarted before task completed")
+
+        with patch.object(
+            self.service.store,
+            "update_job_counts",
+            side_effect=update_job_counts_and_interrupt,
+        ):
+            with patch.object(
+                self.service,
+                "_ingest_manual_import_file",
+                return_value={"state": "ready", "record_id": "rec-ready", "project_code": "CODE-READY"},
+                create=True,
+            ):
+                self.service._run_manual_import_job(job_id=job_id, files=[source_file])
+
+        job = self.service.get_job(job_id)
+        self.assertEqual(job["status"], "interrupted")
 
     def test_manual_import_uses_effective_postprocess_rules_config(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "manual-import.html")
@@ -1666,7 +2157,7 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(captured["pending_records"][0]["record_id"], "rec-launch-legacy-normalize")
         self.assertEqual(captured["ready_records"], [])
 
-    def test_mapping_refresh_zero_actual_repairs_resolves_to_failed(self) -> None:
+    def test_mapping_refresh_zero_actual_repairs_resolves_to_success_with_warnings(self) -> None:
         self._insert_record_with_mapping_source(
             record_id="rec-zero-repair",
             state="pending_mapping",
@@ -1682,8 +2173,9 @@ class AppServiceTest(unittest.TestCase):
             payload = self.service.launch_pending_mapping_refresh({})
 
         job = self._wait_for_job_status(str(payload["job_id"]))
-        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["status"], "success_with_warnings")
         self.assertEqual(job["summary"]["pending_mapping_count"], 1)
+        self.assertEqual(job["summary"]["failed_count"], 0)
 
     def test_run_export_reports_pending_mapping_blockers_when_no_ready_rows(self) -> None:
         self.service.store.upsert_record(

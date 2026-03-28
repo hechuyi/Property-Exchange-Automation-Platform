@@ -197,7 +197,9 @@ def _rewrite_archived_asset_references(*, target_file: str, source_file: str) ->
 
 def classify_record_state(findings: Iterable[PostProcessFinding], *, had_conflict: bool = False) -> RecordState:
     finding_types = {str(item.type) for item in findings}
-    if {"mapping_missing", "mapping_ambiguous", "mapping_conflict", "project_type_unknown"} & finding_types:
+    if "mapping_conflict" in finding_types:
+        return "mapping_conflict"
+    if {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"} & finding_types:
         return "pending_mapping"
     if had_conflict:
         return "conflict"
@@ -312,6 +314,8 @@ class StreamingIngestRunner:
             if project_id and not str(postprocess_payload.get("project_id") or "").strip():
                 postprocess_payload["project_id"] = project_id
             project_type = _resolve_project_type_label(
+                postprocess_payload.get("项目类型"),
+                parser_payload.get("项目类型"),
                 item.extra.get("project_type"),
                 item.extra.get("project_type_label"),
                 postprocess_payload.get("项目类型"),
@@ -345,9 +349,10 @@ class StreamingIngestRunner:
             }
 
         project_type = _resolve_project_type_label(
+            postprocess_payload.get("项目类型"),
+            parser_payload.get("项目类型"),
             item.extra.get("project_type"),
             item.extra.get("project_type_label"),
-            postprocess_payload.get("项目类型"),
             parser_payload.get("项目类型"),
             item.extra.get("project_type_fallback"),
         )

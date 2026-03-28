@@ -50,6 +50,12 @@ def _playwright_env(browser_cache_dir: str):
             os.environ["PEAP_PLAYWRIGHT_BROWSERS_PATH"] = previous_peap
 
 
+@contextmanager
+def playwright_env(browser_cache_dir: str):
+    with _playwright_env(browser_cache_dir):
+        yield
+
+
 def _browser_executable_path(browser_name: str) -> str:
     from playwright.sync_api import sync_playwright
 

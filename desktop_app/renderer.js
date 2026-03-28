@@ -3,15 +3,18 @@ let apiClient = null;
 let waitForDesktopBackendAvailability = null;
 let buildRecordsQuery = null;
 let formatRecordsSummary = null;
+let formatPendingMappingsSummary = null;
 let buildRecordsTableMarkup = null;
 let buildExportRequestFromView = null;
 let formatEmptyExportMessage = null;
 let progressPreset = null;
 let formatProgressMeta = null;
 let formatProgressHint = null;
+let formatCapacityNotice = null;
 let formatJobTitle = null;
 let formatJobMeta = null;
 let formatEventTitle = null;
+let formatEventDetail = null;
 let isMappingInteractionActive = null;
 let runMappingUpsertFlow = null;
 let runBatchMappingUpsertFlow = null;
@@ -35,6 +38,9 @@ let startupAutoInstallAttempted = false;
 let actionDefaultsInitialized = false;
 let backendRestartInProgress = false;
 let mappingConflictPromptResolver = null;
+if (typeof window !== "undefined") {
+  window.__PEAP_DESKTOP_BOOTSTRAP_STATE = { ready: false, error: "" };
+}
 
 const RECORD_STATE_LABELS = {
   ready: "已录入",
@@ -350,25 +356,38 @@ function eventClass(event) {
   return "ok";
 }
 
-function renderEvents(events) {
+function renderEvents(payload) {
   const container = $("jobEvents");
   if (!container) {
     return;
   }
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  const capacityNotice = payload?.truncated && formatCapacityNotice
+    ? formatCapacityNotice({
+      returnedCount: payload.returned_count,
+      totalCount: payload.total_count,
+      noun: "事件",
+    })
+    : "";
   if (!events.length) {
     container.innerHTML = '<div class="event-item">选择任务后查看明细</div>';
     return;
   }
-  container.innerHTML = events
+  const banner = capacityNotice
+    ? `
+      <div class="event-item warn">
+        <div class="job-title">任务明细容量提示</div>
+        <div class="event-meta">${escapeHtml(capacityNotice)}</div>
+      </div>
+    `
+    : "";
+  container.innerHTML = `${banner}${events
     .map((event) => {
       const cssClass = eventClass(event);
       const title = formatEventTitle(event);
-      const payloadLabel = String(event.payload?.label || "").trim();
-      const description =
-        event.error_message ||
-        payloadLabel ||
-        statusLabel(event.status) ||
-        "";
+      const description = formatEventDetail
+        ? formatEventDetail(event)
+        : String(event.payload?.label || "").trim() || statusLabel(event.status) || "";
       return `
         <div class="event-item ${cssClass}">
           <div class="job-title">${escapeHtml(title)}</div>
@@ -377,7 +396,7 @@ function renderEvents(events) {
         </div>
       `;
     })
-    .join("");
+    .join("")}`;
 }
 
 function pendingRecordCompany(record) {
@@ -410,19 +429,36 @@ function existingMappingTarget(preview) {
   ).trim();
 }
 
-function renderPendingMappingSummary() {
+function renderPendingMappingSummary(payload = {}) {
   const button = $("runPendingMappingRefreshBtn");
   const summaryNode = $("pendingMappingsSummary");
   const count = pendingMappingsCache.length;
+  const totalCount = countValue(payload.total_count ?? count);
+  const hasMore = Boolean(payload.truncated) && totalCount > count;
   if (summaryNode) {
-    summaryNode.textContent = count ? `当前 ${count} 条待补项` : "当前没有待补项";
+    summaryNode.textContent = formatPendingMappingsSummary
+      ? formatPendingMappingsSummary({
+        pending: pendingMappingsCache,
+        returned_count: countValue(payload.returned_count ?? pendingMappingsCache.length),
+        total_count: countValue(payload.total_count ?? pendingMappingsCache.length),
+        truncated: Boolean(payload.truncated),
+      })
+      : (count ? `当前 ${count} 条待补项` : "当前没有待补项");
   }
   if (!button) {
     return;
   }
   button.disabled = count === 0;
-  button.textContent = count ? `一键重处理当前所有待补项（${count}）` : "一键重处理当前所有待补项";
-  button.title = count ? `将重处理当前全部 ${count} 条待补映射记录` : "当前没有待补映射可重处理";
+  button.textContent = count
+    ? hasMore
+      ? `一键重处理当前显示的待补项（${count}/${totalCount}）`
+      : `一键重处理当前所有待补项（${count}）`
+    : "一键重处理当前所有待补项";
+  button.title = count
+    ? hasMore
+      ? `当前仅显示 ${count} 条待补映射，实际共有 ${totalCount} 条`
+      : `将重处理当前全部 ${count} 条待补映射记录`
+    : "当前没有待补映射可重处理";
 }
 
 function closeMappingConflictDialog(confirmed) {
@@ -472,12 +508,19 @@ function renderPendingMappings(payload) {
     return;
   }
   pendingMappingsCache = Array.isArray(payload.pending) ? payload.pending : [];
-  renderPendingMappingSummary();
+  renderPendingMappingSummary(payload);
   if (!pendingMappingsCache.length) {
     container.innerHTML = '<div class="mapping-item">当前没有待补映射</div>';
     return;
   }
-  container.innerHTML = pendingMappingsCache
+  const capacityNotice = payload.truncated && formatCapacityNotice
+    ? formatCapacityNotice({
+      returnedCount: payload.returned_count,
+      totalCount: payload.total_count,
+      noun: "待补项",
+    })
+    : "";
+  const body = pendingMappingsCache
     .map((item) => {
       const record = item.payload || {};
       const companyName = pendingRecordCompany(record);
@@ -494,6 +537,15 @@ function renderPendingMappings(payload) {
       `;
     })
     .join("");
+  container.innerHTML = capacityNotice
+    ? `
+      <div class="mapping-item pending">
+        <div class="job-title">待补映射容量提示</div>
+        <div class="job-meta">${escapeHtml(capacityNotice)}</div>
+      </div>
+      ${body}
+    `
+    : body;
 
   container.querySelectorAll("[data-use-pending]").forEach((node) => {
     node.addEventListener("click", async () => {
@@ -847,11 +899,11 @@ async function loadJobs() {
 
 async function loadJobEvents() {
   if (!selectedJobId) {
-    renderEvents([]);
+    renderEvents({});
     return;
   }
   const payload = await api(`/api/jobs/${selectedJobId}/events`);
-  renderEvents(payload.events || []);
+  renderEvents(payload);
 }
 
 async function loadMappings() {
@@ -1159,10 +1211,17 @@ async function saveMappingAndMaybeReprocess() {
       : result.preview?.mode === "update"
         ? "映射规则已更新"
         : "映射规则已保存";
+    const capacityNotice = payload.truncated && formatCapacityNotice
+      ? formatCapacityNotice({
+        returnedCount: payload.affected_returned_count ?? payload.affected_count,
+        totalCount: payload.affected_total_count ?? payload.affected_count,
+        noun: "记录",
+      })
+      : "";
     setStatus(
       "mappingResult",
       payload.job_id
-        ? `${actionLabel}，已启动映射回刷任务：${payload.job_id}，影响 ${Number(payload.affected_count || 0)} 条记录`
+        ? `${actionLabel}，已启动映射回刷任务：${payload.job_id}，影响 ${Number(payload.affected_count || 0)} 条记录${capacityNotice ? `。${capacityNotice}。` : ""}`
         : `${actionLabel}，当前没有匹配到需要回刷的记录`,
     );
     await loadMappings();
@@ -1173,7 +1232,7 @@ async function saveMappingAndMaybeReprocess() {
       await loadRecords();
     }
   } catch (error) {
-    setStatus("mappingResult", `保存失败：${error.message}`, true);
+    setStatus("mappingResult", "映射规则保存失败，请到任务页查看明细。", true);
   }
 }
 
@@ -1185,7 +1244,19 @@ async function reprocessPendingMappings() {
     });
     if (payload.job_id) {
       selectedJobId = payload.job_id || selectedJobId;
-      setStatus("mappingResult", `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录`);
+      const capacityNotice = payload.truncated && formatCapacityNotice
+        ? formatCapacityNotice({
+          returnedCount: payload.affected_returned_count ?? payload.affected_count,
+          totalCount: payload.affected_total_count ?? payload.affected_count,
+          noun: "记录",
+        })
+        : "";
+      setStatus(
+        "mappingResult",
+        capacityNotice
+          ? `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录。${capacityNotice}。`
+          : `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录`,
+      );
     } else {
       setStatus("mappingResult", "当前没有待补映射需要重处理");
     }
@@ -1194,7 +1265,7 @@ async function reprocessPendingMappings() {
     await loadJobs();
     await loadJobEvents();
   } catch (error) {
-    setStatus("mappingResult", `批量重处理失败：${error.message}`, true);
+    setStatus("mappingResult", "待补映射批量重处理失败，请到任务页查看明细。", true);
   }
 }
 
@@ -1213,7 +1284,7 @@ async function reprocessRecord(recordId) {
       await loadJobEvents();
     }
   } catch (error) {
-    setStatus("mappingResult", `重处理失败：${error.message}`, true);
+    setStatus("mappingResult", "重处理失败，请到任务页查看明细。", true);
   }
 }
 
@@ -1517,15 +1588,18 @@ async function bootstrap() {
   desktopState = stateModule.createDesktopState();
   buildRecordsQuery = recordsModule.buildRecordsQuery;
   formatRecordsSummary = recordsModule.formatRecordsSummary;
+  formatPendingMappingsSummary = recordsModule.formatPendingMappingsSummary;
   buildRecordsTableMarkup = recordsModule.buildRecordsTableMarkup;
   buildExportRequestFromView = exportsModule.buildExportRequestFromView;
   formatEmptyExportMessage = exportsModule.formatEmptyExportMessage;
   progressPreset = tasksModule.progressPreset;
   formatProgressMeta = tasksModule.formatProgressMeta;
   formatProgressHint = tasksModule.formatProgressHint;
+  formatCapacityNotice = tasksModule.formatCapacityNotice;
   formatJobTitle = tasksModule.formatJobTitle;
   formatJobMeta = tasksModule.formatJobMeta;
   formatEventTitle = tasksModule.formatEventTitle;
+  formatEventDetail = tasksModule.formatEventDetail;
   isMappingInteractionActive = mappingsModule.isMappingInteractionActive;
   runMappingUpsertFlow = mappingsModule.runMappingUpsertFlow;
   runBatchMappingUpsertFlow = mappingsModule.runBatchMappingUpsertFlow;
@@ -1563,9 +1637,17 @@ async function bootstrap() {
     },
   });
   startPolling({ pollLoop, intervalMs: 1500 });
+  if (typeof window !== "undefined" && window.__PEAP_DESKTOP_BOOTSTRAP_STATE) {
+    window.__PEAP_DESKTOP_BOOTSTRAP_STATE.ready = true;
+    window.__PEAP_DESKTOP_BOOTSTRAP_STATE.error = "";
+  }
 }
 
 bootstrap().catch((error) => {
+  if (typeof window !== "undefined" && window.__PEAP_DESKTOP_BOOTSTRAP_STATE) {
+    window.__PEAP_DESKTOP_BOOTSTRAP_STATE.ready = false;
+    window.__PEAP_DESKTOP_BOOTSTRAP_STATE.error = String(error.message || error || "bootstrap failed");
+  }
   console.error(error);
   setStatus("settingsResult", `启动失败：${error.message}`, true);
 });

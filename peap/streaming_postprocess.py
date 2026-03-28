@@ -79,17 +79,34 @@ def finalize_streaming_payload(
     findings: Iterable[PostProcessFinding] | None = None,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     resolved = dict(payload or {})
-    normalized_findings = [
-        item
-        for item in (findings or [])
-        if str(item.type or "") not in {"mapping_missing", "project_type_unknown"}
-    ]
+    normalized_findings: List[PostProcessFinding] = []
+    preserved_project_type_unknown: PostProcessFinding | None = None
+    for item in findings or []:
+        finding_type = str(item.type or "")
+        if finding_type == "mapping_missing":
+            continue
+        if finding_type == "project_type_unknown":
+            message = str(item.message or "").strip()
+            if message.startswith("entity_type_mapping_file not found:"):
+                evidence = dict(item.evidence or {})
+                evidence.setdefault("reason_code", "project_type_mapping_template_missing")
+                evidence.setdefault("template_path", message.split(":", 1)[1].strip())
+                preserved_project_type_unknown = PostProcessFinding(
+                    severity=item.severity,
+                    type="project_type_unknown",
+                    message="项目类型映射模板缺失，当前记录无法完成类型归属",
+                    evidence=evidence,
+                )
+            continue
+        normalized_findings.append(item)
     if not _clean_text(resolved.get("挂牌次数")):
         derived_listing_times = derive_listing_times_from_project_code(_clean_text(resolved.get("项目编号")))
         if derived_listing_times:
             resolved["挂牌次数"] = derived_listing_times
     project_type = _clean_text(resolved.get("项目类型"))
-    if project_type not in BUSINESS_PROJECT_TYPES:
+    if preserved_project_type_unknown is not None:
+        normalized_findings.append(preserved_project_type_unknown)
+    elif project_type not in BUSINESS_PROJECT_TYPES:
         message = "缺少项目类型，暂不能进入导出" if not project_type else "项目类型未识别，暂不能进入导出"
         normalized_findings.append(
             PostProcessFinding(
@@ -161,6 +178,11 @@ def _entry_targets(item: Dict[str, Any]) -> set[str]:
     return targets
 
 
+def _entry_is_authoritative(item: Dict[str, Any]) -> bool:
+    metadata = _entry_metadata(item)
+    return bool(metadata.get("authoritative"))
+
+
 def _matching_entries(
     entries: Iterable[Dict[str, Any]],
     *,
@@ -189,6 +211,10 @@ def _collect_target_values(entries: Iterable[Dict[str, Any]], *, target_field: s
         }
     )
     return values
+
+
+def _unique_non_empty(values: Iterable[Any]) -> List[str]:
+    return sorted({str(item or "").strip() for item in values if str(item or "").strip()})
 
 
 def _resolve_single_mapping(
@@ -250,59 +276,344 @@ def _resolve_group_chain(
     return current, findings
 
 
+def _trace_group_chain(
+    entries: Iterable[Dict[str, Any]],
+    *,
+    group_name: str,
+) -> tuple[str, List[Dict[str, str]], List[PostProcessFinding]]:
+    findings: List[PostProcessFinding] = []
+    chain: List[Dict[str, str]] = []
+    current = str(group_name or "").strip()
+    visited: set[str] = set()
+    while current:
+        normalized = _normalize_company(current)
+        if normalized in visited:
+            findings.append(
+                PostProcessFinding(
+                    severity="warn",
+                    type="mapping_conflict",
+                    message=f"group mapping cycle group={group_name}",
+                    evidence={"group_name": group_name},
+                )
+            )
+            break
+        visited.add(normalized)
+        matched = _matching_entries(entries, match_field=MATCH_GROUP, source_name=current)
+        next_group, extra_findings = _resolve_single_mapping(
+            entries=matched,
+            target_field=TARGET_GROUP,
+            subject_name=current,
+            ambiguous_type="mapping_conflict",
+            ambiguous_message="ambiguous group mapping for group={subject_name}",
+        )
+        findings.extend(extra_findings)
+        if not next_group or next_group == current:
+            break
+        chain.append(
+            {
+                "match_field": MATCH_GROUP,
+                "target_field": TARGET_GROUP,
+                "source_name": current,
+                "target_value": next_group,
+                "label": f"集团 {current} -> 集团 {next_group}",
+            }
+        )
+        current = next_group
+    return current, chain, findings
+
+
+def analyze_mapping_candidates(
+    payload: Dict[str, Any],
+    *,
+    mapping_entries: Iterable[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    resolved = dict(payload or {})
+    entries = [dict(item) for item in (mapping_entries or [])]
+    findings: List[PostProcessFinding] = []
+    company_name = _first_non_empty(resolved, COMPANY_FIELDS)
+    current_group = _first_non_empty(resolved, GROUP_FIELDS)
+    current_type = _first_non_empty(resolved, TYPE_FIELDS)
+    analysis = {
+        "company_name": company_name,
+        "current_group": current_group,
+        "current_type": current_type,
+        "resolved_group": current_group,
+        "resolved_type": current_type,
+        "gap_codes": [],
+        "recommended_rule": {},
+        "available_rule_kinds": [],
+        "candidate_resolutions": [],
+        "has_conflict": False,
+        "findings": findings,
+    }
+    if not company_name:
+        return analysis
+
+    transferor_entries = _matching_entries(entries, match_field=MATCH_TRANSFEROR, source_name=company_name)
+    transferor_group_values = _collect_target_values(transferor_entries, target_field=TARGET_GROUP)
+    transferor_type_values = _collect_target_values(transferor_entries, target_field=TARGET_TYPE)
+
+    group_candidates: List[Dict[str, Any]] = []
+    transferor_group_authoritative = any(
+        _entry_is_authoritative(item) and TARGET_GROUP in _entry_targets(item)
+        for item in transferor_entries
+    )
+    for value in transferor_group_values:
+        group_candidates.append(
+            {
+                "field": TARGET_GROUP,
+                "rule_kind": "transferor_group",
+                "match_field": MATCH_TRANSFEROR,
+                "target_field": TARGET_GROUP,
+                "source_name": company_name,
+                "target_value": value,
+                "label": f"转让方 {company_name} -> 集团 {value}",
+                "evidence_chain": [
+                    {
+                        "match_field": MATCH_TRANSFEROR,
+                        "target_field": TARGET_GROUP,
+                        "source_name": company_name,
+                        "target_value": value,
+                        "label": f"转让方 {company_name} -> 集团 {value}",
+                    }
+                ],
+            }
+        )
+    if current_group and not transferor_group_authoritative:
+        group_candidates.append(
+            {
+                "field": TARGET_GROUP,
+                "rule_kind": "transferor_group",
+                "match_field": MATCH_TRANSFEROR,
+                "target_field": TARGET_GROUP,
+                "source_name": company_name,
+                "target_value": current_group,
+                "label": f"保留当前集团 {current_group}",
+                "evidence_chain": [
+                    {
+                        "match_field": MATCH_TRANSFEROR,
+                        "target_field": TARGET_GROUP,
+                        "source_name": company_name,
+                        "target_value": current_group,
+                        "label": f"保留当前集团 {current_group}",
+                    }
+                ],
+            }
+        )
+
+    unique_group_values = _unique_non_empty(item["target_value"] for item in group_candidates)
+    if len(unique_group_values) > 1:
+        findings.append(
+            PostProcessFinding(
+                severity="warn",
+                type="mapping_conflict",
+                message=f"conflicting group candidates for company={company_name}",
+                evidence={"company_name": company_name, "options": unique_group_values, "field": TARGET_GROUP},
+            )
+        )
+        analysis["has_conflict"] = True
+        analysis["candidate_resolutions"].extend(group_candidates)
+    elif unique_group_values:
+        analysis["resolved_group"] = unique_group_values[0]
+
+    normalized_group = str(analysis["resolved_group"] or "").strip()
+    group_chain: List[Dict[str, str]] = []
+    if normalized_group:
+        normalized_group, chain, extra_findings = _trace_group_chain(entries, group_name=normalized_group)
+        group_chain = chain
+        findings.extend(extra_findings)
+        analysis["resolved_group"] = normalized_group or analysis["resolved_group"]
+        if extra_findings:
+            analysis["has_conflict"] = True
+            analysis["candidate_resolutions"].extend(
+                {
+                    "field": TARGET_GROUP,
+                    "rule_kind": "group_group",
+                    "match_field": MATCH_GROUP,
+                    "target_field": TARGET_GROUP,
+                    "source_name": item["source_name"],
+                    "target_value": item["target_value"],
+                    "label": item["label"],
+                    "evidence_chain": [item],
+                }
+                for item in chain
+            )
+
+    type_candidates: List[Dict[str, Any]] = []
+    for value in transferor_type_values:
+        type_candidates.append(
+            {
+                "field": TARGET_TYPE,
+                "rule_kind": "transferor_type",
+                "match_field": MATCH_TRANSFEROR,
+                "target_field": TARGET_TYPE,
+                "source_name": company_name,
+                "target_value": value,
+                "label": f"转让方 {company_name} -> 类型 {value}",
+                "evidence_chain": [
+                    {
+                        "match_field": MATCH_TRANSFEROR,
+                        "target_field": TARGET_TYPE,
+                        "source_name": company_name,
+                        "target_value": value,
+                        "label": f"转让方 {company_name} -> 类型 {value}",
+                    }
+                ],
+            }
+        )
+    group_type_authoritative = False
+    if analysis["resolved_group"]:
+        group_entries = _matching_entries(entries, match_field=MATCH_GROUP, source_name=analysis["resolved_group"])
+        group_type_values = _collect_target_values(group_entries, target_field=TARGET_TYPE)
+        group_type_authoritative = any(
+            _entry_is_authoritative(item) and TARGET_TYPE in _entry_targets(item)
+            for item in group_entries
+        )
+        for value in group_type_values:
+            type_candidates.append(
+                {
+                    "field": TARGET_TYPE,
+                    "rule_kind": "group_type",
+                    "match_field": MATCH_GROUP,
+                    "target_field": TARGET_TYPE,
+                    "source_name": analysis["resolved_group"],
+                    "target_value": value,
+                    "label": f"集团 {analysis['resolved_group']} -> 类型 {value}",
+                    "evidence_chain": group_chain + [
+                        {
+                            "match_field": MATCH_GROUP,
+                            "target_field": TARGET_TYPE,
+                            "source_name": analysis["resolved_group"],
+                            "target_value": value,
+                            "label": f"集团 {analysis['resolved_group']} -> 类型 {value}",
+                        }
+                    ],
+                }
+            )
+    transferor_type_authoritative = any(
+        _entry_is_authoritative(item) and TARGET_TYPE in _entry_targets(item)
+        for item in transferor_entries
+    )
+    authoritative_type_candidate = transferor_type_authoritative or group_type_authoritative
+    if current_type and not authoritative_type_candidate:
+        type_candidates.append(
+            {
+                "field": TARGET_TYPE,
+                "rule_kind": "transferor_type",
+                "match_field": MATCH_TRANSFEROR,
+                "target_field": TARGET_TYPE,
+                "source_name": company_name,
+                "target_value": current_type,
+                "label": f"保留当前类型 {current_type}",
+                "evidence_chain": [
+                    {
+                        "match_field": MATCH_TRANSFEROR,
+                        "target_field": TARGET_TYPE,
+                        "source_name": company_name,
+                        "target_value": current_type,
+                        "label": f"保留当前类型 {current_type}",
+                    }
+                ],
+            }
+        )
+
+    unique_type_values = _unique_non_empty(item["target_value"] for item in type_candidates)
+    if len(unique_type_values) > 1:
+        findings.append(
+            PostProcessFinding(
+                severity="warn",
+                type="mapping_conflict",
+                message=f"conflicting type candidates for company={company_name}",
+                evidence={"company_name": company_name, "options": unique_type_values, "field": TARGET_TYPE},
+            )
+        )
+        analysis["has_conflict"] = True
+        analysis["candidate_resolutions"].extend(type_candidates)
+    elif unique_type_values:
+        analysis["resolved_type"] = unique_type_values[0]
+
+    gap_codes: List[str] = []
+    available_rule_kinds: List[str] = []
+    recommended_rule: Dict[str, str] = {}
+    if not analysis["has_conflict"]:
+        if not analysis["resolved_group"]:
+            gap_codes.append("missing_group")
+            available_rule_kinds.extend(["transferor_group", "transferor_type"])
+            recommended_rule = {
+                "rule_kind": "transferor_group",
+                "source_name": company_name,
+                "match_field": MATCH_TRANSFEROR,
+                "target_field": TARGET_GROUP,
+            }
+        elif not analysis["resolved_type"]:
+            gap_codes.append("missing_type")
+            available_rule_kinds.extend(["group_type", "group_group", "transferor_type"])
+            recommended_rule = {
+                "rule_kind": "group_type",
+                "source_name": str(analysis["resolved_group"] or ""),
+                "match_field": MATCH_GROUP,
+                "target_field": TARGET_TYPE,
+            }
+    else:
+        gap_codes.append("has_conflict")
+        available_rule_kinds.extend(["transferor_group", "transferor_type", "group_group", "group_type"])
+    analysis["gap_codes"] = gap_codes
+    analysis["recommended_rule"] = recommended_rule
+    analysis["available_rule_kinds"] = available_rule_kinds
+    return analysis
+
+
 def apply_mapping_entries(
     payload: Dict[str, Any],
     *,
     mapping_entries: Iterable[Dict[str, Any]] | None = None,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     resolved = dict(payload or {})
-    findings: List[PostProcessFinding] = []
-    company_name = _first_non_empty(resolved, COMPANY_FIELDS)
+    analysis = analyze_mapping_candidates(resolved, mapping_entries=mapping_entries)
+    findings: List[PostProcessFinding] = list(analysis["findings"])
+    company_name = str(analysis["company_name"] or "").strip()
     if not company_name:
         return resolved, findings
 
+    resolved_group = str(analysis["resolved_group"] or "").strip()
+    resolved_type = str(analysis["resolved_type"] or "").strip()
     current_group = _first_non_empty(resolved, GROUP_FIELDS)
     current_type = _first_non_empty(resolved, TYPE_FIELDS)
-    entries = [dict(item) for item in (mapping_entries or [])]
-    transferor_entries = _matching_entries(entries, match_field=MATCH_TRANSFEROR, source_name=company_name)
-
-    mapped_group, extra_findings = _resolve_single_mapping(
-        entries=transferor_entries,
-        target_field=TARGET_GROUP,
-        subject_name=company_name,
-        ambiguous_type="mapping_ambiguous",
-        ambiguous_message="ambiguous transferor-group mapping for company={subject_name}",
-    )
-    findings.extend(extra_findings)
-    resolved_group = mapped_group or current_group
-
-    if resolved_group:
-        normalized_group, extra_findings = _resolve_group_chain(entries, group_name=resolved_group)
-        findings.extend(extra_findings)
-        resolved_group = normalized_group or resolved_group
-
-    mapped_type, extra_findings = _resolve_single_mapping(
-        entries=transferor_entries,
-        target_field=TARGET_TYPE,
-        subject_name=company_name,
-        ambiguous_type="mapping_ambiguous",
-        ambiguous_message="ambiguous transferor-type mapping for company={subject_name}",
-    )
-    findings.extend(extra_findings)
-    resolved_type = mapped_type or current_type
-    if not mapped_type and resolved_group:
-        group_entries = _matching_entries(entries, match_field=MATCH_GROUP, source_name=resolved_group)
-        mapped_type, extra_findings = _resolve_single_mapping(
-            entries=group_entries,
-            target_field=TARGET_TYPE,
-            subject_name=resolved_group,
-            ambiguous_type="mapping_ambiguous",
-            ambiguous_message="ambiguous group-type mapping for group={subject_name}",
+    changed = False
+    if resolved_group and resolved_group != current_group:
+        resolved["隶属集团"] = resolved_group
+        changed = True
+    if resolved_type and resolved_type != current_type:
+        resolved["类型"] = resolved_type
+        changed = True
+    if analysis["has_conflict"]:
+        findings.append(
+            PostProcessFinding(
+                severity="warn",
+                type="mapping_conflict",
+                message=f"mapping conflict requires resolution for company={company_name}",
+                evidence={"company_name": company_name, "candidate_resolutions": analysis["candidate_resolutions"]},
+            )
         )
-        findings.extend(extra_findings)
-        resolved_type = mapped_type or resolved_type
-
-    if not resolved_group and not resolved_type and not current_group and not current_type:
+        return resolved, findings
+    if "missing_group" in analysis["gap_codes"] or "missing_type" in analysis["gap_codes"]:
+        missing_fields = []
+        if "missing_group" in analysis["gap_codes"]:
+            missing_fields.append("集团")
+        if "missing_type" in analysis["gap_codes"]:
+            missing_fields.append("类型")
+        findings.append(
+            PostProcessFinding(
+                severity="warn",
+                type="mapping_gap",
+                message=f"缺少{'、'.join(missing_fields)}，暂不能进入导出",
+                evidence={
+                    "company_name": company_name,
+                    "missing_fields": missing_fields,
+                    "recommended_rule": analysis["recommended_rule"],
+                },
+            )
+        )
         findings.append(
             PostProcessFinding(
                 severity="warn",
@@ -311,15 +622,6 @@ def apply_mapping_entries(
                 evidence={"company_name": company_name},
             )
         )
-        return resolved, findings
-
-    changed = False
-    if resolved_group and resolved_group != current_group:
-        resolved["隶属集团"] = resolved_group
-        changed = True
-    if resolved_type and resolved_type != current_type:
-        resolved["类型"] = resolved_type
-        changed = True
     if changed:
         findings.append(
             PostProcessFinding(
@@ -327,6 +629,18 @@ def apply_mapping_entries(
                 type="mapping_applied",
                 message=f"mapping applied for company={company_name}",
                 evidence={"company_name": company_name},
+            )
+        )
+        findings.append(
+            PostProcessFinding(
+                severity="info",
+                type="mapping_resolution_applied",
+                message=f"mapping resolution applied for company={company_name}",
+                evidence={
+                    "company_name": company_name,
+                    "group_name": resolved_group,
+                    "source_type": resolved_type,
+                },
             )
         )
     return resolved, findings

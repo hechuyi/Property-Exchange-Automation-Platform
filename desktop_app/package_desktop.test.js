@@ -1,10 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const Module = require("node:module");
+const path = require("node:path");
 
 const {
   buildPackagingPlan,
   normalizeRequestedPlatform,
 } = require("./package_desktop.js");
+
+const PACKAGE_DESKTOP_MODULE_PATH = path.join(__dirname, "package_desktop.js");
 
 test("normalizeRequestedPlatform resolves current host aliases", () => {
   assert.equal(normalizeRequestedPlatform("current", "darwin"), "darwin");
@@ -41,4 +45,42 @@ test("buildPackagingPlan rejects cross-platform packaging on the wrong host", ()
       }),
     /native host/i,
   );
+});
+
+test("main builds renderer assets before invoking electron-builder", () => {
+  const originalLoad = Module._load;
+  const calls = [];
+  Module._load = function mockLoad(request, parent, isMain) {
+    if (request === "child_process") {
+      return {
+        spawnSync: (command, args, options = {}) => {
+          calls.push({
+            command,
+            args: [...args],
+            cwd: options.cwd,
+          });
+          return { status: 0 };
+        },
+      };
+    }
+    return originalLoad(request, parent, isMain);
+  };
+
+  delete require.cache[PACKAGE_DESKTOP_MODULE_PATH];
+  const { main } = require("./package_desktop.js");
+
+  try {
+    main(["--platform", "mac", "--layout", "release"]);
+    assert.deepEqual(
+      calls.map((call) => [call.command, call.args]),
+      [
+        ["npm", ["run", "build:backend"]],
+        ["npm", ["run", "build:renderer"]],
+        ["npx", ["electron-builder", "--mac", "pkg", "-c", "electron-builder.yml", "--config.electronDist=node_modules/electron/dist"]],
+      ],
+    );
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[PACKAGE_DESKTOP_MODULE_PATH];
+  }
 });

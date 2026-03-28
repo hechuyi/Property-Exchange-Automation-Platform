@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import asdict
 from typing import Any, Dict
 
 from peap.output_contract import (
@@ -18,15 +19,18 @@ from peap.output_contract import (
     clone_field_candidates,
     get_output_columns_for_kind,
 )
+from peap.product_profile import get_product_profile
 from peap.streaming_export import ordered_export_headers, record_to_export_payload, run_ready_export
 from peap.streaming_ingest import StreamingIngestRunner, copy_snapshot_to_archive
 from peap.streaming_models import ExportRequest, ItemProgressEvent, ItemSavedPayload
+from peap.streaming_postprocess import analyze_mapping_candidates
 from peap.streaming_store import StreamingStore
 
+from .product_errors import UserInputError
 from .progress_contract import build_progress_view
 from .record_identity import FAILED_RECORD_STATES, pick_reprocess_evidence_path
 from .record_scope import normalize_record_scope, record_scope_to_dict
-from .runtime_dependencies import RuntimeDependencyManager
+from .runtime_dependencies import RuntimeDependencyManager, playwright_env
 
 
 def _namespace(**kwargs):
@@ -40,6 +44,7 @@ def _timestamp_now() -> str:
 RECORD_STATE_LABELS = {
     "ready": "已录入",
     "pending_mapping": "待补映射",
+    "mapping_conflict": "映射冲突",
     "skipped": "已跳过",
     "parse_failed": "解析失败",
     "postprocess_failed": "处理失败",
@@ -102,6 +107,22 @@ MAPPING_MATCH_FIELDS = {
 }
 
 
+class AppUserFacingError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        message: str,
+        error_code: str,
+        http_status: int,
+        details: Dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = str(message or "")
+        self.error_code = str(error_code or "")
+        self.http_status = int(http_status)
+        self.details = dict(details or {})
+
+
 def _default_postprocess_config_path(config_obj: object) -> str:
     candidate_roots = [
         os.path.abspath(str(getattr(config_obj, "PROJECT_ROOT", "") or "")),
@@ -120,8 +141,27 @@ def _status_label(state: str) -> str:
     return RECORD_STATE_LABELS.get(str(state or "").strip(), str(state or "").strip() or "未知")
 
 
+def _mapping_rule_title(rule_kind: str) -> str:
+    return {
+        "transferor_group": "转让方 -> 集团",
+        "transferor_type": "转让方 -> 类型",
+        "group_group": "集团 -> 集团",
+        "group_type": "集团 -> 类型",
+    }.get(str(rule_kind or "").strip(), str(rule_kind or "").strip())
+
+
 def _job_type_label(job_type: str) -> str:
     return JOB_TYPE_LABELS.get(str(job_type or "").strip(), str(job_type or "").strip() or "任务")
+
+
+def _mapping_scope_miss_payload(*, source_name: str, match_field: str) -> Dict[str, Any]:
+    source_label = str(source_name or "").strip() or "未命名来源"
+    field_label = "集团" if str(match_field or "").strip() == "group" else "转让方"
+    return {
+        "scope_miss": True,
+        "scope_miss_reason_code": "mapping_source_not_found",
+        "scope_miss_message": f"未找到匹配该{field_label}来源“{source_label}”的记录；本次仅保存规则，不启动回刷",
+    }
 
 
 def _normalize_record_states(raw_state: str) -> list[str] | None:
@@ -144,6 +184,35 @@ def _coerce_int(raw_value: Any, *, default: int = 0) -> int:
         return int(raw_value)
     except Exception:
         return default
+
+
+def _parse_user_supplied_date(raw_value: Any, *, field_name: str) -> dt.date | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    try:
+        return dt.datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise UserInputError(f"invalid {field_name}: {text!r} (expected YYYY-MM-DD)") from exc
+
+
+def _validate_streaming_job_dates(payload: Dict[str, Any]) -> None:
+    start_date = _parse_user_supplied_date(payload.get("start_date"), field_name="start_date")
+    end_date = _parse_user_supplied_date(payload.get("end_date"), field_name="end_date")
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise UserInputError("start_date must be on or before end_date")
+
+
+def _parse_positive_int(raw_value: Any, *, field_name: str, default: int) -> int:
+    if raw_value in {None, ""}:
+        return default
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise UserInputError(f"invalid {field_name}: {raw_value!r} (expected integer)") from exc
+    if value <= 0:
+        raise UserInputError(f"invalid {field_name}: {raw_value!r} (expected integer > 0)")
+    return value
 
 
 def _summary_count(summary: Dict[str, Any], key: str) -> int:
@@ -325,6 +394,23 @@ def _build_record_display_values(record: Dict[str, Any], *, project_kind: str | 
     return values
 
 
+def _mapping_template_issue(message: str, evidence: Dict[str, Any] | None = None) -> tuple[str, str] | None:
+    reason_code = str((evidence or {}).get("reason_code") or "").strip()
+    normalized_message = str(message or "").strip()
+    if (
+        reason_code == "project_type_mapping_template_missing"
+        or normalized_message.startswith("entity_type_mapping_file not found:")
+    ):
+        return ("project_type_mapping_template_missing", "项目类型映射模板缺失，当前记录无法完成类型归属")
+    if normalized_message.startswith("transferor_group_mapping_file not found:"):
+        return ("transferor_group_mapping_template_missing", "转让方集团映射模板缺失，当前记录无法完成集团归属")
+    if normalized_message.startswith("group_group_mapping_file not found:"):
+        return ("group_group_mapping_template_missing", "集团层级映射模板缺失，当前记录无法完成集团归属")
+    if normalized_message.startswith("transferor_type_mapping_file not found:"):
+        return ("transferor_type_mapping_template_missing", "转让方类型映射模板缺失，当前记录无法完成类型归属")
+    return None
+
+
 def _record_status_detail(record: Dict[str, Any]) -> str:
     state = str(record.get("state") or "").strip()
     findings = list(record.get("findings") or [])
@@ -341,7 +427,24 @@ def _record_status_detail(record: Dict[str, Any]) -> str:
             return f"归档文件同名，当前文件为 {os.path.basename(archive_path)}"
         return "归档文件同名"
     if state == "pending_mapping":
-        messages = [str(item.get("message") or "").strip() for item in findings if str(item.get("message") or "").strip()]
+        prioritized = []
+        for item in findings:
+            message = str(item.get("message") or "").strip()
+            if not message:
+                continue
+            severity = str(item.get("severity") or "").strip().lower()
+            finding_type = str(item.get("type") or "").strip()
+            evidence = item.get("evidence") or {}
+            template_issue = _mapping_template_issue(message, evidence if isinstance(evidence, dict) else {})
+            if template_issue is not None:
+                _, message = template_issue
+            rank = 2
+            if severity in {"error", "warn", "warning"}:
+                rank = 0
+            elif finding_type in {"mapping_gap", "mapping_missing", "project_type_unknown", "mapping_conflict"}:
+                rank = 1
+            prioritized.append((rank, message))
+        messages = [message for _, message in sorted(prioritized, key=lambda item: item[0])]
         if messages:
             return messages[0]
         return "缺少映射规则，暂不能进入导出"
@@ -376,6 +479,10 @@ class AppService:
         self.runtime_dependencies = runtime_dependencies or RuntimeDependencyManager(
             browser_cache_dir=str(getattr(config_obj, "PLAYWRIGHT_BROWSERS_PATH", "")),
         )
+        browser_cache_dir = str(getattr(config_obj, "PLAYWRIGHT_BROWSERS_PATH", "") or "").strip()
+        if browser_cache_dir:
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browser_cache_dir
+            os.environ["PEAP_PLAYWRIGHT_BROWSERS_PATH"] = browser_cache_dir
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
         self._thread_state = threading.local()
@@ -551,6 +658,11 @@ class AppService:
             "issues": issues,
         }
 
+    def _product_profile_payload(self) -> Dict[str, Any]:
+        payload = asdict(get_product_profile())
+        payload["source_ids"] = list(payload.get("source_ids") or [])
+        return payload
+
     def get_basic_settings(self) -> Dict[str, Any]:
         defaults = {
             "default_exchange": "all",
@@ -649,6 +761,7 @@ class AppService:
             "log_dir": str(self.config.LOG_DIR),
             "browser_runtime": browser_runtime,
             "browser_install": browser_install,
+            "product_profile": self._product_profile_payload(),
             "product_readiness": product_readiness,
         }
 
@@ -680,6 +793,7 @@ class AppService:
             "raw_auto_root": basic["archive_root"],
             "raw_manual_root": str(getattr(self.config, "HTML_FOLDER", "")),
             "browser_cache_dir": str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", "")),
+            "product_profile": self._product_profile_payload(),
             "browser_runtime": browser_runtime,
             "browser_install": browser_install,
             "product_readiness": product_readiness,
@@ -1116,9 +1230,107 @@ class AppService:
         self._normalize_legacy_views()
         return self.store.list_job_events(job_id, limit=limit)
 
+    def _build_mapping_work_item(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(record.get("postprocess_payload") or record.get("parser_payload") or {})
+        analysis = analyze_mapping_candidates(payload, mapping_entries=self.store.list_mapping_entries())
+        recommended_rule = dict(analysis.get("recommended_rule") or {})
+        if recommended_rule:
+            recommended_rule["title"] = _mapping_rule_title(str(recommended_rule.get("rule_kind") or ""))
+        candidate_resolutions = []
+        for item in analysis.get("candidate_resolutions") or []:
+            candidate_resolutions.append(
+                {
+                    "field": str(item.get("field") or ""),
+                    "rule_kind": str(item.get("rule_kind") or ""),
+                    "match_field": str(item.get("match_field") or ""),
+                    "target_field": str(item.get("target_field") or ""),
+                    "source_name": str(item.get("source_name") or ""),
+                    "target_value": str(item.get("target_value") or ""),
+                    "label": str(item.get("label") or ""),
+                    "title": _mapping_rule_title(str(item.get("rule_kind") or "")),
+                    "evidence_chain": list(item.get("evidence_chain") or []),
+                }
+            )
+        gap_codes = list(analysis.get("gap_codes") or [])
+        status_detail = ""
+        blocking_reason_code = ""
+        if "has_conflict" in gap_codes or analysis.get("has_conflict"):
+            status_detail = "存在多个映射候选结果，需要人工裁决"
+            blocking_reason_code = "mapping_conflict"
+        elif "missing_group" in gap_codes:
+            status_detail = "缺少集团，建议先补转让方 -> 集团"
+            blocking_reason_code = "missing_group"
+        elif "missing_type" in gap_codes:
+            status_detail = "集团已识别，但缺少类型，建议补集团 -> 类型"
+            blocking_reason_code = "missing_type"
+        elif str(record.get("state") or "") in {"pending_mapping", "mapping_conflict"}:
+            status_detail = _record_status_detail(record) or "当前记录仍处于待处理状态，但并非映射规则缺口"
+            if not gap_codes:
+                gap_codes = ["non_mapping_blocker"]
+            finding_types = {
+                str(item.get("type") or "").strip()
+                for item in list(record.get("findings") or [])
+                if isinstance(item, dict)
+            }
+            raw_messages = [
+                str(item.get("message") or "").strip()
+                for item in list(record.get("findings") or [])
+                if isinstance(item, dict)
+            ]
+            finding_reason_codes = {
+                str((item.get("evidence") or {}).get("reason_code") or "").strip()
+                for item in list(record.get("findings") or [])
+                if isinstance(item, dict)
+            }
+            if "project_type_unknown" in finding_types:
+                blocking_reason_code = "project_type_unknown"
+                for item in list(record.get("findings") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    template_issue = _mapping_template_issue(
+                        str(item.get("message") or "").strip(),
+                        item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
+                    )
+                    if template_issue is None:
+                        continue
+                    blocking_reason_code, template_message = template_issue
+                    if status_detail.startswith("entity_type_mapping_file not found:") or status_detail == str(item.get("message") or "").strip():
+                        status_detail = template_message
+                    break
+                if (
+                    "project_type_mapping_template_missing" in finding_reason_codes
+                    or "模板缺失" in status_detail
+                    or any(message.startswith("entity_type_mapping_file not found:") for message in raw_messages)
+                ):
+                    blocking_reason_code = "project_type_mapping_template_missing"
+            else:
+                blocking_reason_code = "non_mapping_blocker"
+        item_state = "mapping_conflict" if analysis.get("has_conflict") else str(record.get("state") or "")
+        return {
+            "record_id": str(record.get("record_id") or ""),
+            "revision_id": int(record.get("latest_revision_id") or 0),
+            "project_code": str(record.get("project_code") or payload.get("项目编号") or ""),
+            "payload": payload,
+            "created_at": str(record.get("updated_at") or ""),
+            "state": item_state,
+            "status_label": _status_label(item_state),
+            "status_detail": status_detail,
+            "company_name": str(analysis.get("company_name") or ""),
+            "current_group": str(analysis.get("current_group") or ""),
+            "current_type": str(analysis.get("current_type") or ""),
+            "resolved_group": str(analysis.get("resolved_group") or ""),
+            "resolved_type": str(analysis.get("resolved_type") or ""),
+            "gap_codes": gap_codes,
+            "blocking_reason_code": blocking_reason_code,
+            "recommended_rule": recommended_rule,
+            "available_rule_kinds": list(analysis.get("available_rule_kinds") or []),
+            "candidate_resolutions": candidate_resolutions,
+            "has_conflict": bool(analysis.get("has_conflict")),
+        }
+
     def list_pending_mappings(self) -> list[Dict[str, Any]]:
         self._normalize_legacy_views()
-        return self.store.list_pending_mappings(limit=200)
+        return [self._build_mapping_work_item(record) for record in self._find_pending_mapping_records()]
 
     def list_mapping_entries(self) -> list[Dict[str, Any]]:
         self._normalize_legacy_views()
@@ -1135,7 +1347,12 @@ class AppService:
         with self._lock:
             if self._active_mutating_jobs:
                 active_job_type = sorted(self._active_mutating_jobs)[0]
-                raise RuntimeError(f"已有执行中的任务：{_job_type_label(active_job_type)}")
+                raise AppUserFacingError(
+                    message=f"已有执行中的任务：{_job_type_label(active_job_type)}",
+                    error_code="mutating_job_in_progress",
+                    http_status=409,
+                    details={"active_job_type": active_job_type, "requested_job_type": normalized},
+                )
             self._active_mutating_jobs.add(normalized)
 
     def _release_mutating_job(self, job_type: str) -> None:
@@ -1173,7 +1390,7 @@ class AppService:
         return normalized in self._thread_job_stack()
 
     def _find_records_for_mapping_refresh(self, *, match_field: str, source_name: str) -> list[Dict[str, Any]]:
-        records = self.store.iter_latest_records(states=["ready", "pending_mapping"], limit=5000, sort="recent")
+        records = self.store.iter_latest_records(states=["ready", "pending_mapping", "mapping_conflict"], limit=5000, sort="recent")
         return [
             record
             for record in records
@@ -1181,7 +1398,7 @@ class AppService:
         ]
 
     def _find_pending_mapping_records(self) -> list[Dict[str, Any]]:
-        return self.store.iter_latest_records(states=["pending_mapping"], limit=5000, sort="recent")
+        return self.store.iter_latest_records(states=["pending_mapping", "mapping_conflict"], limit=5000, sort="recent")
 
     def _find_existing_mapping_entry(self, *, source_name: str, match_field: str, target_field: str) -> Dict[str, Any] | None:
         normalized_source = _normalize_match_text(source_name)
@@ -1213,7 +1430,11 @@ class AppService:
             target_field=target_field,
         )
         affected_records = self._find_records_for_mapping_refresh(match_field=match_field, source_name=source_name)
-        affected_pending_count = sum(1 for item in affected_records if str(item.get("state") or "") == "pending_mapping")
+        affected_pending_count = sum(
+            1
+            for item in affected_records
+            if str(item.get("state") or "") in {"pending_mapping", "mapping_conflict"}
+        )
 
         mode = "create"
         conflict = False
@@ -1236,6 +1457,7 @@ class AppService:
             "target_field": target_field,
             "target_value": target_value,
             "source_name": source_name,
+            **(_mapping_scope_miss_payload(source_name=source_name, match_field=match_field) if not affected_records else {"scope_miss": False}),
         }
 
     def _run_mapping_refresh_job(self, *, job_id: str, record_ids: list[str], reprocess_fn=None) -> None:
@@ -1281,7 +1503,7 @@ class AppService:
                 continue
 
             refreshed += 1
-            if state == "pending_mapping":
+            if state in {"pending_mapping", "mapping_conflict"}:
                 pending += 1
             elif state == "skipped":
                 skipped += 1
@@ -1293,8 +1515,8 @@ class AppService:
             self.store.update_job_counts(
                 job_id,
                 downloaded_inc=1,
-                persisted_inc=1 if state in {"ready", "pending_mapping", "conflict"} else 0,
-                exception_inc=1 if state not in {"ready", "pending_mapping", "conflict", "skipped"} else 0,
+                persisted_inc=1 if state in {"ready", "pending_mapping", "mapping_conflict", "conflict"} else 0,
+                exception_inc=1 if state not in {"ready", "pending_mapping", "mapping_conflict", "conflict", "skipped"} else 0,
             )
             self.store.append_event(
                 ItemProgressEvent(
@@ -1312,7 +1534,7 @@ class AppService:
             )
 
         final_status = "success"
-        if accepted_completed <= 0:
+        if refreshed <= 0:
             final_status = "failed"
         elif failed > 0 or pending > 0 or skipped > 0:
             final_status = "success_with_warnings"
@@ -1368,6 +1590,36 @@ class AppService:
         )
         return {"job_id": job_id, "job_type": "mapping_refresh", "affected_count": len(affected_records)}
 
+    def resolve_mapping_conflict(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        record_id = str(payload.get("record_id") or "").strip()
+        resolution = dict(payload.get("selected_resolution") or {})
+        if not record_id:
+            raise ValueError("record_id is required")
+        if not resolution:
+            raise ValueError("selected_resolution is required")
+        save_payload = {
+            "source_name": str(resolution.get("source_name") or ""),
+            "match_field": str(resolution.get("match_field") or ""),
+            "target_field": str(resolution.get("target_field") or ""),
+            "target_value": str(resolution.get("target_value") or ""),
+            "notes": str(payload.get("notes") or resolution.get("notes") or "").strip(),
+            "authoritative": True,
+            "resolution_record_id": record_id,
+            "resolution_source": "mapping_conflict",
+        }
+        if payload.get("confirm_overwrite"):
+            save_payload["confirm_overwrite"] = True
+        response = dict(self.upsert_mapping(save_payload))
+        response["record_id"] = record_id
+        response["resolution_mode"] = "rule_saved_and_refresh_started" if response.get("job_id") else "rule_saved_without_refresh"
+        response["resolution"] = {
+            "field": str(resolution.get("field") or ""),
+            "rule_kind": str(resolution.get("rule_kind") or ""),
+            "source_name": str(resolution.get("source_name") or ""),
+            "target_value": str(resolution.get("target_value") or ""),
+        }
+        return response
+
     def launch_pending_mapping_refresh(self, _payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
         background_launched = False
         self._reserve_mutating_job("mapping_refresh")
@@ -1412,6 +1664,19 @@ class AppService:
         )
         return runner.ingest(ItemSavedPayload(source_file=str(file_path)))
 
+    def _manual_import_smoke_delay_seconds(self, file_path: str) -> float:
+        raw_delay_ms = str(os.environ.get("PEAP_SMOKE_MANUAL_IMPORT_DELAY_MS") or "").strip()
+        if not raw_delay_ms:
+            return 0.0
+        normalized_path = str(file_path or "").lower()
+        if "smoke_delay" not in normalized_path:
+            return 0.0
+        try:
+            delay_ms = int(raw_delay_ms)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(delay_ms, 0) / 1000.0
+
     def _run_manual_import_job(self, *, job_id: str, files: list[str]) -> None:
         imported = 0
         pending = 0
@@ -1434,6 +1699,9 @@ class AppService:
                 )
             )
             try:
+                smoke_delay_seconds = self._manual_import_smoke_delay_seconds(file_path)
+                if smoke_delay_seconds > 0:
+                    time.sleep(smoke_delay_seconds)
                 result = self._ingest_manual_import_file(file_path)
                 state = str(result.get("state") or "")
             except Exception as exc:  # noqa: BLE001
@@ -1451,21 +1719,23 @@ class AppService:
                 )
                 continue
 
-            imported += 1
-            if state == "pending_mapping":
+            if state in {"pending_mapping", "mapping_conflict"}:
+                imported += 1
                 pending += 1
             elif state == "skipped":
+                imported += 1
                 skipped += 1
                 accepted_completed += 1
             elif state in {"ready", "conflict"}:
+                imported += 1
                 accepted_completed += 1
             elif state not in {"ready", "conflict"}:
                 failed += 1
             self.store.update_job_counts(
                 job_id,
                 downloaded_inc=1,
-                persisted_inc=1 if state in {"ready", "pending_mapping", "conflict"} else 0,
-                exception_inc=1 if state not in {"ready", "pending_mapping", "conflict", "skipped"} else 0,
+                persisted_inc=1 if state in {"ready", "pending_mapping", "mapping_conflict", "conflict"} else 0,
+                exception_inc=1 if state not in {"ready", "pending_mapping", "mapping_conflict", "conflict", "skipped"} else 0,
             )
             self.store.append_event(
                 ItemProgressEvent(
@@ -1474,15 +1744,24 @@ class AppService:
                     status=state or "done",
                     project_code=str(result.get("project_code") or ""),
                     archive_path=str(result.get("archive_path") or ""),
+                    error_type=str(result.get("error_type") or ""),
+                    error_message=str(
+                        result.get("last_error_message")
+                        or result.get("error_message")
+                        or ""
+                    ),
                     payload={"label": "手动导入完成", "source_file": file_path, "state": state},
                 )
             )
 
         final_status = "success"
-        if accepted_completed <= 0:
+        if imported <= 0:
             final_status = "failed"
         elif failed > 0 or pending > 0 or skipped > 0:
             final_status = "success_with_warnings"
+        current_status = str(self.store.get_job(job_id).get("status") or "")
+        if current_status != "running":
+            return
         self.store.finish_job(
             job_id,
             status=final_status,
@@ -1501,7 +1780,12 @@ class AppService:
                 str(payload.get("input_dir") or self.get_advanced_settings().get("raw_manual_root") or "").strip()
             )
             if not input_dir or not os.path.isdir(input_dir):
-                raise FileNotFoundError(input_dir or "manual import directory is empty")
+                raise AppUserFacingError(
+                    message=f"手动导入目录不存在：{input_dir or ''}",
+                    error_code="manual_import_input_dir_not_found",
+                    http_status=400,
+                    details={"input_dir": input_dir},
+                )
             files = _discover_import_files(input_dir)
             job_id = self.store.create_job(
                 "manual_import",
@@ -1764,6 +2048,20 @@ class AppService:
             return summary
 
     def launch_one_click(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        browser_runtime = self.runtime_dependencies.get_browser_runtime_status()
+        product_readiness = self._build_product_readiness(browser_runtime=browser_runtime)
+        if not bool(product_readiness.get("download_ready")):
+            issues = list(product_readiness.get("issues") or [])
+            issue = dict(issues[0] or {}) if issues else {}
+            raise AppUserFacingError(
+                message=str(issue.get("message") or "download runtime not ready"),
+                error_code=str(issue.get("code") or "download_runtime_not_ready"),
+                http_status=409,
+                details={
+                    "product_readiness": product_readiness,
+                    "browser_runtime": browser_runtime,
+                },
+            )
         return self._launch_streaming_job(payload, job_type="one_click", auto_export=False)
 
     def _launch_streaming_job(
@@ -1778,6 +2076,7 @@ class AppService:
         self._normalize_legacy_views()
         self._repair_missing_archives_once()
         self._reserve_mutating_job(job_type)
+        _validate_streaming_job_dates(payload)
         basic = self.get_basic_settings()
         advanced = self.get_advanced_settings()
         response: dict[str, Any] = {"job_id": "", "db_path": self.db_path}
@@ -1793,7 +2092,11 @@ class AppService:
             end_date=str(payload.get("end_date") or ""),
             exchange=str(payload.get("exchange") or basic["default_exchange"]),
             project_type=str(payload.get("project_type") or basic["default_project_type"]),
-            concurrency=int(payload.get("concurrency") or basic["default_concurrency"]),
+            concurrency=_parse_positive_int(
+                payload.get("concurrency"),
+                field_name="concurrency",
+                default=int(basic["default_concurrency"]),
+            ),
             page_size=payload.get("page_size"),
             max_pages=payload.get("max_pages"),
             with_refresh=False,
@@ -1812,16 +2115,17 @@ class AppService:
 
         def _run() -> None:
             try:
-                run_streaming_daily_pipeline(
-                    args,
-                    config_obj=self.config,
-                    emit_console=False,
-                    job_created_callback=_job_created,
-                    job_type=job_type,
-                    archive_root=basic["archive_root"],
-                    export_root=basic["export_root"],
-                    auto_export=auto_export,
-                )
+                with playwright_env(str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))):
+                    run_streaming_daily_pipeline(
+                        args,
+                        config_obj=self.config,
+                        emit_console=False,
+                        job_created_callback=_job_created,
+                        job_type=job_type,
+                        archive_root=basic["archive_root"],
+                        export_root=basic["export_root"],
+                        auto_export=auto_export,
+                    )
             finally:
                 self._release_mutating_job(job_type)
 

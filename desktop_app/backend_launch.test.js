@@ -23,7 +23,7 @@ test("development launch uses repo venv python and workspace playwright cache", 
   });
 
   assert.equal(launch.mode, "development");
-  assert.equal(launch.command, "/tmp/peap/.venv-desktop/bin/python");
+  assert.equal(launch.command, "/tmp/peap/.venv/bin/python");
   assert.deepEqual(launch.args, [
     "-m",
     "desktop_backend.app_backend",
@@ -100,15 +100,15 @@ test("parseBackendArgs falls back to whitespace splitting", () => {
 test("validateBackendLaunch explains missing dev venv python clearly", () => {
   const message = validateBackendLaunch({
     mode: "development",
-    command: "/tmp/peap/.venv-desktop/bin/python",
+    command: "/tmp/peap/.venv/bin/python",
   });
 
   assert.match(message, /Desktop backend Python runtime was not found/);
-  assert.match(message, /bootstrap_desktop_env\.sh/);
+  assert.match(message, /uv sync/);
 });
 
 test("commandLooksLikePath distinguishes bare commands from file paths", () => {
   assert.equal(commandLooksLikePath("python3"), false);
-  assert.equal(commandLooksLikePath("/tmp/peap/.venv-desktop/bin/python"), true);
-  assert.equal(commandLooksLikePath(".venv-desktop/bin/python"), true);
+  assert.equal(commandLooksLikePath("/tmp/peap/.venv/bin/python"), true);
+  assert.equal(commandLooksLikePath(".venv/bin/python"), true);
 });

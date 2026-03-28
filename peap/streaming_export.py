@@ -49,14 +49,43 @@ def _safe_suffix(value: str) -> str:
     return cleaned or "default"
 
 
+def _normalize_export_mode(raw_value: str) -> str:
+    text = str(raw_value or "incremental").strip().lower()
+    return text or "incremental"
+
+
+def _record_matches_keyword(record: Dict[str, Any], *, keyword: str) -> bool:
+    normalized_keyword = str(keyword or "").strip().lower()
+    if not normalized_keyword:
+        return True
+    payload = record_to_export_payload(record)
+    search_blob = " ".join(
+        [
+            str(record.get("project_code") or ""),
+            str(record.get("project_name") or ""),
+            str(record.get("project_type") or ""),
+            str(record.get("exchange") or ""),
+            str(record.get("listing_date") or ""),
+            str(record.get("state") or ""),
+        ]
+        + [str(value or "") for value in payload.values()]
+    ).lower()
+    return normalized_keyword in search_blob
+
+
 def _default_cursor_key(request: ExportRequest) -> str:
+    mode = _normalize_export_mode(request.mode)
+    requested_state = str(getattr(request, "requested_state", "all") or "all").strip().lower()
+    keyword = str(getattr(request, "keyword", "") or "").strip().lower()
     seed = "|".join(
         [
-            request.mode,
+            mode,
             request.date_from or "",
             request.date_to or "",
             ",".join(sorted(request.business_types)),
             request.output_dir,
+            requested_state,
+            keyword,
         ]
     )
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
@@ -144,6 +173,9 @@ def run_ready_export(
 ) -> ExportRunResult:
     writer = writer or _write_workbook_default
     record_family = str(request.record_family or "listing").strip() or "listing"
+    mode = _normalize_export_mode(request.mode)
+    requested_state = str(getattr(request, "requested_state", "all") or "all").strip().lower()
+    keyword = str(getattr(request, "keyword", "") or "").strip().lower()
     if record_family != "listing":
         raise ValueError(f"unsupported record_family: {record_family}")
     output_dir = os.path.abspath(request.output_dir)
@@ -152,7 +184,8 @@ def run_ready_export(
     export_id = f"{dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}"
 
     business_types = list(request.business_types or BUSINESS_TYPE_LABELS.keys())
-    exported = store.get_exported_revision_map(cursor_key)
+    # rebuild is a full scoped re-export; it must not inherit incremental cursor state.
+    exported = {} if mode == "rebuild" else store.get_exported_revision_map(cursor_key)
     records = store.iter_latest_records(
         states=["ready"],
         date_from=request.date_from,
@@ -166,8 +199,13 @@ def run_ready_export(
     changed_count = 0
 
     for record in records:
+        record_state = str(record.get("state") or "").strip().lower()
+        if requested_state not in {"", "all"} and record_state != requested_state:
+            continue
         business_type = str(record["project_type"] or "").strip()
         if business_types and business_type not in business_types:
+            continue
+        if not _record_matches_keyword(record, keyword=keyword):
             continue
         payload = record_to_export_payload(record)
         previous = exported.get(record["record_id"])
@@ -203,12 +241,12 @@ def run_ready_export(
         "new_records": new_count,
         "changed_records": changed_count,
         "artifacts": [artifact.file_path for artifact in artifacts],
-        "mode": request.mode,
+        "mode": mode,
     }
     store.mark_exported(
         export_id=export_id,
         cursor_key=cursor_key,
-        mode=request.mode,
+        mode=mode,
         date_from=request.date_from,
         date_to=request.date_to,
         project_type=",".join(sorted(business_types)),

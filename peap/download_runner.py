@@ -237,7 +237,7 @@ def ensure_runtime_dependencies(tasks: list[DownloadTaskSpec], *, logger: loggin
     message = (
         "Missing runtime dependency 'playwright' for current interpreter. "
         f"python={exe} | install with: "
-        f"\"{exe}\" -m pip install playwright && "
+        "uv sync && "
         f"\"{exe}\" -m playwright install chromium"
     )
     print(message)

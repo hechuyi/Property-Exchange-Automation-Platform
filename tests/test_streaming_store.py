@@ -67,6 +67,77 @@ class StreamingStoreTest(unittest.TestCase):
         exported = self.store.get_exported_revision_map("default")
         self.assertEqual(exported[rows[0]["record_id"]]["revision_hash"], "hash-2")
 
+    def test_upsert_record_refreshes_state_and_findings_when_revision_hash_is_unchanged(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "same-payload.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>same payload</body></html>")
+
+        base_payload = {
+            "项目编号": "G32025CQ1000202-3",
+            "项目名称": "测试项目",
+            "项目类型": "股权转让",
+            "转让方": "中铁二院工程集团有限责任公司",
+            "隶属集团": "中国铁路工程集团有限公司",
+        }
+        conflict_record = IngestedRecord(
+            record_id="rec-same-hash",
+            revision_hash="hash-same",
+            project_code="G32025CQ1000202-3",
+            project_name="测试项目",
+            project_type="股权转让",
+            exchange="chongqing",
+            listing_date="2026-03-26",
+            state="mapping_conflict",
+            source_file=source_file,
+            archive_path=source_file,
+            parser_payload=base_payload,
+            postprocess_payload=base_payload,
+            findings=[
+                PostProcessFinding(
+                    severity="warn",
+                    type="mapping_conflict",
+                    message="conflicting group candidates",
+                    evidence={"options": ["中国铁路工程集团有限公司", "中铁"]},
+                )
+            ],
+        )
+        first = self.store.upsert_record(conflict_record)
+        self.assertTrue(first["changed"])
+
+        gap_record = IngestedRecord(
+            **{
+                **conflict_record.__dict__,
+                "state": "pending_mapping",
+                "findings": [
+                    PostProcessFinding(
+                        severity="warn",
+                        type="mapping_gap",
+                        message="缺少类型，暂不能进入导出",
+                        evidence={"missing_fields": ["类型"]},
+                    ),
+                    PostProcessFinding(
+                        severity="warn",
+                        type="mapping_missing",
+                        message="缺少类型，暂不能进入导出",
+                        evidence={"missing_fields": ["类型"]},
+                    ),
+                ],
+            }
+        )
+        second = self.store.upsert_record(gap_record)
+
+        self.assertFalse(second["changed"])
+
+        rows = self.store.iter_latest_records(states=["pending_mapping"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["record_id"], "rec-same-hash")
+        self.assertEqual(rows[0]["state"], "pending_mapping")
+        self.assertEqual(rows[0]["revision_id"], first["revision_id"])
+        self.assertEqual(
+            {str(item.get("type") or "") for item in rows[0]["findings"]},
+            {"mapping_gap", "mapping_missing"},
+        )
+
     def test_mapping_entries_and_settings_have_history(self) -> None:
         entry_id = self.store.upsert_mapping_entry(
             company_name="上海电气集团恒联企业发展有限公司",

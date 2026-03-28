@@ -10,8 +10,6 @@ const DIST_DIR = path.join(APP_ROOT, "build", "desktop_backend");
 const WORK_DIR = path.join(APP_ROOT, ".pyinstaller", "work");
 const SPEC_DIR = path.join(APP_ROOT, ".pyinstaller", "spec");
 const BACKEND_ENTRY = path.join(REPO_ROOT, "desktop_backend_entry.py");
-const RUNTIME_REQUIREMENTS = path.join(REPO_ROOT, "desktop_backend", "requirements.lock.txt");
-const BUILD_REQUIREMENTS = path.join(REPO_ROOT, "desktop_backend", "requirements.build.lock.txt");
 const BINARY_NAME = process.platform === "win32" ? "peap-desktop-backend.exe" : "peap-desktop-backend";
 
 function log(message) {
@@ -49,21 +47,12 @@ function isRunnable(command) {
   return result.status === 0;
 }
 
-function resolvePython() {
+function resolveUv() {
   const candidates = [];
-  if (process.env.PEAP_DESKTOP_PYTHON) {
-    candidates.push(process.env.PEAP_DESKTOP_PYTHON);
+  if (process.env.PEAP_UV_BIN) {
+    candidates.push(process.env.PEAP_UV_BIN);
   }
-  if (process.env.PEAP_PYTHON) {
-    candidates.push(process.env.PEAP_PYTHON);
-  }
-  candidates.push(
-    process.platform === "win32"
-      ? path.join(REPO_ROOT, ".venv-desktop", "Scripts", "python.exe")
-      : path.join(REPO_ROOT, ".venv-desktop", "bin", "python"),
-  );
-  candidates.push(process.platform === "win32" ? "python" : "python3");
-  candidates.push("python");
+  candidates.push("uv");
 
   for (const candidate of candidates) {
     if (candidate && isRunnable(candidate)) {
@@ -71,8 +60,17 @@ function resolvePython() {
     }
   }
   fail(
-    "No usable Python runtime found. Set PEAP_DESKTOP_PYTHON or build .venv-desktop first.",
+    "No usable uv runtime found. Install uv or set PEAP_UV_BIN first.",
   );
+}
+
+function buildUvEnvironment() {
+  const env = { ...process.env };
+  const explicitPython = process.env.PEAP_DESKTOP_PYTHON || process.env.PEAP_PYTHON;
+  if (explicitPython) {
+    env.UV_PYTHON = explicitPython;
+  }
+  return env;
 }
 
 function ensureDirectories() {
@@ -86,14 +84,16 @@ function main() {
     fail(`Missing backend entrypoint: ${BACKEND_ENTRY}`);
   }
 
-  const python = resolvePython();
+  const uv = resolveUv();
+  const uvEnv = buildUvEnvironment();
   ensureDirectories();
 
-  run(python, ["-m", "pip", "install", "--upgrade", "pip"]);
-  run(python, ["-m", "pip", "install", "-r", RUNTIME_REQUIREMENTS, "-r", BUILD_REQUIREMENTS]);
-  run(python, [
-    "-m",
-    "PyInstaller",
+  run(uv, ["sync", "--locked", "--group", "build"], { env: uvEnv });
+  run(uv, [
+    "run",
+    "--group",
+    "build",
+    "pyinstaller",
     "--noconfirm",
     "--clean",
     "--onefile",
@@ -118,11 +118,13 @@ function main() {
     "--collect-submodules",
     "peap_postprocess",
     "--collect-data",
+    "peap_postprocess",
+    "--collect-data",
     "playwright",
     "--collect-binaries",
     "playwright",
     BACKEND_ENTRY,
-  ]);
+  ], { env: uvEnv });
 
   const outputBinary = path.join(DIST_DIR, BINARY_NAME);
   if (!fs.existsSync(outputBinary)) {

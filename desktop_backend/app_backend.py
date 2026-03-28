@@ -13,12 +13,14 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .app_config import AppConfig
-from .app_service import AppService
+from .app_service import AppService, AppUserFacingError
 from .http_contract import (
+    build_capacity_envelope,
     build_job_events_envelope,
     build_not_found_payload,
     normalize_job_event_limit,
 )
+from .product_errors import ProductError
 
 DESKTOP_API_TOKEN_HEADER = "X-PEAP-Desktop-Token"
 
@@ -102,6 +104,14 @@ def _not_found(resource: str, resource_id: str = "") -> tuple[int, dict[str, Any
     return HTTPStatus.NOT_FOUND, build_not_found_payload(resource=resource, resource_id=resource_id)
 
 
+def _parse_jobs_limit(raw_value: str) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return 20
+    return max(1, min(value, 200))
+
+
 def dispatch_api_request(
     service: AppService,
     *,
@@ -129,7 +139,7 @@ def dispatch_api_request(
             if route == "/api/overview":
                 return HTTPStatus.OK, service.overview()
             if route == "/api/jobs":
-                limit = int(_query_value(query, "limit", "20"))
+                limit = _parse_jobs_limit(_query_value(query, "limit", "20"))
                 return HTTPStatus.OK, {"jobs": service.list_jobs(limit=limit)}
             job_id, is_events_route = _parse_job_id(route)
             if job_id:
@@ -145,10 +155,14 @@ def dispatch_api_request(
                 job.pop("events", None)
                 return HTTPStatus.OK, job
             if route == "/api/mappings":
-                return HTTPStatus.OK, {
-                    "entries": service.list_mapping_entries(),
-                    "pending": service.list_pending_mappings(),
-                }
+                pending_payload = service.list_pending_mappings()
+                if isinstance(pending_payload, dict):
+                    payload = dict(pending_payload)
+                else:
+                    pending_items = list(pending_payload or [])
+                    payload = build_capacity_envelope(pending_items, total_count=len(pending_items), item_key="pending")
+                payload["entries"] = service.list_mapping_entries()
+                return HTTPStatus.OK, payload
             if route == "/api/records":
                 limit = _query_value(query, "limit", "50")
                 payload = {
@@ -181,6 +195,8 @@ def dispatch_api_request(
                 return HTTPStatus.OK, service.upsert_mapping(request_body)
             if route == "/api/mappings/preview":
                 return HTTPStatus.OK, service.preview_mapping_upsert(request_body)
+            if route == "/api/mappings/resolve-conflict":
+                return HTTPStatus.OK, service.resolve_mapping_conflict(request_body)
             if route == "/api/mappings/reprocess-pending":
                 return HTTPStatus.OK, service.launch_pending_mapping_refresh(request_body)
             if route.startswith("/api/records/") and route.endswith("/reprocess"):
@@ -192,11 +208,24 @@ def dispatch_api_request(
                 return HTTPStatus.OK, service.set_advanced_settings(request_body)
             if route == "/api/runtime/install-browser":
                 return HTTPStatus.ACCEPTED, service.launch_browser_runtime_install(request_body)
+    except AppUserFacingError as exc:
+        payload = {
+            "error": exc.message,
+            "error_code": exc.error_code,
+        }
+        if exc.details:
+            payload["details"] = exc.details
+        return exc.http_status, payload
+    except ProductError as exc:
+        return exc.status_code, exc.to_payload()
     except KeyError:
         resource_id = ""
         resource = "job"
         if route.startswith("/api/jobs/"):
             resource_id, _ = _parse_job_id(route)
+        elif route.startswith("/api/records/") and route.endswith("/reprocess"):
+            resource = "record"
+            resource_id = route.split("/")[3]
         return _not_found(resource, resource_id)
     except Exception as exc:  # noqa: BLE001
         return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}

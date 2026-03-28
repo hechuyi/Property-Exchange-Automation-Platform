@@ -145,8 +145,8 @@ function resolveBackendLaunch({
 
   const devPython =
     platform === "win32"
-      ? path.join(resolvedRepoRoot, ".venv-desktop", "Scripts", "python.exe")
-      : path.join(resolvedRepoRoot, ".venv-desktop", "bin", "python");
+      ? path.join(resolvedRepoRoot, ".venv", "Scripts", "python.exe")
+      : path.join(resolvedRepoRoot, ".venv", "bin", "python");
   return {
     mode: "development",
     backendUrl,
@@ -170,8 +170,10 @@ function validateBackendLaunch(launch) {
       return (
         "Desktop backend Python runtime was not found.\n\n" +
         `Expected: ${command}\n\n` +
-        "Build the desktop dev environment first:\n" +
-        "bash scripts/bootstrap_desktop_env.sh"
+        "Sync the repo-managed uv environment first:\n" +
+        "uv sync\n\n" +
+        "If you also need the Playwright browser runtime, run:\n" +
+        "npm run bootstrap:backend"
       );
     }
     if (launch && launch.mode === "packaged") {

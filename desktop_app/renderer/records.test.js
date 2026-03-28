@@ -45,3 +45,17 @@ test("formatRecordsSummary prefers filtered_state_counts over page_state_counts 
   assert.match(text, /待补映射 1 条/);
   assert.doesNotMatch(text, /已录入 2 条/);
 });
+
+test("formatPendingMappingsSummary exposes truncation hint for capped pending list", async () => {
+  const { formatPendingMappingsSummary } = await loadRecordsModule();
+  const text = formatPendingMappingsSummary({
+    pending: [{ record_id: "p-1" }, { record_id: "p-2" }],
+    returned_count: 2,
+    total_count: 5,
+    truncated: true,
+  });
+
+  assert.match(text, /当前 2 条待补项/);
+  assert.match(text, /只显示前 2 条/);
+  assert.match(text, /仍有剩余 3 条/);
+});

@@ -38,16 +38,12 @@ RETIRED_NAMES = (
     "POSTPROCESS_ENGINE_PLAN.md",
     "PPE_BUSINESS_USER_GUIDE.md",
     "postprocess.external.template.json",
-    "group_group_mapping.template.csv",
-    "group_type_mapping.template.csv",
     "run_parser.ps1",
     "run_parser.bat",
     "run_daily_pipeline.ps1",
     "run_daily_pipeline.bat",
     "run_postprocess.ps1",
     "run_postprocess.bat",
-    "transferor_group_mapping.template.csv",
-    "transferor_type_mapping.template.csv",
 )
 
 

@@ -15,16 +15,20 @@ def normalize_job_event_limit(raw_value: Any) -> int:
     return max(1, min(value, DEFAULT_JOB_EVENT_LIMIT))
 
 
-def build_job_events_envelope(events: list[dict], *, total_count: int) -> dict:
-    events_list = list(events or [])
-    returned_count = len(events_list)
+def build_capacity_envelope(items: Iterable[Any], *, total_count: int, item_key: str = "items") -> dict:
+    items_list = list(items or [])
+    returned_count = len(items_list)
     normalized_total = max(returned_count, int(total_count or 0))
     return {
-        "events": events_list,
+        item_key: items_list,
         "returned_count": returned_count,
         "total_count": normalized_total,
         "truncated": normalized_total > returned_count,
     }
+
+
+def build_job_events_envelope(events: list[dict], *, total_count: int) -> dict:
+    return build_capacity_envelope(events, total_count=total_count, item_key="events")
 
 
 def build_not_found_payload(*, resource: str, resource_id: str = "") -> dict:

@@ -121,3 +121,50 @@ test("formatProgressMeta restores archive_pending backlog counts", async () => {
   assert.match(text, /已存档 3 条/);
   assert.match(text, /已保存网页 8 条/);
 });
+
+test("formatCapacityNotice renders visible truncation hints", async () => {
+  const { formatCapacityNotice } = await loadTasksModule();
+  const text = formatCapacityNotice({
+    returnedCount: 200,
+    totalCount: 243,
+    noun: "事件",
+  });
+
+  assert.equal(text, "只显示前 200 条事件，仍有剩余 43 条");
+});
+
+test("formatEventDetail uses business-facing error copy", async () => {
+  const { formatEventDetail } = await loadTasksModule();
+  const text = formatEventDetail({
+    status: "failed",
+    error_type: "mapping_refresh_failed",
+    error_message: "preview endpoint failed",
+  });
+
+  assert.match(text, /映射回刷失败/);
+  assert.doesNotMatch(text, /preview endpoint failed/);
+});
+
+test("formatProgressHint ignores legacy embedded job events capacity shape", async () => {
+  const { formatProgressHint } = await loadTasksModule();
+  const hint = formatProgressHint(
+    {
+      job_type: "mapping_refresh",
+      job_status: "success_with_warnings",
+      phase_code: "completed_with_warnings",
+    },
+    {
+      job_type: "mapping_refresh",
+      status: "success_with_warnings",
+      job_id: "job-7",
+      events: {
+        returned_count: 100,
+        total_count: 145,
+        truncated: true,
+      },
+    },
+    {},
+  );
+
+  assert.equal(hint, "映射回刷已完成，请到任务页查看结果。");
+});

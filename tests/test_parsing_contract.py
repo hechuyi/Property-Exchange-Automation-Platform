@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,7 +17,8 @@ from peap.constants import (
     TYPE_UNKNOWN,
 )
 from peap.output_mapping import map_standard_to_excel_payload
-from peap.parsing import build_parsed_project, parse_file
+from peap.parsing import ParseError, SkipParse, build_parsed_project, parse_file
+from peap.pipeline import ParserPipeline
 from peap.standard_model import build_standard_project
 from peap_parsers import BeijingParser, GuangzhouParser, ParserOutput, ShanghaiParser
 from peap_parsers.base import ParserContext, WebPageParser
@@ -29,6 +32,242 @@ class _DummyParser(WebPageParser):
 
 
 class ParsingContractTest(unittest.TestCase):
+    def test_parse_file_recovers_cbex_otc_fixture_without_path_project_type_fallback(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>北交互联-报废设备一批</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>
+            <textarea id="jsonobj">{
+              "object": {
+                "projectcode": "GR2026BJ1999001",
+                "object": "报废设备一批",
+                "publishdate": "2026-03-21",
+                "expiredate": "2026-03-31"
+              },
+              "sellerlist": {
+                "utrmcemsseller": [
+                  {"sellername": "测试转让方"}
+                ]
+              }
+            }</textarea>
+          </body>
+        </html>
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_dir = os.path.join(temp_dir, "挂牌_实物资产")
+            os.makedirs(fixture_dir, exist_ok=True)
+            fixture_path = os.path.join(fixture_dir, "fixture.html")
+            with open(fixture_path, "w", encoding="utf-8") as handle:
+                handle.write(html)
+
+            parsed = parse_file(fixture_path)
+
+        self.assertEqual(parsed.exchange, "beijing")
+        self.assertEqual(parsed.project_code, "GR2026BJ1999001")
+        self.assertEqual(parsed.project_name, "报废设备一批")
+        self.assertEqual(parsed.project_type, TYPE_UNKNOWN)
+        self.assertEqual(parsed.standard_record.project_type, TYPE_UNKNOWN)
+
+    def test_parse_file_cbex_otc_fixture_without_recoverable_payload_fails_explicitly(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>北交互联</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>欢迎来到北交互联</body>
+        </html>
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = os.path.join(temp_dir, "cbex-otc-empty.html")
+            with open(fixture_path, "w", encoding="utf-8") as handle:
+                handle.write(html)
+
+            with self.assertRaises(ParseError) as context:
+                parse_file(fixture_path)
+
+        self.assertIn("cbex-otc-page-unrecoverable", str(context.exception))
+        self.assertNotIsInstance(context.exception, SkipParse)
+
+    def test_parse_file_cbex_otc_parser_output_can_recover_from_standard_payload_only(self) -> None:
+        file_path = "C:\\temp\\cbex-otc-standard-only.html"
+
+        class FakeParser(WebPageParser):
+            def parse(self) -> ParserOutput:
+                return self.build_parser_output(
+                    compat_payload={},
+                    standard_payload={
+                        "project_code": "GR2026BJ2999001",
+                        "project_name": "仅结构化字段项目",
+                    },
+                )
+
+        html = """
+        <html>
+          <head>
+            <title>北交互联-仅结构化字段项目</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body><textarea id="jsonobj">{}</textarea></body>
+        </html>
+        """
+
+        with (
+            patch(
+                "peap.parsing.read_text_with_fallback",
+                return_value=SimpleNamespace(content=html, encoding="utf-8"),
+            ),
+            patch("peap.parsing.detect_exchange", return_value="beijing"),
+            patch("peap.parsing.PARSER_MAP", {"beijing": FakeParser}),
+            patch(
+                "peap.parsing.detect_category_from_path",
+                return_value=(STATUS_LISTED, TYPE_UNKNOWN),
+            ),
+            patch("peap.parsing.apply_pre_disclosure_fallback"),
+            patch("peap.parsing.apply_finance_fallback"),
+            patch("peap.parsing.apply_group_fallback"),
+        ):
+            parsed = parse_file(file_path)
+
+        self.assertEqual(parsed.project_code, "GR2026BJ2999001")
+        self.assertEqual(parsed.project_name, "仅结构化字段项目")
+        self.assertEqual(parsed.project_type, TYPE_UNKNOWN)
+
+    def test_parse_file_cbex_otc_recoverable_marker_without_identity_still_fails(self) -> None:
+        file_path = "C:\\temp\\cbex-otc-missing-identity.html"
+
+        class FakeParser(WebPageParser):
+            def parse(self) -> ParserOutput:
+                return self.build_parser_output(
+                    compat_payload={},
+                    standard_payload={},
+                )
+
+        html = """
+        <html>
+          <head>
+            <title>北交互联-存在可恢复标记但无身份字段</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>
+            <textarea id="jsonobj">{
+              "object": {
+                "projectcode": "GR2026BJ3999001"
+              }
+            }</textarea>
+          </body>
+        </html>
+        """
+
+        with (
+            patch(
+                "peap.parsing.read_text_with_fallback",
+                return_value=SimpleNamespace(content=html, encoding="utf-8"),
+            ),
+            patch("peap.parsing.detect_exchange", return_value="beijing"),
+            patch("peap.parsing.PARSER_MAP", {"beijing": FakeParser}),
+            patch(
+                "peap.parsing.detect_category_from_path",
+                return_value=(STATUS_LISTED, TYPE_UNKNOWN),
+            ),
+            patch("peap.parsing.apply_pre_disclosure_fallback"),
+            patch("peap.parsing.apply_finance_fallback"),
+            patch("peap.parsing.apply_group_fallback"),
+        ):
+            with self.assertRaises(ParseError) as context:
+                parse_file(file_path)
+
+        self.assertIn("cbex-otc-page-unrecoverable", str(context.exception))
+
+    def test_batch_pipeline_marks_cbex_otc_unrecoverable_as_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = os.path.join(temp_dir, "cbex-otc-empty.html")
+            with open(fixture_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    """
+                    <html>
+                      <head>
+                        <title>北交互联</title>
+                        <meta name="keywords" content="北交互联" />
+                      </head>
+                      <body>欢迎来到北交互联</body>
+                    </html>
+                    """
+                )
+
+            pipeline = ParserPipeline(
+                html_root=temp_dir,
+                dry_run=True,
+                parse_cache_enabled=False,
+            )
+
+            summary = pipeline.run()
+
+        self.assertEqual(summary.processed, 1)
+        self.assertEqual(summary.succeeded, 0)
+        self.assertEqual(summary.failed, 1)
+        self.assertTrue(any("cbex-otc-page-unrecoverable" in message for message in summary.errors))
+
+    def test_batch_pipeline_surfaces_cbex_otc_identity_gate_failure_from_parse_layer(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>北交互联-存在可恢复标记但无身份字段</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>
+            <textarea id="jsonobj">{
+              "object": {
+                "projectcode": "GR2026BJ3999001"
+              }
+            }</textarea>
+          </body>
+        </html>
+        """
+
+        class FakeParser(WebPageParser):
+            def parse(self) -> ParserOutput:
+                return self.build_parser_output(
+                    compat_payload={},
+                    standard_payload={},
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = os.path.join(temp_dir, "cbex-otc-missing-identity.html")
+            with open(fixture_path, "w", encoding="utf-8") as handle:
+                handle.write(html)
+
+            pipeline = ParserPipeline(
+                html_root=temp_dir,
+                dry_run=True,
+                parse_cache_enabled=False,
+            )
+
+            with (
+                patch(
+                    "peap.parsing.read_text_with_fallback",
+                    return_value=SimpleNamespace(content=html, encoding="utf-8"),
+                ),
+                patch("peap.parsing.detect_exchange", return_value="beijing"),
+                patch("peap.parsing.PARSER_MAP", {"beijing": FakeParser}),
+                patch(
+                    "peap.parsing.detect_category_from_path",
+                    return_value=(STATUS_LISTED, TYPE_UNKNOWN),
+                ),
+                patch("peap.parsing.apply_pre_disclosure_fallback"),
+                patch("peap.parsing.apply_finance_fallback"),
+                patch("peap.parsing.apply_group_fallback"),
+            ):
+                summary = pipeline.run()
+
+        self.assertEqual(summary.processed, 1)
+        self.assertEqual(summary.succeeded, 0)
+        self.assertEqual(summary.failed, 1)
+        self.assertTrue(any("cbex-otc-page-unrecoverable" in message for message in summary.errors))
+
     def test_web_parser_exposes_context_backed_source_file(self) -> None:
         parser = _DummyParser(
             "<html></html>",
@@ -132,9 +371,11 @@ class ParsingContractTest(unittest.TestCase):
         self.assertEqual(parsed.standard_record.project_name, "结构化名称")
         self.assertEqual(parsed.standard_record.seller, "结构化转让方")
         self.assertEqual(parsed.standard_record.status, STATUS_LISTED)
+        self.assertEqual(parsed.standard_record.project_type, TYPE_EQUITY_TRANSFER)
         self.assertEqual(parsed.project_code, "P010")
         self.assertEqual(parsed.project_name, "结构化名称")
         self.assertEqual(parsed.status, STATUS_LISTED)
+        self.assertEqual(parsed.project_type, TYPE_EQUITY_TRANSFER)
         self.assertEqual(compat_payload["项目名称"], "结构化名称")
         self.assertEqual(compat_payload["转让方"], "结构化转让方")
 

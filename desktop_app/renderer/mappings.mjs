@@ -33,9 +33,18 @@ export function buildMappingPayload(draft, mappingRuleConfig = {}) {
 export function formatMappingConflictSummary(preview = {}) {
   const affectedCount = Number(preview.affected_count || 0);
   const pendingCount = Number(preview.affected_pending_count || 0);
+  const returnedCount = Number(preview.affected_returned_count || affectedCount);
+  const totalCount = Number(preview.affected_total_count || returnedCount);
   const currentValue = existingTargetValue(preview) || "空值";
   const nextValue = normalizeText(preview.target_value) || "空值";
-  return `已存在同来源规则，当前值为“${currentValue}”，新值为“${nextValue}”。如果覆盖，将回刷 ${affectedCount} 条记录，其中 ${pendingCount} 条仍是待补映射。`;
+  const capacityNotice = preview.truncated && totalCount > returnedCount
+    ? `只显示前 ${returnedCount} 条记录，仍有剩余 ${totalCount - returnedCount} 条。`
+    : "";
+  return [
+    `已存在同来源规则，当前值为“${currentValue}”，新值为“${nextValue}”。`,
+    `预计回刷 ${affectedCount} 条记录，其中 ${pendingCount} 条仍是待补映射。`,
+    capacityNotice,
+  ].filter(Boolean).join(" ");
 }
 
 export function isMappingInteractionActive({
@@ -154,7 +163,7 @@ export async function runBatchMappingUpsertFlow({
     } catch (error) {
       failedCount += 1;
       const label = normalizeText(draft?.sourceName || draft?.project_name || draft?.project_code || "未命名规则");
-      failureMessages.push(`${label}: ${error.message}`);
+      failureMessages.push(`${label}：规则保存失败，请到任务页查看明细。`);
     }
   }
 

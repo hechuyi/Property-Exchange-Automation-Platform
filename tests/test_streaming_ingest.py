@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from peap.streaming_ingest import StreamingIngestDependencies, StreamingIngestRunner
+from peap.streaming_ingest import StreamingIngestDependencies, StreamingIngestRunner, _default_parse_file
 from peap.streaming_models import ItemSavedPayload, PostProcessFinding
 from peap.streaming_store import StreamingStore
 
@@ -315,39 +315,111 @@ class StreamingIngestRunnerTest(unittest.TestCase):
         self.assertEqual(latest[0]["source_file"], result["archive_path"])
         self.assertEqual(latest[0]["archive_path"], result["archive_path"])
 
-    def test_ingest_uses_saved_payload_project_type_when_parser_path_fallback_is_unknown(self) -> None:
-        def fake_parser(file_path: str):
-            return {
-                "项目编号": "G32026BJ1000003",
-                "项目名称": "测试股权项目",
-                "项目类型": "未知",
-                "交易所": "beijing",
-                "挂牌开始日期": "2026-03-21",
-                "转让方": "测试公司",
-                "类型": "国资",
-            }
+    def test_ingest_cbex_otc_fixture_persists_unknown_project_type_without_saved_payload_fallback(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>北交互联-报废设备一批</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>
+            <textarea id="jsonobj">{
+              "object": {
+                "projectcode": "GR2026BJ1999001",
+                "object": "报废设备一批",
+                "publishdate": "2026-03-21",
+                "expiredate": "2026-03-31"
+              },
+              "sellerlist": {
+                "utrmcemsseller": [
+                  {"sellername": "测试转让方"}
+                ]
+              }
+            }</textarea>
+          </body>
+        </html>
+        """
+        fixture_dir = os.path.join(self.temp_dir.name, "挂牌_实物资产")
+        os.makedirs(fixture_dir, exist_ok=True)
+        fixture_path = os.path.join(fixture_dir, "cbex-otc-recoverable.html")
+        with open(fixture_path, "w", encoding="utf-8") as handle:
+            handle.write(html)
+
+        runner = StreamingIngestRunner(
+            store=self.store,
+            archive_root=self.archive_root,
+        )
+
+        result = runner.ingest(
+            ItemSavedPayload(
+                source_file=fixture_path,
+                exchange="beijing",
+                project_code="GR2026BJ1999001",
+            )
+        )
+
+        self.assertEqual(result["state"], "pending_mapping")
+        self.assertEqual(result["project_code"], "GR2026BJ1999001")
+        latest = self.store.iter_latest_records(states=["pending_mapping"])
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0]["project_code"], "GR2026BJ1999001")
+        self.assertEqual(latest[0]["project_type"], "")
+        self.assertEqual(latest[0]["postprocess_payload"]["项目类型"], "未知")
+        self.assertTrue(any(str(item.get("type") or "") == "project_type_unknown" for item in latest[0]["findings"]))
+
+    def test_ingest_accepts_upstream_project_type_fallback_without_path_inference(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>北交互联-报废设备一批</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>
+            <textarea id="jsonobj">{
+              "object": {
+                "projectcode": "GR2026BJ1999003",
+                "object": "报废设备一批",
+                "publishdate": "2026-03-21",
+                "expiredate": "2026-03-31"
+              },
+              "sellerlist": {
+                "utrmcemsseller": [
+                  {"sellername": "测试转让方"}
+                ]
+              }
+            }</textarea>
+          </body>
+        </html>
+        """
+        fixture_path = os.path.join(self.temp_dir.name, "cbex-otc-upstream-known.html")
+        with open(fixture_path, "w", encoding="utf-8") as handle:
+            handle.write(html)
 
         runner = StreamingIngestRunner(
             store=self.store,
             archive_root=self.archive_root,
             dependencies=StreamingIngestDependencies(
-                parser=fake_parser,
-                postprocess=lambda payload, **kwargs: (dict(payload), []),
+                parser=_default_parse_file,
+                postprocess=lambda payload, **kwargs: ({**dict(payload), "类型": "国资"}, []),
             ),
         )
 
         result = runner.ingest(
             ItemSavedPayload(
-                source_file=self.html_path,
+                source_file=fixture_path,
                 exchange="beijing",
-                project_code="G32026BJ1000003",
-                extra={"project_type_fallback": "equity_transfer"},
+                project_code="GR2026BJ1999003",
+                extra={"project_type_fallback": "physical_asset"},
             )
         )
 
         self.assertEqual(result["state"], "ready")
+        self.assertEqual(result["project_type"], "实物资产")
         latest = self.store.iter_latest_records(states=["ready"])
-        self.assertEqual(latest[0]["project_type"], "股权转让")
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0]["project_code"], "GR2026BJ1999003")
+        self.assertEqual(latest[0]["project_type"], "实物资产")
+        self.assertEqual(latest[0]["postprocess_payload"]["项目类型"], "实物资产")
 
     def test_ingest_does_not_let_project_type_fallback_override_parser_value(self) -> None:
         def fake_parser(file_path: str):
@@ -384,40 +456,39 @@ class StreamingIngestRunnerTest(unittest.TestCase):
         self.assertEqual(latest[0]["project_type"], "实物资产")
         self.assertEqual(latest[0]["postprocess_payload"]["项目类型"], "实物资产")
 
-    def test_ingest_prefers_downloader_project_type_over_parser_fallback(self) -> None:
-        def fake_parser(file_path: str):
-            return {
-                "项目编号": "G32026BJ1000004",
-                "项目名称": "下载阶段已知类型项目",
-                "项目类型": "股权转让",
-                "交易所": "beijing",
-                "挂牌开始日期": "2026-03-21",
-                "转让方": "测试公司",
-                "类型": "国资",
-            }
+    def test_ingest_cbex_otc_fixture_without_recoverable_payload_records_parse_failure(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>北交互联</title>
+            <meta name="keywords" content="北交互联" />
+          </head>
+          <body>欢迎来到北交互联</body>
+        </html>
+        """
+        fixture_path = os.path.join(self.temp_dir.name, "cbex-otc-empty.html")
+        with open(fixture_path, "w", encoding="utf-8") as handle:
+            handle.write(html)
 
         runner = StreamingIngestRunner(
             store=self.store,
             archive_root=self.archive_root,
-            dependencies=StreamingIngestDependencies(
-                parser=fake_parser,
-                postprocess=lambda payload, **kwargs: (dict(payload), []),
-            ),
         )
 
         result = runner.ingest(
             ItemSavedPayload(
-                source_file=self.html_path,
+                source_file=fixture_path,
                 exchange="beijing",
-                project_code="G32026BJ1000004",
-                extra={"project_type": "physical_asset"},
+                project_code="GR2026BJ1999002",
             )
         )
 
-        self.assertEqual(result["state"], "ready")
-        latest = self.store.iter_latest_records(states=["ready"])
-        self.assertEqual(latest[0]["project_type"], "实物资产")
-        self.assertEqual(latest[0]["postprocess_payload"]["项目类型"], "实物资产")
+        self.assertEqual(result["state"], "parse_failed")
+        self.assertEqual(result["error_type"], "parse_failed")
+        self.assertIn("cbex-otc-page-unrecoverable", result["error_message"])
+        failed = self.store.iter_latest_records(states=["parse_failed"])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["state"], "parse_failed")
 
     def test_ingest_conflict_does_not_hide_pending_mapping_state(self) -> None:
         canonical_dir = os.path.join(self.archive_root, "2026年3月")

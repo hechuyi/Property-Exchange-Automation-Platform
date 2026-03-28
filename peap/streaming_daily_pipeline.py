@@ -79,6 +79,44 @@ def _stage_error_message(payload: Dict[str, Any]) -> str:
     return ""
 
 
+def _stage_error_type(payload: Dict[str, Any]) -> str:
+    explicit = str(payload.get("error_code") or payload.get("error_type") or "").strip()
+    if explicit:
+        return explicit
+    message = _stage_error_message(payload)
+    if (
+        "suaee.com/manageprojectweb/foreign/project/queryAllNew" in message
+        and "HTTP Error 404: Not Found" in message
+    ):
+        return "sse_list_api_not_found"
+    return ""
+
+
+def _stage_display_error_message(payload: Dict[str, Any]) -> str:
+    error_type = _stage_error_type(payload)
+    if error_type == "sse_list_api_not_found":
+        return "上交所列表接口 queryAllNew 返回 404，当前扫描已中止"
+    return _stage_error_message(payload)
+
+
+def _failure_summary_fields(job_events: list[dict[str, Any]]) -> dict[str, Any]:
+    for event in reversed(job_events):
+        if str(event.get("status") or "").strip() != "failed":
+            continue
+        stage = str(event.get("stage") or "").strip()
+        payload = dict(event.get("payload") or {}) if isinstance(event.get("payload"), dict) else {}
+        failure_code = str(event.get("error_type") or payload.get("error_code") or "").strip()
+        failure_message = str(event.get("error_message") or "").strip()
+        if not failure_code and not failure_message:
+            continue
+        return {
+            "failure_code": failure_code,
+            "failure_stage": stage,
+            "failure_message": failure_message,
+        }
+    return {}
+
+
 def _setup_logger(*, verbose: bool, config_obj: object) -> tuple[object, str]:
     return setup_cli_logger(
         name="streaming_daily_pipeline",
@@ -256,59 +294,63 @@ def run_streaming_daily_pipeline(
         service = StreamingIngestService(store=store, runner=runner)
         service.start()
 
-        job_id = store.create_job(
-            str(job_type),
-            metadata={
-                "start_date": start_text,
-                "end_date": end_text,
-                "exchange": getattr(args, "exchange", "all"),
-                "project_type": getattr(args, "project_type", "all"),
-                "archive_root": resolved_archive_root,
-                "export_root": resolved_export_root,
-            },
-        )
-        if job_created_callback is not None:
-            try:
-                job_created_callback(job_id, db_path)
-            except Exception:
-                pass
-        started_at = time.monotonic()
-        callback = service.build_callback(job_id=job_id)
-
-        def _stage_callback(payload: Dict[str, Any]) -> None:
-            phase_code = str(payload.get("phase_code") or "").strip()
-            if not phase_code:
-                return
-            store.append_event(
-                ItemProgressEvent(
-                    job_id=job_id,
-                    stage=phase_code,
-                    status=str(payload.get("status") or "running"),
-                    error_message=_stage_error_message(payload),
-                    payload=dict(payload),
-                )
-            )
-        request = DownloadOneClickRequest(
-            download_request=_build_download_request(
-                args,
-                start_text=start_text,
-                end_text=end_text,
-                config_obj=config_obj,
-                output_root=resolved_archive_root,
-                item_saved_callback=callback,
-            ),
-            plan_file="",
-            keep_plan=False,
-            with_refresh=False,
-            stage_callback=_stage_callback,
-            existing_project_codes=frozenset(
-                store.list_existing_project_codes(states=["ready", "pending_mapping", "skipped", "conflict"])
-            ),
-            existing_candidate_tokens=frozenset(
-                store.list_existing_candidate_tokens(states=["ready", "pending_mapping", "skipped", "conflict"])
-            ),
-        )
         try:
+            job_id = store.create_job(
+                str(job_type),
+                metadata={
+                    "start_date": start_text,
+                    "end_date": end_text,
+                    "exchange": getattr(args, "exchange", "all"),
+                    "project_type": getattr(args, "project_type", "all"),
+                    "archive_root": resolved_archive_root,
+                    "export_root": resolved_export_root,
+                },
+            )
+            if not str(job_id or "").strip():
+                raise RuntimeError(f"{job_type} job did not provide job_id")
+            if job_created_callback is not None:
+                try:
+                    job_created_callback(job_id, db_path)
+                except Exception:
+                    pass
+            started_at = time.monotonic()
+            callback = service.build_callback(job_id=job_id)
+
+            def _stage_callback(payload: Dict[str, Any]) -> None:
+                phase_code = str(payload.get("phase_code") or "").strip()
+                if not phase_code:
+                    return
+                store.append_event(
+                    ItemProgressEvent(
+                        job_id=job_id,
+                        stage=phase_code,
+                        status=str(payload.get("status") or "running"),
+                        error_type=_stage_error_type(payload),
+                        error_message=_stage_display_error_message(payload),
+                        payload=dict(payload),
+                    )
+                )
+
+            request = DownloadOneClickRequest(
+                download_request=_build_download_request(
+                    args,
+                    start_text=start_text,
+                    end_text=end_text,
+                    config_obj=config_obj,
+                    output_root=resolved_archive_root,
+                    item_saved_callback=callback,
+                ),
+                plan_file="",
+                keep_plan=False,
+                with_refresh=False,
+                stage_callback=_stage_callback,
+                existing_project_codes=frozenset(
+                    store.list_existing_project_codes(states=["ready", "pending_mapping", "skipped", "conflict"])
+                ),
+                existing_candidate_tokens=frozenset(
+                    store.list_existing_candidate_tokens(states=["ready", "pending_mapping", "skipped", "conflict"])
+                ),
+            )
             download_result = run_download_oneclick(
                 request,
                 config_obj=config_obj,
@@ -407,6 +449,7 @@ def run_streaming_daily_pipeline(
                 "pending_mapping_count": int(status_counts.get("pending_mapping", 0)),
                 "skipped_count": int(status_counts.get("skipped", 0)),
                 "export_artifacts": artifacts,
+                **(_failure_summary_fields(job_events) if exit_code != 0 else {}),
             },
         )
         return StreamingDailyPipelineRunResult(

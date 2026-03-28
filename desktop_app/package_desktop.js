@@ -112,6 +112,7 @@ function main(argv = process.argv.slice(2)) {
     `Packaging desktop app for ${plan.targetPlatform} (${plan.layout}) in ${plan.appDir}\n`,
   );
   run("npm", ["run", "build:backend"], { cwd: plan.appDir });
+  run("npm", ["run", "build:renderer"], { cwd: plan.appDir });
   run("npx", ["electron-builder", ...plan.builderArgs], { cwd: plan.appDir });
 }
 

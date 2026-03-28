@@ -5,11 +5,10 @@ directories:
 files:
   - main.js
   - preload.js
-  - renderer.js
-  - styles.css
-  - index.html
+  - build/renderer/**/*
   - backend_launch.js
   - backend_ready.js
+  - smoke_driver.js
   - package.json
 asar: true
 extraResources:

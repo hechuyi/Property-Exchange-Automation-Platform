@@ -4,6 +4,7 @@ import unittest
 
 from desktop_backend.http_contract import (
     DEFAULT_JOB_EVENT_LIMIT,
+    build_capacity_envelope,
     build_job_events_envelope,
     build_not_found_payload,
     normalize_job_event_limit,
@@ -26,6 +27,17 @@ class HttpContractTest(unittest.TestCase):
         self.assertEqual(envelope["events"], [{"event_id": 1}, {"event_id": 2}])
         self.assertEqual(envelope["returned_count"], 2)
         self.assertEqual(envelope["total_count"], 4)
+        self.assertTrue(envelope["truncated"])
+
+    def test_build_capacity_envelope_reports_returned_total_and_truncation(self) -> None:
+        envelope = build_capacity_envelope(
+            ["pending-1", "pending-2"],
+            total_count=5,
+        )
+
+        self.assertEqual(envelope["items"], ["pending-1", "pending-2"])
+        self.assertEqual(envelope["returned_count"], 2)
+        self.assertEqual(envelope["total_count"], 5)
         self.assertTrue(envelope["truncated"])
 
     def test_build_not_found_payload_uses_fixed_shape(self) -> None:

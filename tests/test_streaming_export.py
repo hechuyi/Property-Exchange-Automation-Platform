@@ -128,6 +128,108 @@ class StreamingExportTest(unittest.TestCase):
         self.assertEqual(row["转让方"], "上海测试公司")
         self.assertEqual(row["挂牌次数"], 3)
 
+    def test_run_ready_export_rebuild_twice_still_exports_full_scoped_range(self) -> None:
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-2",
+                revision_hash="hash-2",
+                project_code="G32025SH1000195",
+                project_name="测试项目二",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/c.html",
+                archive_path=f"{self.temp_dir.name}/archive/c.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "测试项目二",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "测试项目二",
+                    "项目类型": "股权转让",
+                },
+                findings=[],
+            )
+        )
+        request = ExportRequest(
+            date_from="2026-03-21",
+            date_to="2026-03-21",
+            business_types=["股权转让"],
+            mode="rebuild",
+            output_dir=f"{self.temp_dir.name}/exports",
+        )
+
+        first_capture: dict[str, object] = {}
+        second_capture: dict[str, object] = {}
+
+        def fake_writer_first(file_path: str, rows: list[dict[str, object]]) -> None:
+            first_capture["file_path"] = file_path
+            first_capture["rows"] = rows
+
+        def fake_writer_second(file_path: str, rows: list[dict[str, object]]) -> None:
+            second_capture["file_path"] = file_path
+            second_capture["rows"] = rows
+
+        first = run_ready_export(self.store, request, writer=fake_writer_first)
+        second = run_ready_export(self.store, request, writer=fake_writer_second)
+
+        self.assertEqual(first.new_records, 2)
+        self.assertEqual(first.changed_records, 0)
+        self.assertEqual(len(first.artifacts), 1)
+        self.assertEqual(len(first_capture["rows"]), 2)
+        self.assertEqual(second.new_records, 2)
+        self.assertEqual(second.changed_records, 0)
+        self.assertEqual(len(second.artifacts), 1)
+        self.assertEqual(len(second_capture["rows"]), 2)
+
+    def test_run_ready_export_treats_mixed_case_rebuild_as_full_rebuild(self) -> None:
+        request = ExportRequest(
+            date_from="2026-03-21",
+            date_to="2026-03-21",
+            business_types=["股权转让"],
+            mode="ReBuild",
+            output_dir=f"{self.temp_dir.name}/exports",
+        )
+
+        first_capture: dict[str, object] = {}
+        second_capture: dict[str, object] = {}
+
+        def fake_writer_first(file_path: str, rows: list[dict[str, object]]) -> None:
+            first_capture["rows"] = rows
+
+        def fake_writer_second(file_path: str, rows: list[dict[str, object]]) -> None:
+            second_capture["rows"] = rows
+
+        first = run_ready_export(self.store, request, writer=fake_writer_first)
+        second = run_ready_export(self.store, request, writer=fake_writer_second)
+
+        self.assertEqual(first.new_records, 1)
+        self.assertEqual(second.new_records, 1)
+        self.assertEqual(len(first_capture["rows"]), 1)
+        self.assertEqual(len(second_capture["rows"]), 1)
+
+    def test_default_cursor_key_changes_with_keyword_scope(self) -> None:
+        request = ExportRequest(
+            date_from="2026-03-21",
+            date_to="2026-03-21",
+            business_types=["股权转让"],
+            mode="incremental",
+            output_dir=f"{self.temp_dir.name}/exports",
+        )
+        object.__setattr__(request, "requested_state", "all")
+        object.__setattr__(request, "keyword", "")
+
+        first = run_ready_export(self.store, request, writer=lambda *_args, **_kwargs: None)
+
+        object.__setattr__(request, "keyword", "北交所")
+        second = run_ready_export(self.store, request, writer=lambda *_args, **_kwargs: None)
+
+        self.assertNotEqual(first.cursor_key, second.cursor_key)
+
     def test_run_ready_export_rejects_non_listing_record_family(self) -> None:
         request = ExportRequest(
             date_from="2026-03-21",

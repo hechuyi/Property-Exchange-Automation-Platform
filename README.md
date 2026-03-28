@@ -30,10 +30,10 @@ Those modules are still on the live path for the desktop app.
 The current product-facing path is the standalone desktop app under `desktop_app/`. It no longer requires the legacy runtime JSON config for local startup.
 
 ```bash
-# First, install pyenv on macOS
-brew install pyenv
+# Sync the repo-managed Python environment
+uv sync
 
-# Then build the isolated desktop backend environment
+# Install Chromium into the workspace browser cache
 bash scripts/bootstrap_desktop_env.sh
 
 # Electron shell
@@ -57,7 +57,7 @@ If an older desktop run left data under the legacy app-data root or repo-local `
 For backend-only local debugging:
 
 ```bash
-.venv-desktop/bin/python -m desktop_backend.app_backend --host 127.0.0.1 --port 42679
+uv run python -m desktop_backend.app_backend --host 127.0.0.1 --port 42679
 ```
 
 Storage layout and override variables are documented in `docs/desktop_storage_layout.md`.
@@ -78,7 +78,7 @@ npm run dist:win
 The package scripts build `desktop_backend/app_backend.py` into `desktop_app/build/desktop_backend/peap-desktop-backend*`
 with PyInstaller, then copy that binary into the Electron app as an extra resource. By default:
 
-- dev launch uses repo-local `.venv-desktop`
+- dev launch uses repo-local `.venv` managed by `uv`
 - packaged launch uses `process.resourcesPath/desktop_backend/peap-desktop-backend*`
 - Playwright browser cache is mirrored into both `PLAYWRIGHT_BROWSERS_PATH` and `PEAP_PLAYWRIGHT_BROWSERS_PATH` so backend config and runtime stay aligned
 
@@ -87,7 +87,7 @@ Native CI packaging is wired in `.github/workflows/desktop-package.yml` and uplo
 If Chromium is not present in the configured browser cache, the desktop app now exposes:
 
 - settings page buttons to detect / install Chromium
-- backend CLI fallback: `.venv-desktop/bin/python -m desktop_backend.app_backend --install-browser`
+- backend CLI fallback: `uv run python -m desktop_backend.app_backend --install-browser`
 - startup readiness gate that disables download actions until Chromium is ready
 - automatic first-run background install attempt when Chromium is missing
 
@@ -108,7 +108,7 @@ The desktop shell is now aligned to a business-facing operator UI:
 
 If starting a new conversation, the next high-level tasks are:
 
-1. Install `pyenv` on macOS and run `bash scripts/bootstrap_desktop_env.sh` to create `.venv-desktop/`.
+1. Run `uv sync` and `bash scripts/bootstrap_desktop_env.sh` to prepare `.venv/` and the shared Chromium cache.
 2. Run the new `desktop_app` package flow on native macOS / Windows runners and verify the produced installers end-to-end.
 3. Validate the real first-run UX on packaged builds:
    - does auto-install start successfully on a clean machine
@@ -151,7 +151,8 @@ If you need archive handoff or engine-level debugging, use the remaining interna
 ├─ scripts/                     # internal maintenance scripts
 ├─ assets/                      # static templates (excel schema, etc.)
 ├─ docs/                        # design and planning docs
-└─ requirements.txt
+├─ pyproject.toml               # Python project metadata
+└─ uv.lock                      # locked Python dependency graph
 ```
 
 ## File Submission Workflow
@@ -162,7 +163,7 @@ After downloading HTML pages, you can use the submission preparation script to c
 
 ```powershell
 # Prepare submission package
-python scripts/prepare_submission.py
+uv run python scripts/prepare_submission.py
 ```
 
 **What it does:**

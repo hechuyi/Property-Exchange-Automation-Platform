@@ -48,6 +48,18 @@ export function formatRecordsSummary(payload = {}) {
   ].filter(Boolean).join(" · ");
 }
 
+export function formatPendingMappingsSummary(payload = {}) {
+  const pending = Array.isArray(payload.pending) ? payload.pending : [];
+  const returnedCount = countValue(payload.returned_count ?? pending.length);
+  const totalCount = countValue(payload.total_count ?? returnedCount);
+  const base = `当前 ${returnedCount} 条待补项`;
+  if (!payload.truncated || totalCount <= returnedCount) {
+    return base;
+  }
+  const remainingCount = totalCount - returnedCount;
+  return `${base}；只显示前 ${returnedCount} 条待补项，仍有剩余 ${remainingCount} 条`;
+}
+
 export function buildRecordsTableMarkup(payload, { escapeHtml }) {
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   const columns = Array.isArray(payload.columns) ? payload.columns : [];

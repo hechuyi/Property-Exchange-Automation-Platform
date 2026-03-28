@@ -370,15 +370,149 @@ class DownloadOneClickTest(unittest.TestCase):
                 ),
                 config_obj=self.config,
                 emit_console=False,
-            )
+        )
 
         self.assertEqual(result.exit_code, 1)
         prepare_events = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"]
-        self.assertGreaterEqual(len(prepare_events), 2)
+        self.assertEqual(len(prepare_events), 1)
         final_event = prepare_events[-1]
         self.assertEqual(final_event["status"], "failed")
         self.assertEqual(final_event["error_message"], "tpre: collect-failed: upstream 500")
         self.assertEqual(final_event["errors"], ["tpre: collect-failed: upstream 500"])
+
+    def test_run_download_oneclick_classifies_sse_list_api_404_as_structured_failure(self) -> None:
+        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
+        stage_events: list[dict[str, object]] = []
+        raw_error = (
+            "list-ZICHANZHUANRANG-2-page-1-request-failed: "
+            "POST https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew "
+            "failed: HTTP Error 404: Not Found"
+        )
+
+        def fake_prepare_download_session(request, *, logger, config_obj):
+            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
+
+        def fake_build_downloader(spec, *, args, output_root, logger):
+            return {"spec": spec}
+
+        with (
+            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
+            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
+            patch.object(
+                download_oneclick_module,
+                "run_downloader",
+                return_value=_FakeSummary(
+                    listed_items=0,
+                    detail_candidates=0,
+                    candidate_entries=[],
+                    errors=[raw_error],
+                ),
+            ),
+            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
+        ):
+            result = run_download_oneclick(
+                DownloadOneClickRequest(
+                    download_request=self._build_download_request(),
+                    stage_callback=lambda payload: stage_events.append(dict(payload)),
+                ),
+                config_obj=self.config,
+                emit_console=False,
+            )
+
+        self.assertEqual(result.exit_code, 1)
+        final_event = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"][-1]
+        self.assertEqual(final_event["status"], "failed")
+        self.assertEqual(final_event["error_code"], "sse_list_api_not_found")
+        self.assertEqual(final_event["error_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
+        self.assertEqual(final_event["error_details"]["exchange"], "sse")
+        self.assertEqual(final_event["error_details"]["stage"], "prepare_tasks")
+        self.assertEqual(final_event["errors"], [raw_error])
+
+    def test_run_download_oneclick_emits_single_terminal_prepare_failure_event(self) -> None:
+        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
+        stage_events: list[dict[str, object]] = []
+
+        def fake_prepare_download_session(request, *, logger, config_obj):
+            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
+
+        def fake_build_downloader(spec, *, args, output_root, logger):
+            return {"spec": spec}
+
+        with (
+            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
+            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
+            patch.object(
+                download_oneclick_module,
+                "run_downloader",
+                return_value=_FakeSummary(
+                    listed_items=0,
+                    detail_candidates=0,
+                    candidate_entries=[],
+                    errors=["upstream broken"],
+                ),
+            ),
+            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
+        ):
+            result = run_download_oneclick(
+                DownloadOneClickRequest(
+                    download_request=self._build_download_request(),
+                    stage_callback=lambda payload: stage_events.append(dict(payload)),
+                ),
+                config_obj=self.config,
+                emit_console=False,
+            )
+
+        self.assertEqual(result.exit_code, 1)
+        failed_prepare_events = [
+            event for event in stage_events if event.get("phase_code") == "prepare_tasks" and event.get("status") == "failed"
+        ]
+        self.assertEqual(len(failed_prepare_events), 1)
+
+    def test_run_download_oneclick_emits_single_failed_prepare_tasks_terminal_event(self) -> None:
+        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
+        stage_events: list[dict[str, object]] = []
+        raw_error = (
+            "list-ZICHANZHUANRANG-2-page-1-request-failed: "
+            "POST https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew "
+            "failed: HTTP Error 404: Not Found"
+        )
+
+        def fake_prepare_download_session(request, *, logger, config_obj):
+            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
+
+        def fake_build_downloader(spec, *, args, output_root, logger):
+            return {"spec": spec}
+
+        with (
+            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
+            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
+            patch.object(
+                download_oneclick_module,
+                "run_downloader",
+                return_value=_FakeSummary(
+                    listed_items=0,
+                    detail_candidates=0,
+                    candidate_entries=[],
+                    errors=[raw_error],
+                ),
+            ),
+            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
+        ):
+            run_download_oneclick(
+                DownloadOneClickRequest(
+                    download_request=self._build_download_request(),
+                    stage_callback=lambda payload: stage_events.append(dict(payload)),
+                ),
+                config_obj=self.config,
+                emit_console=False,
+            )
+
+        prepare_failed = [
+            event
+            for event in stage_events
+            if event.get("phase_code") == "prepare_tasks" and event.get("status") == "failed"
+        ]
+        self.assertEqual(len(prepare_failed), 1)
 
     def test_run_download_oneclick_skips_already_ingested_project_codes_before_execute(self) -> None:
         task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")

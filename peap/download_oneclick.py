@@ -109,8 +109,32 @@ def _first_error_message(raw_errors: object) -> str:
     return ""
 
 
+def _classify_collect_error(raw_errors: object) -> dict[str, Any]:
+    message = _first_error_message(raw_errors)
+    if not message:
+        return {}
+    if (
+        "www.suaee.com" in message
+        and "queryAllNew" in message
+        and "HTTP Error 404" in message
+    ):
+        return {
+            "error_code": "sse_list_api_not_found",
+            "error_message": "上交所列表接口 queryAllNew 返回 404，当前扫描已中止",
+            "error_details": {
+                "exchange": "sse",
+                "stage": "prepare_tasks",
+                "upstream_url": "https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew",
+            },
+        }
+    return {"error_message": message}
+
+
 def _stage_error_message(summary_payload: dict[str, Any] | None) -> str:
     payload = dict(summary_payload or {})
+    explicit = str(payload.get("error_message") or "").strip()
+    if explicit:
+        return explicit
     message = _first_error_message(payload.get("errors"))
     if message:
         return message
@@ -312,20 +336,21 @@ def _collect_tasks(
                 spec=spec,
             )
         )
-        _emit_stage(
-            request.stage_callback,
-            phase_code="prepare_tasks",
-            status="running" if index < task_total else ("done" if not task_errors else "failed"),
-            label="正在扫描网页",
-            summary_payload=_build_phase_summary(
-                totals=totals,
-                task_index=index,
-                task_total=task_total,
-                task_label=task_label,
-                phase_percent=phase_percent,
-                collected_candidates=discovered_total,
-            ),
-        )
+        if index < task_total:
+            _emit_stage(
+                request.stage_callback,
+                phase_code="prepare_tasks",
+                status="running",
+                label="正在扫描网页",
+                summary_payload=_build_phase_summary(
+                    totals=totals,
+                    task_index=index,
+                    task_total=task_total,
+                    task_label=task_label,
+                    phase_percent=phase_percent,
+                    collected_candidates=discovered_total,
+                ),
+            )
 
     elapsed = time.monotonic() - stage_start
     aggregate_summary = totals_to_summary_dict(totals, errors)
@@ -359,6 +384,7 @@ def _collect_tasks(
                 phase_percent=49,
                 collected_candidates=discovered_total,
             ),
+            **(_classify_collect_error(errors) if errors else {}),
             **summary_payload,
         },
     )

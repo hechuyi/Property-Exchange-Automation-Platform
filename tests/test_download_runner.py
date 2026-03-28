@@ -6,7 +6,11 @@ from unittest.mock import patch
 
 from peap.download_models import DownloadTaskRunResult
 from peap.download_reporting import new_totals
-from peap.download_runner import DownloadRunnerError, run_download_session
+from peap.download_runner import (
+    DownloadRunnerError,
+    ensure_runtime_dependencies,
+    run_download_session,
+)
 from peap.download_tasks import build_task_registry
 
 
@@ -130,6 +134,24 @@ class DownloadRunnerTest(unittest.TestCase):
                 logger=self.logger,
                 config_obj=self.config,
             )
+
+    def test_runtime_dependency_guidance_points_to_uv_sync(self) -> None:
+        spec = build_task_registry()["sse:physical_asset"]
+        logger = unittest.mock.Mock()
+
+        with (
+            patch("peap.download_runner.importlib.util.find_spec", return_value=None),
+            patch("peap.download_runner.sys.executable", "/tmp/peap/.venv/bin/python"),
+            patch("builtins.print") as mock_print,
+        ):
+            ready = ensure_runtime_dependencies([spec], logger=logger)
+
+        self.assertFalse(ready)
+        message = logger.error.call_args.args[0]
+        self.assertIn("uv sync", message)
+        self.assertIn("playwright install chromium", message)
+        self.assertNotIn("pip install playwright", message)
+        mock_print.assert_called_once_with(message)
 
 
 if __name__ == "__main__":

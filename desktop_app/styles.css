@@ -727,6 +727,11 @@ button:disabled {
   color: var(--warning);
 }
 
+.record-status.mapping_conflict {
+  background: rgba(183, 73, 43, 0.14);
+  color: var(--accent-strong);
+}
+
 .record-status.parse_failed,
 .record-status.postprocess_failed,
 .record-status.conflict {

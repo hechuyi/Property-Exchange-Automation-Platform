@@ -52,6 +52,45 @@ function joinParts(parts, fallback = "") {
   return parts.filter(Boolean).join(" · ") || fallback;
 }
 
+function formatCapacityNotice({ returnedCount = 0, totalCount = 0, noun = "" } = {}) {
+  const visibleCount = countValue(returnedCount);
+  const overallCount = countValue(totalCount);
+  if (visibleCount <= 0 || overallCount <= visibleCount) {
+    return "";
+  }
+  const remainingCount = overallCount - visibleCount;
+  const nounText = String(noun || "").trim();
+  return `只显示前 ${visibleCount} 条${nounText}，仍有剩余 ${remainingCount} 条`;
+}
+
+const EVENT_ERROR_LABELS = {
+  mapping_refresh_failed: "映射回刷失败，请到任务页查看明细。",
+  manual_import_failed: "手动导入失败，请到任务页查看明细。",
+  export_failed: "导出失败，请到任务页查看明细。",
+};
+
+function formatEventDetail(event = {}) {
+  const payloadLabel = String(event?.payload?.label || "").trim();
+  if (payloadLabel) {
+    return payloadLabel;
+  }
+  const errorType = String(event?.error_type || "").trim();
+  if (EVENT_ERROR_LABELS[errorType]) {
+    return EVENT_ERROR_LABELS[errorType];
+  }
+  const status = String(event?.status || "").trim();
+  if (status === "failed") {
+    return "任务执行失败，请到任务页查看明细。";
+  }
+  if (status === "interrupted") {
+    return "任务已中断，请到任务页查看明细。";
+  }
+  if (status) {
+    return jobStatusLabel(status);
+  }
+  return "";
+}
+
 function dateRangeText(job) {
   const metadata = job && typeof job.metadata === "object" && job.metadata ? job.metadata : {};
   const start = String(metadata.start_date || "").trim();
@@ -469,3 +508,5 @@ export function formatEventTitle(event = {}) {
   const stageText = stageLabel(stage);
   return code ? `${stageText} · ${code}` : stageText;
 }
+
+export { formatCapacityNotice, formatEventDetail };

@@ -1,0 +1,3 @@
+import { DESKTOP_SMOKE_SELECTOR_CONTRACT } from "../desktop/contracts";
+
+export const SMOKE_SELECTOR_BRIDGE = DESKTOP_SMOKE_SELECTOR_CONTRACT;

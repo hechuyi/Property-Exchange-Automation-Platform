@@ -18,11 +18,17 @@ dependencies = [
   "PyYAML",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "pytest>=8.0",
   "ruff>=0.6.0",
 ]
+build = [
+  "pyinstaller==6.16.0",
+]
+
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.setuptools.packages.find]
 include = [

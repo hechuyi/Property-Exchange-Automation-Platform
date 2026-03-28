@@ -39,6 +39,11 @@ test("electron-builder files include every local runtime dependency used by main
   const packagedFiles = listedPackagedFiles(configText);
   const runtimeDependencies = localRuntimeRequires(mainSource);
 
+  assert.ok(
+    packagedFiles.has("build/renderer/**/*"),
+    "electron-builder.yml must package the built renderer assets",
+  );
+
   for (const dependency of runtimeDependencies) {
     assert.ok(
       packagedFiles.has(dependency),
