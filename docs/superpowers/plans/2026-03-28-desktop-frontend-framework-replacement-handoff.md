@@ -2,12 +2,39 @@
 
 ## Workspace
 
-- Use only `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/codex-desktop-frontend-framework-replacement`
-- Do not work in the dirty root checkout on `main`
+- Work directly in `/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform`
+- The extra worktree used earlier for this effort has already been merged back and removed
+- Current branch is `main`
 
 ## Latest Controller Update (2026-03-28)
 
-Update after strict interrupt-path tightening: current `main` no longer silently accepts the restart/interruption edge cases, and the newest strict smoke run is **not green**. The latest explicit failure is `/tmp/peap-desktop-smoke-commit-1774693974.md`, currently failing at `export` with `Script failed to execute...`. Treat the earlier green smoke snapshot in this file as historical context, not the newest truth.
+Update after the final strict interrupt-path fixes: current `main` is green on the newest strict real Electron smoke run at `/tmp/peap-desktop-smoke-main-1774696290.md` (`ok: true`). The earlier `export` generic script failure, disabled force-stop button, and fetch-after-restart race were all fixed with explicit diagnostics preserved. Where older sections below conflict with this update, treat them as historical context only.
+
+这轮新增并验证通过的关键修复：
+
+1. `desktop_app/smoke_driver.js`
+   - 恢复并导出 embedded smoke selector bridge，不再回退到过时的 `.rail-button`
+   - panel 切换现在等待目标 page mount
+   - export 改为显式走 `records -> prepare scope -> overview -> trigger export`
+   - injected renderer script 错误、trace 读取失败、interrupt restart 竞态都改成显式错误
+   - interrupt 路径现在会等待：
+     - force-stop 按钮真正变为 enabled
+     - force-stop mutation 出现 `request_succeeded`
+     - backend restart 后重新 ready
+     - 然后才读取 job terminal
+
+2. `desktop_app/src/pages/OverviewPage.tsx`
+   - force-stop 启用条件从单一 `running` 扩到 `accepted/queued/pending/running/in_progress/processing`
+
+3. `peap/streaming_store.py`
+   - `append_event()` 现在同步刷新 `jobs.updated_at`
+   - 这样 `overview().latest_job / recent_jobs` 不会因为事件写入不更新时间戳而继续停在旧 job 上
+
+4. 最新 strict smoke 结果
+   - `renderer_ready`: pass
+   - `manual_import`: pass
+   - `export`: pass
+   - `interrupt_restart`: pass，并拿到字面意义上的 `interrupted` 终态
 
 这轮收口已经把 **真实 Electron smoke 的主阻断打通**。当前状态不是“manual_import 卡死”，而是：
 

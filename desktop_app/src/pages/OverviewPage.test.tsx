@@ -522,4 +522,58 @@ describe("OverviewPage", () => {
       expect(restartBackend).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("enables force stop when recent manual import transitions to accepted", async () => {
+    const restartBackend = vi.fn().mockResolvedValue({ ok: true, backendUrl: "http://127.0.0.1:42679" });
+    Object.defineProperty(window, "peapDesktop", {
+      value: {
+        pickDirectory: vi.fn().mockResolvedValue("/tmp/manual"),
+        restartBackend,
+        getBackendConfig: vi.fn().mockResolvedValue({ backendUrl: "http://127.0.0.1:42679", apiToken: "token" }),
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method || "GET").toUpperCase();
+      if (url.endsWith("/api/overview") && method === "GET") {
+        return Promise.resolve(
+          createJsonResponse({
+            latest_progress: { phase_code: "", phase_label: "暂无任务", phase_percent: 0 },
+            latest_job: {
+              job_id: "job-export",
+              job_type: "export_excel",
+              status: "success",
+            },
+            recent_jobs: [
+              { job_id: "job-manual", job_type: "manual_import", status: "accepted" },
+            ],
+            browser_runtime: { installed: true, launch_ready: true },
+            browser_install: { status: "succeeded" },
+            product_readiness: { download_ready: true, issues: [] },
+            record_state_counts: {},
+            pending_mapping_count: 0,
+          }),
+        );
+      }
+      return Promise.resolve(createJsonResponse({}));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await screen.findByTestId(PAGE_TEST_IDS.overview.primaryActions);
+
+    const forceStopButton = screen.getByRole("button", { name: "强制停止" });
+    await waitFor(() => {
+      expect(forceStopButton).not.toBeDisabled();
+    });
+
+    fireEvent.click(forceStopButton);
+
+    await waitFor(() => {
+      expect(restartBackend).toHaveBeenCalledTimes(1);
+    });
+  });
 });

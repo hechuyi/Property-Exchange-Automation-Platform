@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from peap.streaming_models import IngestedRecord, ItemProgressEvent, PostProcessFinding
 from peap.streaming_store import StreamingStore
@@ -623,6 +624,25 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertEqual(counts["total_count"], 3)
         self.assertEqual(counts["ok"], 2)
         self.assertEqual(counts["failed"], 1)
+
+    def test_append_event_refreshes_job_updated_at(self) -> None:
+        with patch(
+            "peap.streaming_store._utcnow",
+            side_effect=["2026-03-28 10:00:00", "2026-03-28 10:00:05"],
+        ):
+            job_id = self.store.create_job("manual_import")
+            self.store.append_event(
+                ItemProgressEvent(
+                    job_id=job_id,
+                    stage="manual_import_scan",
+                    status="running",
+                    payload={"label": "扫描中"},
+                )
+            )
+
+        latest_job = self.store.list_jobs(limit=1)[0]
+        self.assertEqual(latest_job["job_id"], job_id)
+        self.assertEqual(latest_job["updated_at"], "2026-03-28 10:00:05")
 
     def test_count_records_by_state_can_filter_record_family(self) -> None:
         self.store.upsert_record(

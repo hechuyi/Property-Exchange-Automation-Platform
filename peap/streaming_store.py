@@ -587,6 +587,7 @@ class StreamingStore:
         return interrupted
 
     def append_event(self, event: ItemProgressEvent) -> None:
+        now = _utcnow()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -597,7 +598,7 @@ class StreamingStore:
                 """,
                 (
                     event.job_id,
-                    _utcnow(),
+                    now,
                     event.stage,
                     event.status,
                     event.project_code,
@@ -606,6 +607,14 @@ class StreamingStore:
                     event.error_message,
                     _json_dumps(event.payload),
                 ),
+            )
+            conn.execute(
+                """
+                UPDATE jobs
+                SET updated_at = ?
+                WHERE job_id = ?
+                """,
+                (now, event.job_id),
             )
 
     def add_audit_entry(self, action: str, payload: Dict[str, Any]) -> None:

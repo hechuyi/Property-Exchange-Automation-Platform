@@ -6,6 +6,19 @@ import { describeExportState } from "../features/records/exportState";
 import { formatProgressHint, formatProgressMeta, progressPreset } from "../features/tasks/formatters";
 import { PAGE_TEST_IDS } from "../testing/selectors";
 
+const ACTIVE_JOB_STATUSES = new Set([
+  "accepted",
+  "queued",
+  "pending",
+  "running",
+  "in_progress",
+  "processing",
+]);
+
+function isActiveJobStatus(status: unknown) {
+  return ACTIVE_JOB_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
 export default function OverviewPage() {
   const overviewQuery = useOverviewData();
   const actions = useOverviewActions();
@@ -20,8 +33,8 @@ export default function OverviewPage() {
   const progressMeta = formatProgressMeta(latestProgress, latestJob, overview);
   const progressHint = formatProgressHint(latestProgress, latestJob, overview);
   const exportStatusText = describeExportState(actions.exportState);
-  const isJobRunning = String(latestJob?.status || "").trim() === "running"
-    || recentJobs.some((job) => String(job.status || "").trim() === "running");
+  const isJobRunning = isActiveJobStatus(latestJob?.status)
+    || recentJobs.some((job) => isActiveJobStatus(job.status));
   const pendingMappingCount = Number(overview.pending_mapping_count || 0);
   const runtimeSummary = useMemo(
     () =>

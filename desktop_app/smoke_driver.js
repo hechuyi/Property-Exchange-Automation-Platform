@@ -5,6 +5,37 @@ const DESKTOP_API_TOKEN_HEADER = "X-PEAP-Desktop-Token";
 const TERMINAL_JOB_STATUSES = new Set(["success", "success_with_warnings", "failed", "interrupted"]);
 const SMOKE_FETCH_TRACE_KEY = "__PEAP_DESKTOP_SMOKE_FETCH_TRACE";
 const SMOKE_INTERACTION_TRACE_KEY = "__PEAP_DESKTOP_SMOKE_INTERACTION_TRACE";
+const EMBEDDED_SMOKE_SELECTOR_BRIDGE = {
+  nav: {
+    overview: ['[data-testid="desktop-nav-overview"]'],
+    records: ['[data-testid="desktop-nav-records"]'],
+    mappings: ['[data-testid="desktop-nav-mappings"]'],
+  },
+  pages: {
+    overview: ['[data-testid="overview-page"]'],
+    records: ['[data-testid="records-page"]'],
+    mappings: ['[data-testid="mappings-page"]'],
+  },
+  actions: {
+    triggerManualImport: ["#runManualImportBtn"],
+    triggerExport: ["#runExportBtn"],
+    importPendingMappings: ["#importPendingMappingBtn"],
+    saveDraftMappings: ["#saveDraftMappingsBtn"],
+    forceStopCurrentJob: ["#forceStopBtn"],
+  },
+  mappings: {
+    draftItems: [".mapping-draft-item"],
+    draftRuleKindField: ['[data-draft-field="ruleKind"]'],
+    draftTargetValueField: ['[data-draft-field="targetValue"]'],
+  },
+  records: {
+    stateFilter: ["#recordsStateFilter"],
+    projectTypeFilter: ["#recordsProjectTypeFilter"],
+    dateFromInput: ["#recordsDateFromInput"],
+    dateToInput: ["#recordsDateToInput"],
+    keywordInput: ["#recordsKeywordInput"],
+  },
+};
 
 function sleep(delayMs) {
   return new Promise((resolve) => {
@@ -14,6 +45,13 @@ function sleep(delayMs) {
 
 function errorMessage(error) {
   return String((error && error.message) || error || "unknown smoke failure");
+}
+
+function getRequiredSelector(selectors, label) {
+  if (!Array.isArray(selectors) || selectors.length === 0) {
+    throw new Error(`${label} selector contract missing`);
+  }
+  return String(selectors[0] || "").trim();
 }
 
 async function runStep(report, name, task) {
@@ -27,20 +65,20 @@ async function runStep(report, name, task) {
   }
 }
 
-async function buildManualImportDiagnosticError(actions, error) {
-  const fetchTrace = typeof actions.readFetchTrace === "function"
-    ? await actions.readFetchTrace()
-    : [];
-  const interactionTrace = typeof actions.readInteractionTrace === "function"
-    ? await actions.readInteractionTrace()
-    : null;
+async function buildSmokeDiagnosticError(actions, error) {
+  const fetchTraceResult = await readDiagnosticValue("fetch_trace", actions.readFetchTrace, []);
+  const interactionTraceResult = await readDiagnosticValue("interaction_trace", actions.readInteractionTrace, null);
+  const fetchTrace = fetchTraceResult.value;
+  const interactionTrace = interactionTraceResult.value;
   const traceSuffix = Array.isArray(fetchTrace) && fetchTrace.length
     ? ` fetch_trace=${JSON.stringify(fetchTrace)}`
     : "";
   const interactionSuffix = interactionTrace
     ? ` interaction_trace=${JSON.stringify(interactionTrace)}`
     : "";
-  return new Error(`${errorMessage(error)}${traceSuffix}${interactionSuffix}`);
+  return new Error(
+    `${errorMessage(error)}${traceSuffix}${interactionSuffix}${fetchTraceResult.error}${interactionTraceResult.error}`,
+  );
 }
 
 function hasForceStopMutationEvidence(interactionTrace) {
@@ -74,13 +112,16 @@ async function orchestrateSmoke({
   };
   try {
     await runStep(report, "renderer_ready", async () => actions.waitForRendererReady());
+    if (typeof actions.initializeSmokeTracing === "function") {
+      await actions.initializeSmokeTracing();
+    }
 
     const manualImportJob = await runStep(report, "manual_import", async () => {
       try {
         const job = await actions.triggerManualImport();
         return actions.waitForJobTerminal(job.job_id);
       } catch (error) {
-        throw await buildManualImportDiagnosticError(actions, error);
+        throw await buildSmokeDiagnosticError(actions, error);
       }
     });
 
@@ -114,21 +155,28 @@ async function orchestrateSmoke({
     }
 
     await runStep(report, "export", async () => {
-      await actions.openOverviewPanel();
-      if (actions.prepareExportScope) {
-        await actions.prepareExportScope();
+      try {
+        if (actions.openRecordsPanel) {
+          await actions.openRecordsPanel();
+        }
+        if (actions.prepareExportScope) {
+          await actions.prepareExportScope();
+        }
+        await actions.openOverviewPanel();
+        const job = await actions.triggerExport();
+        const result = await actions.waitForJobTerminal(job.job_id);
+        const artifacts = Array.isArray(result?.summary?.artifacts)
+          ? result.summary.artifacts
+          : Array.isArray(result?.artifacts)
+            ? result.artifacts
+            : [];
+        if (!artifacts.length) {
+          throw new Error("export completed without artifacts");
+        }
+        return result;
+      } catch (error) {
+        throw await buildSmokeDiagnosticError(actions, error);
       }
-      const job = await actions.triggerExport();
-      const result = await actions.waitForJobTerminal(job.job_id);
-      const artifacts = Array.isArray(result?.summary?.artifacts)
-        ? result.summary.artifacts
-        : Array.isArray(result?.artifacts)
-          ? result.artifacts
-          : [];
-      if (!artifacts.length) {
-        throw new Error("export completed without artifacts");
-      }
-      return result;
     });
 
     await runStep(report, "interrupt_restart", async () => {
@@ -136,7 +184,16 @@ async function orchestrateSmoke({
         await actions.openOverviewPanel();
         const job = await actions.triggerManualImport();
         await actions.waitForJobRunning(job.job_id);
+        if (actions.waitForForceStopReady) {
+          await actions.waitForForceStopReady();
+        }
         await actions.forceStopCurrentJob();
+        if (actions.waitForForceStopMutationCompletion) {
+          await actions.waitForForceStopMutationCompletion();
+        }
+        if (actions.waitForBackendReadyAfterRestart) {
+          await actions.waitForBackendReadyAfterRestart();
+        }
         const result = await actions.waitForJobTerminal(job.job_id);
         if (String(result?.status || "") !== "interrupted") {
           const interactionTrace = typeof actions.readInteractionTrace === "function"
@@ -147,12 +204,9 @@ async function orchestrateSmoke({
           }
           throw new Error(`expected interrupted status, got ${String(result?.status || "")}`);
         }
-        if (actions.waitForBackendReadyAfterRestart) {
-          await actions.waitForBackendReadyAfterRestart();
-        }
         return result;
       } catch (error) {
-        throw await buildManualImportDiagnosticError(actions, error);
+        throw await buildSmokeDiagnosticError(actions, error);
       }
     });
 
@@ -194,7 +248,42 @@ async function waitForCondition(
 }
 
 async function runJavaScript(window, source) {
-  return window.webContents.executeJavaScript(source, true);
+  const wrappedSource = `(() => {
+    try {
+      return (${source});
+    } catch (error) {
+      return {
+        __peapExecuteError: {
+          message: String((error && error.message) || error || "renderer script failed"),
+          stack: String((error && error.stack) || ""),
+        },
+      };
+    }
+  })()`;
+  const result = await window.webContents.executeJavaScript(wrappedSource, true);
+  const executeError = result && typeof result === "object"
+    ? result.__peapExecuteError
+    : null;
+  if (executeError && typeof executeError === "object") {
+    const message = String(executeError.message || "renderer script failed");
+    const stack = String(executeError.stack || "").trim();
+    throw new Error(stack ? `${message} stack=${stack}` : message);
+  }
+  return result;
+}
+
+async function readDiagnosticValue(label, reader, fallbackValue) {
+  if (typeof reader !== "function") {
+    return { value: fallbackValue, error: "" };
+  }
+  try {
+    return { value: await reader(), error: "" };
+  } catch (error) {
+    return {
+      value: fallbackValue,
+      error: ` ${label}_error=${errorMessage(error)}`,
+    };
+  }
 }
 
 function buildElementCenterScript(selector, missingMessage) {
@@ -223,6 +312,46 @@ function buildElementCenterScript(selector, missingMessage) {
       y: Math.round(rect.top + rect.height / 2),
       id: String(node.id || ""),
     };
+  })()`;
+}
+
+function buildClickSelectorScript(selector, missingMessage) {
+  return `(() => {
+    const node = document.querySelector(${JSON.stringify(selector)});
+    if (!node) {
+      throw new Error(${JSON.stringify(missingMessage)});
+    }
+    node.click();
+    return true;
+  })()`;
+}
+
+function buildButtonSnapshotScript(selector, traceBucket) {
+  return `(() => {
+    const trace = window[${JSON.stringify(SMOKE_INTERACTION_TRACE_KEY)}];
+    const node = document.querySelector(${JSON.stringify(selector)});
+    const snapshot = {
+      ts: Date.now(),
+      found: Boolean(node),
+      id: String(node && node.id || ""),
+      disabled: Boolean(node && node.disabled)
+        || String(node && node.getAttribute && node.getAttribute("aria-disabled") || "").toLowerCase() === "true",
+      ariaDisabled: String(node && node.getAttribute && node.getAttribute("aria-disabled") || ""),
+      className: String(node && node.className || ""),
+    };
+    if (trace && typeof trace === "object") {
+      const bucket = trace[${JSON.stringify(traceBucket)}];
+      if (bucket && typeof bucket === "object") {
+        const buttonSnapshots = Array.isArray(bucket.buttonSnapshots)
+          ? bucket.buttonSnapshots
+          : [];
+        if (!Array.isArray(bucket.buttonSnapshots)) {
+          bucket.buttonSnapshots = buttonSnapshots;
+        }
+        buttonSnapshots.push(snapshot);
+      }
+    }
+    return snapshot;
   })()`;
 }
 
@@ -348,7 +477,82 @@ function buildSmokeActions({
     return waitForNewJob(jobType, previousIds);
   }
 
+  async function initializeSmokeTracing() {
+    return runJavaScript(window, `(() => {
+      if (!Array.isArray(window[${JSON.stringify(SMOKE_FETCH_TRACE_KEY)}])) {
+        window[${JSON.stringify(SMOKE_FETCH_TRACE_KEY)}] = [];
+      }
+      const existingTrace = window[${JSON.stringify(SMOKE_INTERACTION_TRACE_KEY)}];
+      const trace = existingTrace && typeof existingTrace === "object"
+        ? existingTrace
+        : {};
+      if (!trace.manualImport || typeof trace.manualImport !== "object") {
+        trace.manualImport = {};
+      }
+      if (!trace.forceStop || typeof trace.forceStop !== "object") {
+        trace.forceStop = {};
+      }
+      if (!Array.isArray(trace.windowErrors)) {
+        trace.windowErrors = [];
+      }
+      const ensureBucket = (bucket) => {
+        if (!Array.isArray(bucket.buttonSnapshots)) {
+          bucket.buttonSnapshots = [];
+        }
+        if (!Array.isArray(bucket.clickEvents)) {
+          bucket.clickEvents = [];
+        }
+        if (!Array.isArray(bucket.mutationEvents)) {
+          bucket.mutationEvents = [];
+        }
+      };
+      ensureBucket(trace.manualImport);
+      ensureBucket(trace.forceStop);
+      window[${JSON.stringify(SMOKE_INTERACTION_TRACE_KEY)}] = trace;
+      if (!window.__PEAP_DESKTOP_SMOKE_ERROR_LISTENER_ATTACHED) {
+        window.addEventListener("error", (event) => {
+          const targetTrace = window[${JSON.stringify(SMOKE_INTERACTION_TRACE_KEY)}];
+          if (!targetTrace || typeof targetTrace !== "object") {
+            return;
+          }
+          const windowErrors = Array.isArray(targetTrace.windowErrors)
+            ? targetTrace.windowErrors
+            : [];
+          if (!Array.isArray(targetTrace.windowErrors)) {
+            targetTrace.windowErrors = windowErrors;
+          }
+          windowErrors.push({
+            ts: Date.now(),
+            message: String(event.message || ""),
+            filename: String(event.filename || ""),
+          });
+        });
+        window.__PEAP_DESKTOP_SMOKE_ERROR_LISTENER_ATTACHED = true;
+      }
+      return true;
+    })()`);
+  }
+
+  async function waitForPageMount(pageSelectors, label) {
+    const selector = getRequiredSelector(pageSelectors, `${label} page`);
+    return waitForCondition(`${label} page mount`, async () => {
+      const ready = await runJavaScript(window, `(() => {
+        return Boolean(document.querySelector(${JSON.stringify(selector)}));
+      })()`);
+      return ready ? { done: true, value: true } : { done: false };
+    }, { timeoutMs: 10000, intervalMs: 100, sleepFn });
+  }
+
+  async function openPanel({ navSelectors, navMissingMessage, pageSelectors, pageLabel }) {
+    await runJavaScript(
+      window,
+      buildClickSelectorScript(getRequiredSelector(navSelectors, `${pageLabel} nav`), navMissingMessage),
+    );
+    await waitForPageMount(pageSelectors, pageLabel);
+  }
+
   return {
+    initializeSmokeTracing,
     waitForRendererReady: async () => waitForCondition(
       "renderer bootstrap",
       async () => {
@@ -367,13 +571,10 @@ function buildSmokeActions({
     ),
     triggerManualImport: async () => clickAndCaptureNewJob({
       jobType: "manual_import",
-      script: `(() => {
-        const node = document.getElementById("runManualImportBtn");
-        if (!node) {
-          throw new Error("runManualImportBtn missing");
-        }
-        node.click();
-      })()`,
+      script: buildClickSelectorScript(
+        getRequiredSelector(EMBEDDED_SMOKE_SELECTOR_BRIDGE.actions.triggerManualImport, "manual import action"),
+        "runManualImportBtn missing",
+      ),
     }),
     readFetchTrace: async () => runJavaScript(window, `(() => {
       const trace = window[${JSON.stringify(SMOKE_FETCH_TRACE_KEY)}];
@@ -385,14 +586,58 @@ function buildSmokeActions({
     })()`),
     waitForJobTerminal: async (jobId) => waitForJobStatus(jobId, { expectedRunning: false }),
     waitForJobRunning: async (jobId) => waitForJobStatus(jobId, { expectedRunning: true }),
+    waitForForceStopReady: async () => {
+      const selector = getRequiredSelector(
+        EMBEDDED_SMOKE_SELECTOR_BRIDGE.actions.forceStopCurrentJob,
+        "force stop action",
+      );
+      return waitForCondition("force stop button enabled", async () => {
+        const snapshot = await runJavaScript(
+          window,
+          buildButtonSnapshotScript(selector, "forceStop"),
+        );
+        if (!snapshot || !snapshot.found) {
+          return { done: false };
+        }
+        return snapshot.disabled
+          ? { done: false }
+          : { done: true, value: snapshot };
+      }, { timeoutMs: 10000, intervalMs: 250, sleepFn });
+    },
+    waitForForceStopMutationCompletion: async () => waitForCondition(
+      "force stop mutation completion",
+      async () => {
+        const interactionTrace = await runJavaScript(window, `(() => {
+          const trace = window[${JSON.stringify(SMOKE_INTERACTION_TRACE_KEY)}];
+          return trace && typeof trace === "object" ? trace : null;
+        })()`);
+        const forceStop = interactionTrace && typeof interactionTrace === "object"
+          ? interactionTrace.forceStop
+          : null;
+        const mutationEvents = forceStop && typeof forceStop === "object" && Array.isArray(forceStop.mutationEvents)
+          ? forceStop.mutationEvents
+          : [];
+        const failureEvent = mutationEvents.find((event) => String(event && event.phase || "") === "request_failed");
+        if (failureEvent) {
+          return {
+            done: false,
+            error: String(failureEvent.message || "force stop mutation failed"),
+          };
+        }
+        const successEvent = mutationEvents.find((event) => String(event && event.phase || "") === "request_succeeded");
+        return successEvent
+          ? { done: true, value: successEvent }
+          : { done: false };
+      },
+      { timeoutMs: 60000, intervalMs: 250, sleepFn },
+    ),
     getPendingMappingsCount,
-    openMappingsPanel: async () => runJavaScript(window, `(() => {
-      const node = document.querySelector('.rail-button[data-panel="mappings"]');
-      if (!node) {
-        throw new Error("mappings panel button missing");
-      }
-      node.click();
-    })()`),
+    openMappingsPanel: async () => openPanel({
+      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.mappings,
+      navMissingMessage: "mappings panel button missing",
+      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.mappings,
+      pageLabel: "mappings",
+    }),
     importPendingMappings: async () => runJavaScript(window, `(() => {
       const node = document.getElementById("importPendingMappingBtn");
       if (!node) {
@@ -426,13 +671,18 @@ function buildSmokeActions({
         node.click();
       })()`,
     }),
-    openOverviewPanel: async () => runJavaScript(window, `(() => {
-      const node = document.querySelector('.rail-button[data-panel="overview"]');
-      if (!node) {
-        throw new Error("overview panel button missing");
-      }
-      node.click();
-    })()`),
+    openOverviewPanel: async () => openPanel({
+      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.overview,
+      navMissingMessage: "overview panel button missing",
+      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.overview,
+      pageLabel: "overview",
+    }),
+    openRecordsPanel: async () => openPanel({
+      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.records,
+      navMissingMessage: "records panel button missing",
+      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.records,
+      pageLabel: "records",
+    }),
     prepareExportScope: async () => runJavaScript(window, `(() => {
       const setValue = (id, value) => {
         const node = document.getElementById(id);
@@ -456,13 +706,10 @@ function buildSmokeActions({
     })()`),
     triggerExport: async () => clickAndCaptureNewJob({
       jobType: "export_excel",
-      script: `(() => {
-        const node = document.getElementById("runExportBtn");
-        if (!node) {
-          throw new Error("runExportBtn missing");
-        }
-        node.click();
-      })()`,
+      script: buildClickSelectorScript(
+        getRequiredSelector(EMBEDDED_SMOKE_SELECTOR_BRIDGE.actions.triggerExport, "export action"),
+        "runExportBtn missing",
+      ),
     }),
     forceStopCurrentJob: async () => {
       await runJavaScript(window, `(() => {
@@ -471,7 +718,7 @@ function buildSmokeActions({
       })()`);
       await clickByInputEvent({
         window,
-        selector: "#forceStopBtn",
+        selector: getRequiredSelector(EMBEDDED_SMOKE_SELECTOR_BRIDGE.actions.forceStopCurrentJob, "force stop action"),
         missingMessage: "forceStopBtn missing",
       });
       return true;
@@ -571,4 +818,8 @@ async function runDesktopSmoke(options = {}) {
 
 module.exports = {
   runDesktopSmoke,
+  runJavaScript,
+  __internal: {
+    EMBEDDED_SMOKE_SELECTOR_BRIDGE,
+  },
 };
