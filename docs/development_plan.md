@@ -2,69 +2,92 @@
 
 Last updated: 2026-03-28
 
-## 当前阶段
+## 当前状态
 
-当前仓库已经从“桌面产品主链收口”推进到“发布前验证与交付封板”阶段。主链的结构性问题已经基本解决：产品入口已稳定在 `desktop_app/` + `desktop_backend/`，Python 环境已统一到 repo 根目录 `.venv + uv.lock`，状态机公共契约、记录契约、范围契约、容量 envelope 与产品错误模型已经进入同一条交付链。
+当前 `main` 已不再是旧 CLI/解析器主线，而是**桌面产品主线**。`origin/main` 已被替换为当前仓库结构；旧 CLI 版本保存在 `develop`，不再作为主线维护目标。当前活跃产品入口是 `desktop_app/` + `desktop_backend/`，Python 依赖与测试入口统一到 repo 根的 `uv` 工作流。
 
-这意味着接下来的工作重点不再是继续扩散入口或维持并行环境，而是把真实桌面操作链路、发布门槛和交付文档收束到可发布状态。判断标准也应切换为“真实 Electron 会话是否闭环”，而不是“旧环境兼容是否还可继续维护”。
+桌面主链的关键代码阻断已经关闭。最新严格真实 Electron smoke 已通过，报告在 `docs/desktop_electron_smoke_report_2026-03-28.md`；面向干净源码仓的安装、删链回归与构建验证也已经跑通，包括 `uv sync`、`uv run pytest tests/test_environment_tooling.py tests/test_release_gate.py -q`、`uv run pytest tests/test_environment_tooling.py tests/test_app_backend_entry.py -q`、`uv run python -m desktop_backend.app_backend --help`、`cd desktop_app && node --test ./backend_launch.test.js`、`cd desktop_app && npm test`、`cd desktop_app && npm run build`、`uv run python scripts/check_release_gate.py`。
+
+这意味着主线阶段已经从“前端框架替换与主链打通”切换到“前后端产品完成 + 主线纯净化”。接下来不应再回头维护旧 CLI 路径，也不应把额外发布装配、运行产物、业务数据、AI 交接文档重新带回主仓。
 
 ## 已完成基线
 
-1. Python 依赖与解释器管理统一改为 `uv`，`requirements*.lock`、`.venv-desktop`、`pyenv` 这类旧入口已退出活跃主路径。
-2. CI、本地开发、桌面 sidecar 构建、桌面打包脚本已经对齐到同一套 `uv` 工作流。
-3. 桌面产品交付任务卡 Task 1 至 Task 8 已完成并整合；Task 9 的自动化集成回归、文档骨架和运行手册已具备主线形态。
-4. 桌面状态机公共契约已经落地到 `app_service`、`app_backend`、`progress contract` 与 pipeline/store 读写侧，公共状态输出不再依赖隐式内部态。
-5. 先前阻塞全量回归的环境问题已经关闭，包括 Python 版本漂移、缺失依赖与 canonical docs 缺失。
-6. 当前自动化验证基线为：
-   - `uv lock --check`
-   - `uv run python -m unittest discover -s tests -q`
-   - `cd desktop_app && npm test`
+1. `main` 远端主线已切换到桌面产品仓结构，顶层目录以 `desktop_app/`、`desktop_backend/`、`peap*`、`docs/`、`scripts/`、`tests/` 为核心。
+2. React + TypeScript + Vite renderer 已成为桌面前端正式实现，Electron 主进程、开发态 backend 启动链与 smoke 驱动已对齐到同一套桌面产品链。
+3. 最新真实 Electron smoke 主路径已闭环；此前的 export、force-stop、interrupt restart 等关键阻断已经修复，并保持显式错误暴露。
+4. Python 环境管理、CI 与本地开发入口已经统一到 `uv`。
+5. 已补上最小安装元数据修复：`pyproject.toml` 现在导出 `desktop_backend*`，解决“离开 repo root 的已安装环境里导入 `peap.streaming_store` 失败”的问题。
+6. `README.md`、`docs/release_gate.md`、`docs/desktop_product_runbook_2026-03-26.md`、`docs/project_layout.md` 已按当前桌面主线对齐，明确写出 `uv` / Node 前置、首次联网下载前置、repo-root 开发态耦合，以及 `docs/superpowers/` 不属于 release 文档集合。
+7. 额外发布装配脚本、附带运行时入口与已提交 `dist*` 产物已从主仓移除，主线只保留 repo-root 开发态产品路径。
 
-## 当前主线目标
+## 当前阶段目标
 
-主线目标已经明确为“把桌面产品推进到可发布候选”。这里的“可发布候选”指的是：自动化回归持续全绿，真实 Electron operator 主路径在同一会话中可完成关键操作，交付文档能够支撑安装、运行、排障与验收，而不是单纯依赖代码级测试通过。
+当前阶段目标是把仓库推进到**纯净的产品开发主线**，而不是继续做基础设施级重构或假性发布收口。这里至少意味着：
 
-在这个阶段，默认不再新增与主链无关的产品入口，不再为旧 Python 环境维护平行说明，也不把引擎侧历史运行方式重新包装成对外主路径。所有新增工作都应直接服务于桌面产品的交付闭环。
+1. 主线文档准确描述当前产品结构与安装/运行前提；
+2. 主线 gate 与实际验证命令一致；
+3. 真实桌面主路径有可追溯 smoke 证据；
+4. 主线不重新混入构建产物、运行数据库、业务输出或 AI 交接垃圾；
+5. 所有新增错误路径都保持显式化，不允许静默 fallback 掩盖失败。
 
 ## 剩余工作包
 
-### 1. 真实 Electron 操作闭环
+### 1. 发布文档一致性收口（首轮已完成）
 
-需要在同一套真实桌面会话里补齐以下 smoke 路径，并把结果固化到 dated 报告中：
+以下核心文档已经完成首轮对齐：
 
-- one-click 主路径
-- manual-import 主路径
-- export 主路径
-- interrupt / cancel 主路径
-- recovery / restart 后状态恢复
+- `README.md`
+- `docs/release_gate.md`
+- `docs/desktop_product_runbook_2026-03-26.md`
+- `docs/project_layout.md`
 
-这里的目标不是再证明单点功能存在，而是验证前端状态、后端任务、事件流、导出结果与错误提示在真实桌面会话中的连贯性。
+后续只需要在新的验证事实出现时做增量维护，重点维持：
 
-### 2. 发布门槛显式化
+- release gate 中的验证命令、通过标准、文档引用持续与当前主线一致；
+- 文档继续明确 Node/npm 前置、`uv` 前置、联网下载前置与 repo-root 耦合；
+- 当前主仓不把 `docs/superpowers/` 一类 AI 交接物重新表述成产品交付文档。
 
-需要把“什么叫可以发布”写成可执行门槛，而不是停留在口头判断。当前建议的 release gate 是：
+### 2. interrupt / cancel 发布语义定稿
 
-1. `uv` 锁文件与 CI 校验通过。
-2. Python 全量单元/集成测试通过。
-3. `desktop_app` Node 测试通过。
-4. 至少一轮真实 Electron smoke 报告通过并留痕。
-5. 运行手册、提交指南、项目结构文档与当前主线一致。
+当前真实 smoke 已通过，但仍需要决定**发布语义**到底接受哪一种标准：
 
-只有满足上述门槛，状态才应从“交付候选”切换到“可发布”。
+- 方案 A：接受当前 strict smoke 结果，将其视为发布足够证据，只在 release 文档中说明现有 `interrupt_restart` 语义；
+- 方案 B：为字面意义上的“可中断长任务”补一个更慢、更稳定的真实 smoke 场景。
 
-### 3. 文档与运维收口
+这不是基础功能阻断，而是 release gate 语义问题。除非明确要把“字面 interrupted 终态”写进门槛，否则不应再为此重开大范围排查。
 
-已有 dated 报告、runbook 和 release blocker 文档需要继续保留为可追溯材料，但活跃文档只能描述当前主线。任何涉及 `.venv-desktop`、`pyenv`、旧锁文件或历史入口的内容，都不应重新进入 README、bootstrap、CI、打包脚本或主计划正文。
+### 3. 共享契约结构清理
+
+当前最小补丁虽然修掉了安装元数据问题，但结构上仍有一处待清理的依赖反向：
+
+- `peap/streaming_store.py` 依赖 `desktop_backend.record_identity`
+
+这说明共享领域契约仍挂在 `desktop_backend/` 名下。后续应单开小范围重构，把 `record_identity` 下沉到共享层（优先 `peap_core/`），并让 `peap` 与 `desktop_backend` 都只依赖共享模块。该任务必须带回归验证，证明脱离 repo root 后仍可正常导入相关模块。
+
+### 4. 主线纯净化（已完成）
+
+以下内容已经退出主线，并且不应重新回流到主仓：
+
+- 独立桌面发布脚本与 workflow
+- 额外挂载的桌面运行时入口
+- 已提交的 `dist*` 等发布产物
 
 ## 非目标
 
-以下事项当前不应作为主线投入：
+以下事项不应进入当前主线：
 
-- 为旧 Python 环境恢复兼容层
-- 重新引入平行依赖锁文件流程
-- 把引擎模块包装成独立对外交付入口
-- 在真实桌面 smoke 未闭环前继续扩展非必要功能面
+- 把 `develop` 中的旧 CLI 体系恢复回 `main`
+- 重新引入旧解析器/旧运行入口作为对外主路径
+- 推送 `data/`、`submission/`、`logs/`、`exports/`、`desktop_app/dist*`、`desktop_app/build`、`node_modules`、`.venv`、`.cache`、`.worktrees`
+- 把 `docs/superpowers/` 等 AI 过程文档重新当作最终产品组成部分上传
 
-## 计划判断
+## 执行优先级
 
-截至 2026-03-28，仓库已经具备稳定的自动化回归基线，环境统一与状态契约收口已经完成，主线风险已从“结构性不一致”转为“发布闭环尚未最终实操确认”。因此，后续开发计划应按“发布前验证”推进，而不是继续按“基础设施重构”推进。
+下一轮默认优先级如下：
+
+1. 文档与 release gate 一致性收口
+2. interrupt / cancel 发布语义定稿
+3. 共享契约结构清理
+4. 新版前后端缺口补齐
+
+如果没有用户新指令，后续开发都应围绕这四项推进，而不是重新扩散任务边界。

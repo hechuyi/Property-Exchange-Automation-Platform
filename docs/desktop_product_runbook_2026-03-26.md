@@ -10,6 +10,14 @@
 
 ## 2. 本地启动
 
+本地开发机至少需要：
+
+- 已安装 `uv`
+- 已安装 Node.js 与 `npm`
+- 首次执行 `uv sync`、`npm install`、浏览器安装时具备联网能力
+
+开发态默认**耦合仓库根目录**：Electron 会从 repo root 的 `.venv` 启动 `desktop_backend.app_backend`，并把 repo root 作为默认 backend working directory。仅复制 `desktop_app/` 子目录无法单独完成开发态启动。
+
 开发态启动顺序：
 
 ```bash
@@ -20,6 +28,12 @@ npm install
 npm start
 ```
 
+其中：
+
+- `uv sync` 负责物化仓库根 `.venv`
+- `bash scripts/bootstrap_desktop_env.sh` 会安装 pinned Python 工具链并下载 Playwright Chromium 到工作区缓存
+- `npm start` 会先重新构建 Vite renderer，再拉起 Electron 壳层
+
 如果需要显式指定 Python 解释器，可覆盖：
 
 ```bash
@@ -27,6 +41,8 @@ PEAP_DESKTOP_PYTHON=/abs/path/to/.venv/bin/python npm start
 ```
 
 这会被 Electron 主进程用于拉起 `desktop_backend.app_backend`。如果该解释器路径不存在或不可执行，桌面端会在 backend ready 之前直接 fatal startup，不会先展示主窗口。
+
+仓库当前只支持 repo-root 开发态运行；桌面端固定使用仓库根 `uv` 环境拉起本地 backend 进程。
 
 ## 3. 工作区模型
 
@@ -75,10 +91,11 @@ PEAP_DESKTOP_PYTHON=/abs/path/to/.venv/bin/python npm start
 - `503` 产品未就绪：通常是 Chromium/browser runtime 缺失
 - 导出为空：先检查当前 scope 是否真的命中 `ready` 记录，再看 `empty_reason_code`
 - 映射列表只显示前 N 条：这是显式容量 envelope，不是列表丢失
+- renderer / smoke 边界异常：当前主线要求显式报错与 trace 保留，不接受静默降级掩盖失败
 
 ## 6. 发布前人工检查口径
 
-发布前至少要补齐以下人工操作：
+当前主线至少要补齐以下人工操作：
 
 - 首启成功
 - backend ready 失败时的 fatal startup
@@ -88,4 +105,4 @@ PEAP_DESKTOP_PYTHON=/abs/path/to/.venv/bin/python npm start
 - export rebuild
 - 中断与重启恢复
 
-这些步骤的自动化语义已被后端和 renderer 测试覆盖，但发布结论仍应要求一次真实 Electron 操作闭环。
+这些步骤的自动化语义已被后端和 renderer 测试覆盖；当前 dated smoke 已经留痕 `manual_import`、`export`、`interrupt_restart`。当前门槛只评估源码仓开发主线，不包含额外发布装配步骤。

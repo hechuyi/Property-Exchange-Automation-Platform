@@ -15,20 +15,22 @@ class EnvironmentToolingTest(unittest.TestCase):
 
         self.assertEqual(pyproject["tool"]["uv"]["default-groups"], ["dev"])
         self.assertIn("dev", pyproject["dependency-groups"])
-        self.assertIn("build", pyproject["dependency-groups"])
         self.assertTrue(
             any(str(dep).startswith("pytest") for dep in pyproject["dependency-groups"]["dev"])
         )
         self.assertTrue(
             any(str(dep).startswith("ruff") for dep in pyproject["dependency-groups"]["dev"])
         )
-        self.assertTrue(
-            any(
-                str(dep).startswith("pyinstaller")
-                for dep in pyproject["dependency-groups"]["build"]
-            )
-        )
+        self.assertNotIn("build", pyproject["dependency-groups"])
         self.assertNotIn("optional-dependencies", pyproject["project"])
+
+    def test_pyproject_exports_desktop_backend_for_shared_runtime_contracts(self) -> None:
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        package_includes = pyproject["tool"]["setuptools"]["packages"]["find"]["include"]
+        streaming_store = (REPO_ROOT / "peap" / "streaming_store.py").read_text(encoding="utf-8")
+
+        self.assertIn("from desktop_backend.record_identity import", streaming_store)
+        self.assertIn("desktop_backend*", package_includes)
 
     def test_ci_workflow_uses_uv_project_commands(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -41,14 +43,8 @@ class EnvironmentToolingTest(unittest.TestCase):
         self.assertIn("uv run python -m pytest tests", workflow)
         self.assertNotIn("pip install -r requirements-dev.lock", workflow)
 
-    def test_desktop_package_workflow_uses_uv(self) -> None:
-        workflow = (REPO_ROOT / ".github" / "workflows" / "desktop-package.yml").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("astral-sh/setup-uv@v7", workflow)
-        self.assertIn("uv python install", workflow)
-        self.assertNotIn("actions/setup-python", workflow)
+    def test_desktop_package_workflow_is_removed(self) -> None:
+        self.assertFalse((REPO_ROOT / ".github" / "workflows" / "desktop-package.yml").exists())
 
     def test_bootstrap_script_uses_uv_managed_project_environment(self) -> None:
         script = (REPO_ROOT / "scripts" / "bootstrap_desktop_env.sh").read_text(encoding="utf-8")
@@ -69,6 +65,19 @@ class EnvironmentToolingTest(unittest.TestCase):
         self.assertNotIn(".venv-desktop", readme)
         self.assertNotIn("requirements.txt", readme)
 
+    def test_active_docs_avoid_retired_packaged_runtime_narrative(self) -> None:
+        banned_phrases = ("packaged runtime", "backend sidecar")
+        active_docs = (
+            REPO_ROOT / "README.md",
+            REPO_ROOT / "docs" / "desktop_product_runbook_2026-03-26.md",
+            REPO_ROOT / "docs" / "release_gate.md",
+        )
+
+        for doc_path in active_docs:
+            text = doc_path.read_text(encoding="utf-8").lower()
+            for phrase in banned_phrases:
+                self.assertNotIn(phrase, text, msg=f"{doc_path} still contains {phrase!r}")
+
     def test_desktop_app_npm_test_covers_all_checked_in_node_tests(self) -> None:
         package_json = json.loads((REPO_ROOT / "desktop_app" / "package.json").read_text(encoding="utf-8"))
         test_script = package_json["scripts"]["test"]
@@ -81,6 +90,18 @@ class EnvironmentToolingTest(unittest.TestCase):
         self.assertIn("node --test", test_script)
         for test_path in expected_tests:
             self.assertIn(test_path, test_script)
+
+    def test_desktop_app_omits_packaging_scripts_and_builder_dependency(self) -> None:
+        package_json = json.loads((REPO_ROOT / "desktop_app" / "package.json").read_text(encoding="utf-8"))
+        scripts = package_json["scripts"]
+        dev_dependencies = package_json["devDependencies"]
+
+        self.assertNotIn("build:backend", scripts)
+        self.assertNotIn("package:desktop", scripts)
+        self.assertNotIn("pack", scripts)
+        self.assertNotIn("dist:mac", scripts)
+        self.assertNotIn("dist:win", scripts)
+        self.assertNotIn("electron-builder", dev_dependencies)
 
 
 if __name__ == "__main__":

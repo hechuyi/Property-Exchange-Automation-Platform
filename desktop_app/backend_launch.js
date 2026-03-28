@@ -6,10 +6,6 @@ function resolveBackendUrl({ backendHost, backendPort }) {
   return `http://${backendHost}:${backendPort}`;
 }
 
-function packagedBinaryName(platform = process.platform) {
-  return platform === "win32" ? "peap-desktop-backend.exe" : "peap-desktop-backend";
-}
-
 function resolvePathMaybeRelative(value, baseDir) {
   const text = String(value || "").trim();
   if (!text) {
@@ -127,18 +123,12 @@ function resolveBackendLaunch({
   }
 
   if (isPackaged) {
-    const resourceRoot = path.resolve(
-      env.PEAP_BACKEND_RESOURCE_ROOT || path.join(resourcesPath, "desktop_backend"),
-    );
     return {
-      mode: "packaged",
+      mode: "unsupported_packaged",
       backendUrl,
-      command: resolvePathMaybeRelative(
-        env.PEAP_BACKEND_BIN || path.join(resourceRoot, packagedBinaryName(platform)),
-        resolvedRepoRoot,
-      ),
-      args: ["--host", backendHost, "--port", String(backendPort)],
-      cwd: resolveDirectory(env.PEAP_BACKEND_CWD, resourceRoot),
+      command: "",
+      args: [],
+      cwd: resolveDirectory(env.PEAP_BACKEND_CWD, resolvedRepoRoot),
       env: launchEnv,
     };
   }
@@ -163,6 +153,15 @@ function resolveBackendLaunch({
 function validateBackendLaunch(launch) {
   const command = String((launch && launch.command) || "").trim();
   if (!command) {
+    if (launch && launch.mode === "unsupported_packaged") {
+      return (
+        "Packaged desktop runtime has been retired.\n\n" +
+        "Run the product from the repo-root development environment instead:\n" +
+        "uv sync\n" +
+        "bash scripts/bootstrap_desktop_env.sh\n" +
+        "cd desktop_app && npm start"
+      );
+    }
     return "Backend launch command is empty.";
   }
   if (commandLooksLikePath(command) && !fs.existsSync(command)) {
@@ -176,13 +175,6 @@ function validateBackendLaunch(launch) {
         "npm run bootstrap:backend"
       );
     }
-    if (launch && launch.mode === "packaged") {
-      return (
-        "Packaged desktop backend sidecar was not found.\n\n" +
-        `Expected: ${command}\n\n` +
-        "Rebuild the app package so the backend sidecar is bundled into desktop_backend/."
-      );
-    }
     return `Backend launch target was not found: ${command}`;
   }
   return "";
@@ -191,7 +183,6 @@ function validateBackendLaunch(launch) {
 module.exports = {
   commandLooksLikePath,
   defaultAppHome,
-  packagedBinaryName,
   parseBackendArgs,
   resolveBackendLaunch,
   resolveBackendUrl,

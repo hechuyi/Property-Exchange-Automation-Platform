@@ -6,15 +6,10 @@
   "main": "main.js",
   "scripts": {
     "bootstrap:backend": "bash ../scripts/bootstrap_desktop_env.sh",
-    "build:backend": "node build_backend_sidecar.js",
     "build:renderer": "vite build",
     "build": "npm run build:renderer",
-    "package:desktop": "node package_desktop.js",
-    "pack": "npm run package:desktop -- --platform current --layout dir",
-    "dist:mac": "npm run package:desktop -- --platform mac --layout release",
-    "dist:win": "npm run package:desktop -- --platform win --layout release",
     "start": "npm run build:renderer && electron .",
-    "test": "node --test ./backend_launch.test.js ./backend_ready.test.js ./layout_contract.test.js ./main.test.js ./package_desktop.test.js ./packaging_manifest.test.js ./smoke_driver.test.js ./renderer/api.test.js ./renderer/exports.test.js ./renderer/mappings.test.js ./renderer/records.test.js ./renderer/tasks.test.js"
+    "test": "node --test ./backend_launch.test.js ./backend_ready.test.js ./layout_contract.test.js ./main.test.js ./smoke_driver.test.js ./renderer/api.test.js ./renderer/exports.test.js ./renderer/mappings.test.js ./renderer/records.test.js ./renderer/tasks.test.js"
   },
   "dependencies": {
     "@refinedev/antd": "^6.0.3",
@@ -33,7 +28,6 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^5.1.0",
     "electron": "^37.3.1",
-    "electron-builder": "^26.0.12",
     "jsdom": "^26.1.0",
     "typescript": "^5.9.3",
     "vite": "^7.1.12",

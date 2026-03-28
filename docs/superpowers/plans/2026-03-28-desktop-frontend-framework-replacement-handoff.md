@@ -49,8 +49,28 @@ Update after the final strict interrupt-path fixes: current `main` is green on t
 
 ## What Is Already Done
 
+- Active docs are aligned to the real mainline:
+  - `README.md`
+  - `docs/release_gate.md`
+  - `docs/desktop_product_runbook_2026-03-26.md`
+  - `docs/project_layout.md`
+- Mainline gate automation now matches the current baseline:
+  - `uv lock --check`
+  - `uv run pytest tests/test_environment_tooling.py tests/test_release_gate.py -q`
+  - `uv run python -m desktop_backend.app_backend --help`
+  - `cd desktop_app && npm test`
+  - `cd desktop_app && npm run build`
+- The active docs now explicitly state:
+  - dev mode requires repo-root `uv` environment plus Node/npm
+  - first bootstrap/build may need network access
+  - `docs/superpowers/` is AI process material, not release documentation
+- Mainline source cleanup is done:
+  - no `electron-builder.yml`
+  - no `package_desktop.js` / `build_backend_sidecar.js`
+  - no extra desktop runtime branch outside repo-root development mode
+  - no tracked `dist*` packaging artifacts
 - React + TypeScript + Vite renderer is the active desktop frontend under `desktop_app/src/`
-- Electron still loads `desktop_app/build/renderer/index.html`, packaging still includes `build/renderer/**/*`
+- Electron still loads `desktop_app/build/renderer/index.html`
 - Shared desktop adapter foundation remains:
   - `desktop_app/src/desktop/config.ts`
   - `desktop_app/src/desktop/contracts.ts`
@@ -66,7 +86,7 @@ Update after the final strict interrupt-path fixes: current `main` is green on t
 - Selector / smoke contract hardening is done:
   - selector ids/constants are centralized under `desktop_app/src/testing/selectors.ts`
   - smoke no longer silently falls back to legacy DOM selectors when bridge loading fails
-  - `smoke_driver.js` now uses an embedded packaged-safe bridge and explicit boundary errors
+  - `smoke_driver.js` now uses an embedded bridge and explicit boundary errors
 - App shell / code splitting cleanup is done:
   - page-level lazy loading is in place
   - `App.tsx` now uses a finite `PanelKey` set instead of open string fallback
@@ -90,9 +110,14 @@ Update after the final strict interrupt-path fixes: current `main` is green on t
 
 本轮额外确认通过的命令：
 
+- Pass: `uv run pytest tests/test_environment_tooling.py tests/test_release_gate.py -q`
+- Pass: `uv run pytest tests/test_environment_tooling.py tests/test_app_backend_entry.py -q`
+- Pass: `uv run python -m desktop_backend.app_backend --help`
+- Pass: `cd desktop_app && node --test ./backend_launch.test.js`
 - Pass: `cd desktop_app && node --test ./main.test.js`
 - Pass: `cd desktop_app && node --test ./smoke_driver.test.js`
 - Pass: `cd desktop_app && npx vitest run src/pages/OverviewPage.test.tsx --reporter=dot`
+- Pass: `uv run python scripts/check_release_gate.py`
 - Pass: `cd desktop_app && npm run build`
 - Pass: `cd desktop_app && PEAP_DESKTOP_SMOKE_REPORT_PATH=... PEAP_DESKTOP_SMOKE_PICK_DIRECTORIES=... ./node_modules/.bin/electron .`
 
@@ -162,6 +187,20 @@ Important nuance:
 - 如果还要继续推进，剩下只是一个发布语义问题：
   - 现有单样本 fixture 太快，`interrupt_restart` 不能稳定拿到真正的 `interrupted` 终态
   - 当前通过标准已经退化为“恢复后再次导入成功完成”
+
+## Deferred Structural Follow-Up
+
+这轮先用最小补丁修了安装元数据：`pyproject.toml` 现在会把 `desktop_backend*` 一并导出，因为 `peap/streaming_store.py` 仍直接依赖 `desktop_backend.record_identity`。这能修复“离开 repo root 的已安装环境里导入 `peap.streaming_store` 失败”的问题。
+
+但从结构上看，依赖方向仍不理想：`record_identity` 实际是共享领域契约，不应长期挂在 `desktop_backend/` 名下再被 `peap/` 反向引用。后续应单开一轮小重构，目标是让 `peap` 与 `desktop_backend` 都只依赖共享层。
+
+建议后续任务顺序：
+
+1. 把 `desktop_backend/record_identity.py` 迁到共享包（优先 `peap_core/`，或新建更窄的 shared contract 模块）
+2. 同步改 `peap/streaming_store.py`、`desktop_backend/app_service.py`、对应测试的导入路径
+3. 保留一个短期兼容 shim，避免一次性改动过宽
+4. 增加“脱离 repo root 的已安装环境仍可 `import peap.streaming_store`”回归验证
+5. 等共享层迁移完成后，再评估是否把 `desktop_backend*` 从安装导出列表移除
 
 ## If Another AI Continues
 

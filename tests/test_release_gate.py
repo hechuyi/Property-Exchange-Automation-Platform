@@ -5,7 +5,12 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from scripts.check_release_gate import CheckResult, evaluate_release_gate
+from scripts.check_release_gate import (
+    AUTOMATED_COMMANDS,
+    LEGACY_ACTIVE_DOC_TERMS,
+    CheckResult,
+    evaluate_release_gate,
+)
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -61,6 +66,36 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertEqual(report.release_label, "release_candidate")
         self.assertIn("manual-import 主路径", report.summary)
+
+    def test_release_gate_automated_commands_match_release_candidate_baseline(self) -> None:
+        self.assertEqual(
+            [(name, command, cwd.as_posix()) for name, command, cwd in AUTOMATED_COMMANDS],
+            [
+                ("uv lock --check", ("uv", "lock", "--check"), "."),
+                (
+                    "uv run pytest tests/test_environment_tooling.py tests/test_release_gate.py -q",
+                    (
+                        "uv",
+                        "run",
+                        "pytest",
+                        "tests/test_environment_tooling.py",
+                        "tests/test_release_gate.py",
+                        "-q",
+                    ),
+                    ".",
+                ),
+                (
+                    "uv run python -m desktop_backend.app_backend --help",
+                    ("uv", "run", "python", "-m", "desktop_backend.app_backend", "--help"),
+                    ".",
+                ),
+                ("cd desktop_app && npm test", ("npm", "test"), "desktop_app"),
+                ("cd desktop_app && npm run build", ("npm", "run", "build"), "desktop_app"),
+            ],
+        )
+
+    def test_release_gate_legacy_doc_scan_omits_retired_packaging_lock(self) -> None:
+        self.assertNotIn("desktop_backend/requirements.build.lock.txt", LEGACY_ACTIVE_DOC_TERMS)
 
     def test_release_gate_is_blocked_when_active_docs_reintroduce_legacy_environment_terms(self) -> None:
         repo_root = self._make_repo(

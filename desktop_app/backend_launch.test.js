@@ -38,7 +38,7 @@ test("development launch uses repo venv python and workspace playwright cache", 
   assert.equal(launch.backendUrl, "http://127.0.0.1:42679");
 });
 
-test("packaged launch targets bundled backend binary and packaged cache default", () => {
+test("packaged launch is explicitly retired and refuses bundled sidecar mode", () => {
   const launch = resolveBackendLaunch({
     env: {},
     isPackaged: true,
@@ -51,21 +51,11 @@ test("packaged launch targets bundled backend binary and packaged cache default"
     documentsDir: "/Users/tester/Documents",
   });
 
-  assert.equal(launch.mode, "packaged");
-  assert.equal(
-    launch.command,
-    "/Applications/PEAP.app/Contents/Resources/desktop_backend/peap-desktop-backend",
-  );
-  assert.equal(launch.cwd, "/Applications/PEAP.app/Contents/Resources/desktop_backend");
-  assert.deepEqual(launch.args, ["--host", "0.0.0.0", "--port", "43111"]);
-  assert.equal(
-    launch.env.PLAYWRIGHT_BROWSERS_PATH,
-    "/Users/tester/Documents/PEAP/cache/ms-playwright",
-  );
-  assert.equal(
-    launch.env.PEAP_PLAYWRIGHT_BROWSERS_PATH,
-    "/Users/tester/Documents/PEAP/cache/ms-playwright",
-  );
+  assert.equal(launch.mode, "unsupported_packaged");
+  assert.equal(launch.command, "");
+  assert.equal(launch.cwd, "/tmp/peap");
+  assert.deepEqual(launch.args, []);
+  assert.match(String(validateBackendLaunch(launch) || ""), /packaged desktop runtime has been retired/i);
 });
 
 test("explicit launch keeps caller command and mirrors explicit playwright cache", () => {

@@ -32,16 +32,28 @@ LEGACY_ACTIVE_DOC_TERMS = (
     "requirements.lock",
     "requirements-dev.lock",
     "desktop_backend/requirements.lock.txt",
-    "desktop_backend/requirements.build.lock.txt",
 )
 AUTOMATED_COMMANDS = (
     ("uv lock --check", ("uv", "lock", "--check"), Path(".")),
     (
-        "uv run python -m unittest discover -s tests -q",
-        ("uv", "run", "python", "-m", "unittest", "discover", "-s", "tests", "-q"),
+        "uv run pytest tests/test_environment_tooling.py tests/test_release_gate.py -q",
+        (
+            "uv",
+            "run",
+            "pytest",
+            "tests/test_environment_tooling.py",
+            "tests/test_release_gate.py",
+            "-q",
+        ),
+        Path("."),
+    ),
+    (
+        "uv run python -m desktop_backend.app_backend --help",
+        ("uv", "run", "python", "-m", "desktop_backend.app_backend", "--help"),
         Path("."),
     ),
     ("cd desktop_app && npm test", ("npm", "test"), Path("desktop_app")),
+    ("cd desktop_app && npm run build", ("npm", "run", "build"), Path("desktop_app")),
 )
 
 

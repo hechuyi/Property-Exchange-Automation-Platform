@@ -11,6 +11,8 @@ uv sync
 bash scripts/bootstrap_desktop_env.sh
 ```
 
+开发态的 `desktop_app/` 并不是可脱离 repo root 独立运行的子项目：Electron 默认会回到仓库根 `.venv` 启动 `desktop_backend.app_backend`，backend cwd 也默认落在 repo root。
+
 ## 顶层目录
 
 ```text
@@ -23,6 +25,7 @@ bash scripts/bootstrap_desktop_env.sh
 ├─ assets/                      # 静态模板、schema、默认配置
 ├─ docs/                        # 产品文档、计划和运行说明
 ├─ scripts/                     # 维护脚本
+├─ tests/                       # repo 根 Python 测试
 ├─ pyproject.toml               # Python 项目元数据
 └─ uv.lock                      # uv 锁文件
 ```
@@ -38,7 +41,19 @@ bash scripts/bootstrap_desktop_env.sh
 - 日志：`<workspace_root>/logs/`
 - 浏览器缓存：`<workspace_root>/cache/ms-playwright/`
 
-更细的存储规则见 [desktop_storage_layout.md](/Users/rtoc/Documents/WorkSpace/Property-Exchange-Automation-Platform/.worktrees/codex-uv-environment-unification/docs/desktop_storage_layout.md)。
+更细的存储规则见 `docs/desktop_storage_layout.md`。
+
+## 文档边界
+
+以下文档属于当前主线的活跃产品文档：
+
+- `README.md`
+- `docs/release_gate.md`
+- `docs/desktop_product_runbook_2026-03-26.md`
+- `docs/project_layout.md`
+- `docs/submission_guide.md`
+
+`docs/superpowers/` 下的 specs / plans / handoff 用于 AI 过程记录与交接，不属于 release 文档集合。
 
 ## 提交流程
 
