@@ -16,6 +16,7 @@ from .streaming_ingest import StreamingIngestDependencies, StreamingIngestRunner
 from .streaming_models import ExportRequest, ItemProgressEvent
 from .streaming_queue import StreamingIngestService
 from .streaming_store import StreamingStore
+from .streaming_store_maintenance import run_streaming_store_maintenance
 
 
 @dataclass
@@ -167,18 +168,6 @@ def _load_rules_config(config_path: str | None) -> Dict[str, Any]:
         return {}
 
 
-def _normalize_legacy_store_views(store: StreamingStore) -> None:
-    summary = store.normalize_legacy_skip_parse_entries()
-    if any(int(summary.get(key, 0)) > 0 for key in ("records", "revisions", "events")):
-        store.add_audit_entry("legacy_skip_parse_normalized", summary)
-    normalized_dates = store.normalize_listing_dates()
-    if normalized_dates > 0:
-        store.add_audit_entry("legacy_listing_dates_normalized", {"records": normalized_dates})
-    normalized_states = store.normalize_required_mapping_states()
-    if any(int(normalized_states.get(key, 0)) > 0 for key in normalized_states):
-        store.add_audit_entry("legacy_required_mapping_normalized", normalized_states)
-
-
 def _build_download_request(
     args: object,
     *,
@@ -284,7 +273,7 @@ def run_streaming_daily_pipeline(
         )
         rules_config = _load_rules_config(getattr(args, "postprocess_config", None))
         store = StreamingStore(db_path)
-        _normalize_legacy_store_views(store)
+        run_streaming_store_maintenance(store)
         runner = StreamingIngestRunner(
             store=store,
             archive_root=resolved_archive_root,

@@ -26,6 +26,7 @@ from peap.streaming_ingest import StreamingIngestRunner, copy_snapshot_to_archiv
 from peap.streaming_models import ExportRequest, ItemProgressEvent, ItemSavedPayload
 from peap.streaming_postprocess import analyze_mapping_candidates
 from peap.streaming_store import StreamingStore
+from peap.streaming_store_maintenance import run_streaming_store_maintenance
 
 from .product_errors import UserInputError
 from .progress_contract import build_progress_view
@@ -471,17 +472,10 @@ class AppService:
                 "running_jobs_interrupted_on_startup",
                 {"job_ids": interrupted_jobs, "count": len(interrupted_jobs)},
             )
+        self._run_store_maintenance()
 
-    def _normalize_legacy_views(self) -> None:
-        summary = self.store.normalize_legacy_skip_parse_entries()
-        if any(int(summary.get(key, 0)) > 0 for key in ("records", "revisions", "events")):
-            self.store.add_audit_entry("legacy_skip_parse_normalized", summary)
-        normalized_dates = self.store.normalize_listing_dates()
-        if normalized_dates > 0:
-            self.store.add_audit_entry("legacy_listing_dates_normalized", {"records": normalized_dates})
-        normalized_states = self.store.normalize_required_mapping_states()
-        if any(int(normalized_states.get(key, 0)) > 0 for key in normalized_states):
-            self.store.add_audit_entry("legacy_required_mapping_normalized", normalized_states)
+    def _run_store_maintenance(self) -> None:
+        run_streaming_store_maintenance(self.store)
 
     def _repair_missing_archives_once(self) -> None:
         with self._lock:
@@ -749,8 +743,6 @@ class AppService:
         }
 
     def overview(self) -> Dict[str, Any]:
-        self._normalize_legacy_views()
-        self._repair_missing_archives_once()
         basic = self.get_basic_settings()
         jobs = self.store.list_jobs(limit=5)
         latest = jobs[0] if jobs else None
@@ -976,8 +968,6 @@ class AppService:
 
     def list_records(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
         raw_payload, normalized_scope, scope = _normalize_request_scope(payload, require_explicit_scope=False)
-        self._normalize_legacy_views()
-        self._repair_missing_archives_once()
         states = _normalize_record_states(normalized_scope.state)
         page = _coerce_limit(normalized_scope.page, default=1, maximum=9999)
         page_size = _coerce_limit(normalized_scope.page_size, default=50, maximum=200)
@@ -1192,17 +1182,14 @@ class AppService:
         return enriched
 
     def list_jobs(self, *, limit: int = 20) -> list[Dict[str, Any]]:
-        self._normalize_legacy_views()
         return self.store.list_jobs(limit=limit)
 
     def get_job(self, job_id: str) -> Dict[str, Any]:
-        self._normalize_legacy_views()
         data = self.store.get_job(job_id)
         data["events"] = self.store.list_job_events(job_id, limit=100)
         return data
 
     def get_job_events(self, job_id: str, *, limit: int = 200) -> list[Dict[str, Any]]:
-        self._normalize_legacy_views()
         return self.store.list_job_events(job_id, limit=limit)
 
     def _build_mapping_work_item(self, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1304,11 +1291,9 @@ class AppService:
         }
 
     def list_pending_mappings(self) -> list[Dict[str, Any]]:
-        self._normalize_legacy_views()
         return [self._build_mapping_work_item(record) for record in self._find_pending_mapping_records()]
 
     def list_mapping_entries(self) -> list[Dict[str, Any]]:
-        self._normalize_legacy_views()
         return self.store.list_mapping_entries()
 
     def _start_background_thread(self, *, name: str, target) -> None:
@@ -1897,7 +1882,7 @@ class AppService:
 
     def run_export(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         raw_payload, normalized_scope, scope = _normalize_request_scope(payload, require_explicit_scope=True)
-        self._normalize_legacy_views()
+        self._run_store_maintenance()
         self._repair_missing_archives_once()
         with self._mutating_job_scope("export_excel"):
             request = ExportRequest(
@@ -2050,7 +2035,7 @@ class AppService:
 
         self._reserve_mutating_job(job_type)
         try:
-            self._normalize_legacy_views()
+            self._run_store_maintenance()
             self._repair_missing_archives_once()
             _validate_streaming_job_dates(payload)
             basic = self.get_basic_settings()

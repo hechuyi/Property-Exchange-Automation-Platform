@@ -411,7 +411,7 @@ class AppServiceTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(runtime_dependencies.status_calls, 0)
 
-    def test_overview_normalizes_ready_records_missing_type_to_pending_mapping(self) -> None:
+    def test_overview_does_not_normalize_ready_records_missing_type_to_pending_mapping(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "missing-type.html")
         with open(source_file, "w", encoding="utf-8") as handle:
             handle.write("<html><body>missing type</body></html>")
@@ -449,12 +449,12 @@ class AppServiceTest(unittest.TestCase):
         overview = self.service.overview()
         payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "equity_transfer"})
 
-        self.assertEqual(overview["pending_mapping_count"], 1)
-        self.assertEqual(payload["rows"][0]["state"], "pending_mapping")
-        self.assertEqual(payload["rows"][0]["status_label"], "待补映射")
+        self.assertEqual(overview["pending_mapping_count"], 0)
+        self.assertEqual(payload["rows"][0]["state"], "ready")
+        self.assertEqual(payload["rows"][0]["status_label"], "已录入")
         self.assertEqual(payload["rows"][0]["values"]["挂牌次数"], "四次挂牌")
 
-    def test_overview_reclassifies_legacy_conflict_record_back_to_ready(self) -> None:
+    def test_overview_does_not_reclassify_legacy_conflict_record_back_to_ready(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "legacy-conflict.html")
         with open(source_file, "w", encoding="utf-8") as handle:
             handle.write("<html><body>legacy conflict</body></html>")
@@ -499,10 +499,10 @@ class AppServiceTest(unittest.TestCase):
         overview = self.service.overview()
         payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "equity_transfer"})
 
-        self.assertEqual(overview["record_state_counts"].get("conflict", 0), 0)
-        self.assertEqual(payload["rows"][0]["state"], "ready")
+        self.assertEqual(overview["record_state_counts"].get("conflict", 0), 1)
+        self.assertEqual(payload["rows"][0]["state"], "conflict")
 
-    def test_list_pending_mappings_normalizes_missing_type_ready_records(self) -> None:
+    def test_list_pending_mappings_does_not_normalize_missing_type_ready_records(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "missing-type-pending.html")
         with open(source_file, "w", encoding="utf-8") as handle:
             handle.write("<html><body>missing type pending</body></html>")
@@ -539,10 +539,85 @@ class AppServiceTest(unittest.TestCase):
 
         pending = self.service.list_pending_mappings()
 
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0]["project_code"], "G32025SH1000194-4")
-        self.assertEqual(pending[0]["recommended_rule"]["rule_kind"], "group_type")
-        self.assertEqual(pending[0]["recommended_rule"]["source_name"], "上海电气集团")
+        self.assertEqual(pending, [])
+
+    def test_get_job_does_not_normalize_legacy_pending_mapping_state(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "missing-type-get-job.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>missing type get job</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-get-job-no-normalize",
+                revision_hash="hash-get-job-no-normalize",
+                project_code="G32025SH1000194-5",
+                project_name="缺类型项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32025SH1000194-5", "项目名称": "缺类型项目"},
+                postprocess_payload={"项目编号": "G32025SH1000194-5", "项目名称": "缺类型项目"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="项目类型无法识别",
+                    )
+                ],
+            )
+        )
+        job_id = self.service.store.create_job("one_click")
+
+        self.service.get_job(job_id)
+
+        self.assertEqual(self.service.store.count_pending_mappings(), 0)
+        ready_rows = self.service.store.iter_latest_records(states=["ready"])
+        self.assertEqual(len(ready_rows), 1)
+        self.assertEqual(ready_rows[0]["record_id"], "rec-get-job-no-normalize")
+
+    def test_service_startup_runs_store_maintenance_before_reads(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "startup-maintenance.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>startup maintenance</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-startup-maintenance",
+                revision_hash="hash-startup-maintenance",
+                project_code="G32026SH1999002",
+                project_name="历史未知类型项目",
+                project_type="",
+                exchange="shanghai",
+                listing_date="2026/03/21",
+                state="ready",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32026SH1999002", "项目名称": "历史未知类型项目"},
+                postprocess_payload={"项目编号": "G32026SH1999002", "项目名称": "历史未知类型项目"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="项目类型无法识别",
+                    )
+                ],
+            )
+        )
+
+        restarted_service = AppService(
+            config_obj=self.config,
+            runtime_dependencies=FakeRuntimeDependencies(),
+        )
+
+        pending_rows = restarted_service.store.iter_latest_records(states=["pending_mapping"])
+
+        self.assertEqual(restarted_service.store.count_pending_mappings(), 1)
+        self.assertEqual(len(pending_rows), 1)
+        self.assertEqual(pending_rows[0]["record_id"], "rec-startup-maintenance")
+        self.assertEqual(pending_rows[0]["listing_date"], "2026-03-21")
 
     def test_list_pending_mappings_exposes_conflict_candidates(self) -> None:
         self._insert_record_with_mapping_source(
@@ -1756,7 +1831,7 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(row["values"]["转让方"], "上海CLI测试公司")
         self.assertEqual(row["values"]["挂牌次数"], "2")
 
-    def test_list_records_normalizes_legacy_skip_parse_failures(self) -> None:
+    def test_list_records_does_not_normalize_legacy_skip_parse_failures(self) -> None:
         self.service.store.upsert_failed_record(
             project_code="GR2026BJ1001611",
             source_file=os.path.join(self.temp_dir.name, "legacy_skip.html"),
@@ -1769,8 +1844,8 @@ class AppServiceTest(unittest.TestCase):
         payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "all"})
         row = next(item for item in payload["rows"] if item["project_code"] == "GR2026BJ1001611")
 
-        self.assertEqual(row["state"], "skipped")
-        self.assertEqual(row["status_label"], "已跳过")
+        self.assertEqual(row["state"], "parse_failed")
+        self.assertEqual(row["status_label"], "解析失败")
 
     def test_list_records_exposes_archive_conflict_detail(self) -> None:
         archive_path = os.path.join(self.temp_dir.name, "archive", "G32025SH1000194__conflict1.html")
@@ -1802,7 +1877,7 @@ class AppServiceTest(unittest.TestCase):
         payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "all"})
         row = next(item for item in payload["rows"] if item["record_id"] == "rec-conflict")
 
-        self.assertEqual(row["status_label"], "已录入")
+        self.assertEqual(row["status_label"], "归档重名")
         self.assertIn("__conflict1.html", row["status_detail"])
 
     def test_overview_exposes_latest_stage_summary_for_zero_result_job(self) -> None:
@@ -1858,7 +1933,7 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(overview["latest_progress"]["phase_label"], "正在导出 Excel")
         self.assertEqual(overview["latest_progress"]["archive_pending_count"], 0)
 
-    def test_overview_repairs_missing_archive_files_from_raw_source(self) -> None:
+    def test_overview_does_not_repair_missing_archive_files_from_raw_source(self) -> None:
         raw_dir = os.path.join(self.temp_dir.name, "raw")
         os.makedirs(raw_dir, exist_ok=True)
         source_file = os.path.join(raw_dir, "repair-me.html")
@@ -1889,9 +1964,9 @@ class AppServiceTest(unittest.TestCase):
 
         self.service.overview()
 
-        self.assertTrue(os.path.isfile(expected_archive_path))
+        self.assertFalse(os.path.isfile(expected_archive_path))
 
-    def test_overview_collapses_managed_raw_source_to_archive_path(self) -> None:
+    def test_overview_does_not_collapse_managed_raw_source_to_archive_path(self) -> None:
         raw_dir = os.path.join(self.config.DATA_ROOT, "raw", "auto", "挂牌_股权转让")
         os.makedirs(raw_dir, exist_ok=True)
         source_file = os.path.join(raw_dir, "collapse-me.html")
@@ -1931,11 +2006,11 @@ class AppServiceTest(unittest.TestCase):
         self.service.overview()
         record = self.service.store.get_record("rec-collapse")
 
-        self.assertEqual(record["source_file"], archive_path)
-        self.assertFalse(os.path.exists(source_file))
-        self.assertFalse(os.path.exists(f"{os.path.splitext(source_file)[0]}_files"))
+        self.assertEqual(record["source_file"], source_file)
+        self.assertTrue(os.path.exists(source_file))
+        self.assertTrue(os.path.exists(f"{os.path.splitext(source_file)[0]}_files"))
 
-    def test_overview_collapse_updates_downloaded_event_source_for_blank_code_tokens(self) -> None:
+    def test_overview_does_not_rewrite_source_file_for_blank_code_archive_collapse(self) -> None:
         raw_dir = os.path.join(self.config.DATA_ROOT, "raw", "auto", "挂牌_股权转让")
         os.makedirs(raw_dir, exist_ok=True)
         source_file = os.path.join(raw_dir, "collapse-no-code.html")
@@ -1987,12 +2062,12 @@ class AppServiceTest(unittest.TestCase):
         )
 
         self.service.overview()
-        tokens = self.service.store.list_existing_candidate_tokens(states=["ready"])
+        record = self.service.store.get_record("rec-collapse-no-code")
 
-        self.assertIn("page_url:https://example.test/legacy/no-code", tokens)
-        self.assertIn("project_id:LEGACYNOCODE001", tokens)
+        self.assertEqual(record["source_file"], source_file)
+        self.assertTrue(os.path.exists(source_file))
 
-    def test_overview_copy_repair_updates_downloaded_event_source_for_blank_code_tokens(self) -> None:
+    def test_overview_does_not_rewrite_source_file_for_blank_code_copy_repair(self) -> None:
         raw_dir = os.path.join(self.temp_dir.name, "raw")
         os.makedirs(raw_dir, exist_ok=True)
         source_file = os.path.join(raw_dir, "repair-no-code.html")
@@ -2037,12 +2112,12 @@ class AppServiceTest(unittest.TestCase):
         )
 
         self.service.overview()
-        tokens = self.service.store.list_existing_candidate_tokens(states=["ready"])
+        record = self.service.store.get_record("rec-repair-no-code")
 
-        self.assertIn("page_url:https://example.test/repair/no-code", tokens)
-        self.assertIn("project_id:REPAIRNOCODE001", tokens)
+        self.assertEqual(record["source_file"], source_file)
+        self.assertTrue(os.path.exists(source_file))
 
-    def test_overview_repairs_archive_links_beyond_recent_500_records_for_blank_code_tokens(self) -> None:
+    def test_overview_does_not_repair_archive_links_beyond_recent_500_records_for_blank_code_tokens(self) -> None:
         raw_dir = os.path.join(self.config.DATA_ROOT, "raw", "auto", "挂牌_股权转让")
         os.makedirs(raw_dir, exist_ok=True)
         archive_root = self.service.get_basic_settings()["archive_root"]
@@ -2050,7 +2125,6 @@ class AppServiceTest(unittest.TestCase):
         oldest_page_url = "https://example.test/oldest/no-code"
         oldest_project_id = "OLDESTNOCODE001"
         oldest_source_file = ""
-        oldest_archive_path = ""
         for index in range(501):
             source_file = os.path.join(raw_dir, f"repair-window-{index}.html")
             with open(source_file, "w", encoding="utf-8") as handle:
@@ -2094,16 +2168,12 @@ class AppServiceTest(unittest.TestCase):
             )
             if index == 0:
                 oldest_source_file = source_file
-                oldest_archive_path = archive_path
 
         self.service.overview()
         oldest_record = self.service.store.get_record("rec-repair-window-0")
-        tokens = self.service.store.list_existing_candidate_tokens(states=["ready"])
 
-        self.assertEqual(oldest_record["source_file"], oldest_archive_path)
-        self.assertFalse(os.path.exists(oldest_source_file))
-        self.assertIn(f"page_url:{oldest_page_url}", tokens)
-        self.assertIn(f"project_id:{oldest_project_id}", tokens)
+        self.assertEqual(oldest_record["source_file"], oldest_source_file)
+        self.assertTrue(os.path.exists(oldest_source_file))
 
     def test_launch_one_click_repairs_archive_links_before_pipeline_starts(self) -> None:
         raw_dir = os.path.join(self.config.DATA_ROOT, "raw", "auto", "挂牌_股权转让")

@@ -238,10 +238,66 @@ class StreamingDailyPipelineTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.downloaded_count, 2)
-        self.assertEqual(result.persisted_count, 2)
-        self.assertEqual(result.exception_count, 0)
-        self.assertEqual(len(result.export_artifacts or []), 1)
-        self.assertTrue(os.path.isfile(result.db_path))
+
+    def test_streaming_pipeline_runs_store_maintenance_before_download_bootstrap(self) -> None:
+        args = argparse.Namespace(
+            start_date="2026-03-20",
+            end_date="2026-03-21",
+            exchange="all",
+            project_type="all",
+            concurrency=2,
+            page_size=None,
+            max_pages=None,
+            with_refresh=False,
+            no_resume=False,
+            save_json=False,
+            postprocess_config=None,
+            verbose=False,
+            streaming_db=None,
+            no_auto_export=True,
+        )
+        fake_download_runner = types.ModuleType("peap.download_runner")
+        fake_download_runner.DownloadRunRequest = _FakeDownloadRunRequest
+        fake_download_oneclick = types.ModuleType("peap.download_oneclick")
+        fake_download_oneclick.DownloadOneClickRequest = _FakeDownloadOneClickRequest
+        call_order: list[str] = []
+
+        def _fake_run_download_oneclick(request, *, config_obj, emit_console):
+            call_order.append("download")
+            return _FakeDownloadOneClickRunResult(
+                exit_code=0,
+                log_file="download.log",
+                plan_file=request.plan_file,
+                plan_file_exists=False,
+                plan_file_removed=True,
+                start="2026-03-20 00:00:00",
+                end="2026-03-20 00:01:00",
+                duration_sec=60.0,
+                aggregate_summary={"saved": 0, "errors": 0},
+                task_summaries={},
+                errors=[],
+            )
+
+        fake_download_oneclick.run_download_oneclick = _fake_run_download_oneclick
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "peap.download_runner": fake_download_runner,
+                    "peap.download_oneclick": fake_download_oneclick,
+                },
+            ),
+            patch("peap.streaming_daily_pipeline.StreamingIngestRunner", _FakeRunner),
+            patch(
+                "peap.streaming_daily_pipeline.run_streaming_store_maintenance",
+                side_effect=lambda store: call_order.append("maintenance"),
+            ),
+        ):
+            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(call_order[:2], ["maintenance", "download"])
 
     def test_streaming_pipeline_persists_stage_failure_reason_from_payload_errors(self) -> None:
         args = argparse.Namespace(

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from peap.streaming_models import IngestedRecord, ItemProgressEvent, PostProcessFinding
 from peap.streaming_store import StreamingStore
+from peap.streaming_store_maintenance import run_streaming_store_maintenance
 
 
 class StreamingStoreTest(unittest.TestCase):
@@ -265,6 +266,49 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["revision_id"], 2)
         self.assertEqual(pending[0]["payload"]["v"], 2)
+        self.assertEqual(self.store.count_pending_mappings(), 1)
+
+    def test_store_read_helpers_stay_side_effect_free_until_explicit_maintenance_runs(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "read-side-effect-free.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>read side effect free</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-read-no-maintenance",
+                revision_hash="hash-read-no-maintenance",
+                project_code="G32026SH1999003",
+                project_name="读路径不应修复",
+                project_type="",
+                exchange="shanghai",
+                listing_date="2026/03/21",
+                state="ready",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32026SH1999003", "项目名称": "读路径不应修复"},
+                postprocess_payload={"项目编号": "G32026SH1999003", "项目名称": "读路径不应修复"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="project_type_unknown",
+                        message="项目类型无法识别",
+                    )
+                ],
+            )
+        )
+        job_id = self.store.create_job("one_click")
+
+        self.store.list_pending_mappings(limit=20)
+        self.store.get_job(job_id)
+
+        self.assertEqual(self.store.count_pending_mappings(), 0)
+        ready_rows = self.store.iter_latest_records(states=["ready"])
+        self.assertEqual(len(ready_rows), 1)
+        self.assertEqual(ready_rows[0]["record_id"], "rec-read-no-maintenance")
+
+        summary = run_streaming_store_maintenance(self.store)
+
+        self.assertEqual(summary.required_mapping["records"], 1)
         self.assertEqual(self.store.count_pending_mappings(), 1)
 
     def test_list_existing_candidate_tokens_includes_record_codes_and_downloaded_page_identities(self) -> None:
