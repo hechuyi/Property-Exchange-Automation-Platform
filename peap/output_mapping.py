@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, FrozenSet, List
 
+from .compat_payload import build_compat_payload
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_PROJECT_TYPE, KEY_STATUS
 from .output_contract import (
     KIND_CAPITAL,
@@ -154,9 +155,12 @@ def _resolve_compat_payload(
     *,
     include_raw_compat: bool,
 ) -> Dict[str, Any]:
+    standard = _resolve_standard_project(project)
     if isinstance(project, ParsedProject):
-        return project.to_compat_payload(include_raw=include_raw_compat)
-    return project.to_legacy_payload(include_raw=include_raw_compat)
+        raw_payload = project.data if include_raw_compat else None
+    else:
+        raw_payload = project.raw if include_raw_compat else None
+    return build_compat_payload(standard, raw_payload=raw_payload)
 
 
 def map_standard_to_excel_payload(

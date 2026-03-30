@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime as _REAL_DATETIME
 from unittest.mock import patch
 
-from peap.streaming_export import run_ready_export
+from peap.streaming_export import record_to_export_payload, run_ready_export
 from peap.streaming_models import ExportRequest, IngestedRecord
 from peap.streaming_store import StreamingStore
 
@@ -127,6 +127,60 @@ class StreamingExportTest(unittest.TestCase):
         self.assertEqual(row["类型"], "国资")
         self.assertEqual(row["转让方"], "上海测试公司")
         self.assertEqual(row["挂牌次数"], 3)
+
+    def test_record_to_export_payload_does_not_pass_through_arbitrary_raw_fields(self) -> None:
+        payload = record_to_export_payload(
+            {
+                "project_code": "G32025SH1000194",
+                "project_name": "测试项目",
+                "project_type": "股权转让",
+                "exchange": "shanghai",
+                "parser_payload": {
+                    "项目编号": "G32025SH1000194",
+                    "项目名称": "测试项目",
+                    "项目类型": "股权转让",
+                    "挂牌价格": "108.00",
+                    "未审计透传字段": "should-not-leak",
+                },
+                "postprocess_payload": {
+                    "转让方": "上海测试公司",
+                    "另一个透传字段": "still-should-not-leak",
+                },
+            }
+        )
+
+        self.assertEqual(payload["项目编号"], "G32025SH1000194")
+        self.assertEqual(payload["挂牌价格"], "108.00")
+        self.assertEqual(payload["转让方"], "上海测试公司")
+        self.assertNotIn("未审计透传字段", payload)
+        self.assertNotIn("另一个透传字段", payload)
+
+    def test_record_to_export_payload_preserves_public_resource_fields_needed_by_writer(self) -> None:
+        payload = record_to_export_payload(
+            {
+                "project_code": "GR20260001",
+                "project_name": "成交样例项目",
+                "project_type": "股权转让",
+                "exchange": "北交所",
+                "parser_payload": {
+                    "交易所": "北交所",
+                    "项目编号": "GR20260001",
+                    "项目名称": "成交样例项目",
+                    "交易方式": "网络竞价",
+                    "受让方名称": "样例受让方",
+                    "转让标的评估值": "88.00",
+                    "成交金额": "108.00",
+                    "成交日期": "2026/03/01",
+                },
+                "postprocess_payload": {},
+            }
+        )
+
+        self.assertEqual(payload["交易方式"], "网络竞价")
+        self.assertEqual(payload["受让方名称"], "样例受让方")
+        self.assertEqual(payload["转让标的评估值"], "88.00")
+        self.assertEqual(payload["成交金额"], "108.00")
+        self.assertEqual(payload["成交日期"], "2026/03/01")
 
     def test_run_ready_export_rebuild_twice_still_exports_full_scoped_range(self) -> None:
         self.store.upsert_record(

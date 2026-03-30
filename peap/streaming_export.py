@@ -10,6 +10,7 @@ import uuid
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
+from .compat_payload import build_compat_payload
 from .output_contract import clone_field_candidates, detect_output_kind, get_output_columns_for_kind
 from .standard_model import build_standard_project
 from .streaming_postprocess import derive_listing_times_from_project_code, merge_record_payloads
@@ -120,8 +121,7 @@ def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     merged_payload.setdefault("项目类型", str(record.get("project_type") or ""))
     merged_payload.setdefault("交易所", str(record.get("exchange") or ""))
     standard = build_standard_project(merged_payload)
-    compatible = standard.to_legacy_payload(include_raw=True)
-    compatible.update({key: value for key, value in merged_payload.items() if value not in (None, "")})
+    compatible = build_compat_payload(standard, raw_payload=merged_payload)
     if compatible.get("挂牌次数") in (None, ""):
         derived_listing_times = derive_listing_times_from_project_code(str(compatible.get("项目编号") or ""))
         if derived_listing_times:

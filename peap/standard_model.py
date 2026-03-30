@@ -3,6 +3,7 @@
 from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Mapping, Optional
 
+from .compat_payload import COMPAT_PAYLOAD_KEYS, build_compat_payload
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_LISTING_TIMES, KEY_PROJECT_TYPE, KEY_STATUS
 
 FIELD_ALIASES = {
@@ -95,55 +96,14 @@ class StandardProject:
         return {field_name: getattr(self, field_name) for field_name in STANDARD_PROJECT_FIELD_NAMES}
 
     def to_legacy_payload(self, *, include_raw: bool = False) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "项目编号": self.project_code,
-            "项目名称": self.project_name,
-            "项目类型": self.project_type,
-            "状态": self.status,
-            "交易所": self.exchange,
-            "类型": self.source_type,
-            "转让方": self.seller,
-            "交易方式": self.deal_method,
-            "受让方名称": self.buyer_name,
-            "隶属集团": self.group_name,
-            "所属行业": self.industry,
-            "所在地区": self.region,
-            "经办人": self.contact,
-            "受托机构": self.agency,
-            "挂牌价格": self.price,
-            "融资方": self.seller,
-            "融资金额": self.price,
-            "融资金额（万）": self.price,
-            "转让标的评估值": self.valuation,
-            "成交金额": self.price,
-            "挂牌开始日期": self.start_date,
-            "挂牌截止日期": self.end_date,
-            "预披露开始日期": self.start_date,
-            "预披露截止日期": self.end_date,
-            "披露开始日期": self.start_date,
-            "披露截止日期": self.end_date,
-            "成交日期": self.end_date,
-            "近一年净利润": self.profit,
-            "近一年净利润（万）": self.profit,
-            "总资产": self.asset_total,
-            "总资产（万）": self.asset_total,
-            "持股比例": self.share_ratio,
-            "挂牌次数": self.listing_times,
-            "是否预披露": self.is_pre_disclosure,
-            "备注": self.remark,
-        }
-        if include_raw and self.raw:
-            merged = dict(self.raw)
-            merged.update({key: value for key, value in payload.items() if value not in (None, "")})
-            return merged
-        return payload
+        return build_compat_payload(self, raw_payload=self.raw if include_raw else None)
 
 
 STANDARD_PROJECT_FIELD_NAMES = frozenset(
     field.name for field in fields(StandardProject) if field.name != "raw"
 )
 STANDARD_ROUTING_FIELDS = frozenset({"project_type", "status", "is_pre_disclosure"})
-LEGACY_PAYLOAD_KEYS = frozenset(StandardProject().to_legacy_payload().keys())
+LEGACY_PAYLOAD_KEYS = COMPAT_PAYLOAD_KEYS
 
 
 def hydrate_standard_project(

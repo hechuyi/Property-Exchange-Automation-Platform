@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from .compat_payload import COMPAT_PAYLOAD_KEYS
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_PROJECT_TYPE, KEY_STATUS
 from .excel_handler import (
     build_excel_schema_settings,
@@ -24,7 +25,6 @@ from .output_mapping import (
 )
 from .parsing import build_parsed_project
 from .pipeline import ParserPipeline, ParserPipelineSettings, build_parser_pipeline_settings
-from .standard_model import LEGACY_PAYLOAD_KEYS
 
 
 def _load_default_checks_config() -> object:
@@ -125,7 +125,7 @@ def _validate_mapping_writer_contract(
         kind: set(field_names)
         for kind, field_names in get_raw_fallback_contract().items()
     }
-    legacy_keys = set(LEGACY_PAYLOAD_KEYS)
+    compat_keys = set(COMPAT_PAYLOAD_KEYS)
 
     required_internal_keys = {KEY_STATUS, KEY_PROJECT_TYPE, KEY_IS_PRE_DISCLOSURE}
     missing_internal_keys = sorted(required_internal_keys - set(schema["internal_keys"]))
@@ -136,7 +136,7 @@ def _validate_mapping_writer_contract(
         field_candidates = schema["field_candidates"].get(kind, {})
         raw_fallback_fields = raw_fallback_contract.get(kind, set())
         mapped_fields = set(mapping_contract.get(kind, {}))
-        available_payload_fields = legacy_keys | raw_fallback_fields | mapped_fields
+        available_payload_fields = compat_keys | raw_fallback_fields | mapped_fields
 
         for column_name in columns:
             if column_name == "ID":
