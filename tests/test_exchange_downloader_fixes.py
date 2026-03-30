@@ -61,11 +61,11 @@ if "bs4" not in sys.modules:
     fake_bs4.BeautifulSoup = _FakeBeautifulSoup
     sys.modules["bs4"] = fake_bs4
 
+from peap.downloaders.cbex_physical import CbexPhysicalAssetDownloader
 from peap.downloaders.cquae import (
     ChongqingProjectDownloader,
     _normalize_list_url,
 )
-from peap.downloaders.cbex_physical import CbexPhysicalAssetDownloader
 from peap.downloaders.sse_physical import ShanghaiPhysicalAssetDownloader
 from peap.downloaders.tpre import DownloadSummary, TpreProjectDownloader, _ListQuerySpec
 

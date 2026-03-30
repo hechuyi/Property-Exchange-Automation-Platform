@@ -4,7 +4,11 @@ import os
 import tempfile
 import unittest
 
-from peap.streaming_ingest import StreamingIngestDependencies, StreamingIngestRunner, _default_parse_file
+from peap.streaming_ingest import (
+    StreamingIngestDependencies,
+    StreamingIngestRunner,
+    _default_parse_file,
+)
 from peap.streaming_models import ItemSavedPayload, PostProcessFinding
 from peap.streaming_store import StreamingStore
 

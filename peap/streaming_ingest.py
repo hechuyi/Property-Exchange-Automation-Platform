@@ -5,17 +5,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List
 
 from .io_utils import read_text_with_fallback
-from .submission_layout import resolve_submission_snapshot_target
 from .streaming_models import IngestedRecord, ItemSavedPayload, PostProcessFinding, RecordState
-from .streaming_postprocess import BUSINESS_PROJECT_TYPES, normalize_record_payload, run_record_postprocess
+from .streaming_postprocess import (
+    BUSINESS_PROJECT_TYPES,
+    normalize_record_payload,
+    run_record_postprocess,
+)
 from .streaming_store import StreamingStore
+from .submission_layout import resolve_submission_snapshot_target
 
 LISTING_DATE_FIELDS = ("挂牌开始日期", "预披露开始日期", "披露开始日期", "信息披露起始日期")
 PROJECT_TYPE_FALLBACKS = {

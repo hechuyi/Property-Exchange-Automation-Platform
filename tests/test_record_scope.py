@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from typing import get_args
 
-from desktop_backend.record_scope import RecordScope, normalize_record_scope, record_scope_to_dict, resolve_listing_business_types
+from desktop_backend.record_scope import (
+    RecordScope,
+    normalize_record_scope,
+    record_scope_to_dict,
+    resolve_listing_business_types,
+)
 from peap.streaming_models import ExportRequest, IngestedRecord, ItemProgressEvent, RecordFamily
 
 

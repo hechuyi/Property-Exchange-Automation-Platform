@@ -12,7 +12,6 @@ from desktop_backend.app_service import AppService, AppUserFacingError
 from desktop_backend.product_errors import UserInputError
 from peap.streaming_models import IngestedRecord, ItemProgressEvent, PostProcessFinding
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

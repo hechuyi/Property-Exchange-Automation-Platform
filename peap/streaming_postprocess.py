@@ -66,7 +66,6 @@ def derive_listing_times_from_project_code(project_code: str) -> str:
 
 
 def _required_mapping_fields(payload: Dict[str, Any]) -> List[str]:
-    project_type = _clean_text(payload.get("项目类型"))
     missing: List[str] = []
     if not _first_non_empty(payload, TYPE_FIELDS):
         missing.append("类型")

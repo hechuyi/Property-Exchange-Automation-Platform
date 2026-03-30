@@ -25,7 +25,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from bs4 import BeautifulSoup
 
 from ..constants import (
-    STATUS_LISTED,
     TYPE_CAPITAL_INCREASE,
     TYPE_EQUITY_TRANSFER,
     TYPE_PHYSICAL_ASSET,

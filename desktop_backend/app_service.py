@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Dict
 
-from peap_core.source_catalog import canonical_source_code, canonical_source_label
 from peap.output_contract import (
     KIND_CAPITAL,
     KIND_EQUITY,
@@ -27,6 +26,7 @@ from peap.streaming_models import ExportRequest, ItemProgressEvent, ItemSavedPay
 from peap.streaming_postprocess import analyze_mapping_candidates
 from peap.streaming_store import StreamingStore
 from peap.streaming_store_maintenance import run_streaming_store_maintenance
+from peap_core.source_catalog import canonical_source_code, canonical_source_label
 
 from .product_errors import UserInputError
 from .progress_contract import build_progress_view

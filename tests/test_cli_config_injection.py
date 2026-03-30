@@ -11,6 +11,7 @@ from peap.download_tasks import (
     set_default_download_task_registry_settings,
 )
 
+
 class CliConfigInjectionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.original_task_settings = get_default_download_task_registry_settings()

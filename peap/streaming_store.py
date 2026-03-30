@@ -20,7 +20,6 @@ from peap_core.record_identity import (
 
 from .streaming_models import IngestedRecord, ItemProgressEvent
 
-
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,

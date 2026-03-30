@@ -16,17 +16,15 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-from ..submission_layout import resolve_submission_snapshot_target
-
 from bs4 import BeautifulSoup
 
 from ..constants import (
-    STATUS_LISTED,
     TYPE_CAPITAL_INCREASE,
     TYPE_EQUITY_TRANSFER,
     TYPE_PHYSICAL_ASSET,
     TYPE_PRE_DISCLOSURE,
 )
+from ..submission_layout import resolve_submission_snapshot_target
 from .snapshot_utils import SnapshotSaver, is_snapshot_complete
 
 BASE_URL = "https://trade.tpre.cn"

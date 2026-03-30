@@ -11,7 +11,6 @@ from peap_core.record_identity import (
     pick_reprocess_evidence_path,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

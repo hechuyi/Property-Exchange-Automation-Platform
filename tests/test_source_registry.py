@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 
 from peap.source_registry import SourceCapability, get_source, list_sources, register_source
-from peap_core.source_catalog import SourceDescriptor, get_source_descriptor, list_source_descriptors
+from peap_core.source_catalog import (
+    SourceDescriptor,
+    get_source_descriptor,
+    list_source_descriptors,
+)
 
 
 class SourceRegistryTest(unittest.TestCase):

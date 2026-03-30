@@ -13,7 +13,6 @@ from peap_core.cli_support import close_cli_logger, setup_cli_logger
 
 from .download_reporting import accumulate, new_totals, summary_to_dict, totals_to_summary_dict
 from .download_runner import (
-    DownloadRunnerError,
     DownloadRunRequest,
     build_downloader,
     prepare_download_session,

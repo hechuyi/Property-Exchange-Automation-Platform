@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
-
-from peap.streaming_models import RecordFamily
+from typing import Any
 
 TERMINAL_JOB_STATUSES = ("success", "success_with_warnings", "interrupted", "failed")
 
