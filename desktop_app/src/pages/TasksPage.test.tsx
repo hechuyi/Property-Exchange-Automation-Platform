@@ -73,9 +73,10 @@ describe("TasksPage", () => {
     expect(eventList).toBeInTheDocument();
     expect(screen.getByText(/日常监控已移到工作台/)).toBeInTheDocument();
 
-    expect(await within(jobList).findByText(/一键执行 · 执行中/)).toBeInTheDocument();
+    expect(await within(jobList).findByText(/一键执行 · 进行中/)).toBeInTheDocument();
+    expect(await within(eventList).findByText(/进行中 · P-1/)).toBeInTheDocument();
     expect(await within(eventList).findByText(/只显示前 2 条事件/)).toBeInTheDocument();
-    expect(within(eventList).getByText(/手动导入失败，请在工作台查看任务活动。/)).toBeInTheDocument();
+    expect(within(eventList).getByText(/手动导入需人工处理，请在工作台查看任务活动。/)).toBeInTheDocument();
   });
 
   it("switches selected job and reloads events", async () => {
@@ -123,7 +124,7 @@ describe("TasksPage", () => {
 
     renderPage();
 
-    const secondJob = await screen.findByRole("button", { name: /手动导入解析 · 执行失败/ });
+    const secondJob = await screen.findByRole("button", { name: /手动导入解析 · 需人工处理/ });
     fireEvent.click(secondJob);
 
     await waitFor(() => {

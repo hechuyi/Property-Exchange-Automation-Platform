@@ -216,8 +216,8 @@ describe("RecordsPage", () => {
           },
           {
             record_id: "rec-2",
-            state: "pending_mapping",
-            status_label: "待补映射",
+            state: "mapping_conflict",
+            status_label: "规则冲突",
             project_code: "P-002",
             project_name: "第二个项目",
             project_type: "pre_disclosure",
@@ -241,6 +241,8 @@ describe("RecordsPage", () => {
 
     expect(within(detailPanel).getByText("P-002")).toBeInTheDocument();
     expect(within(detailPanel).getByText("预披露")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("待补映射")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("存在待确认的映射口径，请先统一后再继续处理。")).toBeInTheDocument();
   });
 
   it("runs export as a first-class action using active records scope", async () => {

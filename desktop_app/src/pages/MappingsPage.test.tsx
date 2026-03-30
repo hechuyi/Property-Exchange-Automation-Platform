@@ -51,6 +51,7 @@ describe("MappingsPage", () => {
     expect(screen.getByTestId(PAGE_TEST_IDS.mappings.editor).closest('[data-layout="remediation-workspace"]')).toBeTruthy();
     expect(screen.getByTestId(PAGE_TEST_IDS.mappings.editor)).toContainElement(screen.getByTestId(PAGE_TEST_IDS.mappings.preview));
     expect(screen.getByText("已保存规则").closest('[data-layout="remediation-workspace"]')).toBeFalsy();
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("等待处理结果");
   });
 
   it("imports pending draft then handles conflict-confirmed save", async () => {
@@ -103,8 +104,9 @@ describe("MappingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存已填写规则" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("已存在同来源规则");
+      expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("待确认覆盖范围，请先处理冲突确认。");
     });
+    expect(screen.getByRole("dialog")).toHaveTextContent("已存在同来源规则");
 
     fireEvent.click(screen.getByRole("button", { name: "确认覆盖" }));
 
@@ -204,6 +206,30 @@ describe("MappingsPage", () => {
     expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("只显示前 200 条记录，仍有剩余 150 条");
   });
 
+  it("surfaces save failure with workbench-oriented attention copy", async () => {
+    listMappings.mockResolvedValue({ pending: [], entries: [] });
+    previewMapping.mockResolvedValue({
+      conflict: false,
+      mode: "update",
+      source_name: "华润集团",
+      target_value: "央企",
+    });
+    saveMapping.mockRejectedValue(new Error("backend down"));
+
+    render(<MappingsPage />);
+
+    await waitFor(() => {
+      expect(listMappings).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByLabelText("来源名称"), { target: { value: "华润集团" } });
+    fireEvent.change(screen.getByLabelText("目标值"), { target: { value: "央企" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存单条规则" }));
+
+    expect(await screen.findByText("映射规则需人工处理，请在工作台查看任务活动。")).toBeInTheDocument();
+    expect(screen.queryByText(/任务页查看明细/)).not.toBeInTheDocument();
+  });
+
   it("locks batch save while conflict confirmation is pending", async () => {
     listMappings.mockResolvedValue({
       pending: [
@@ -251,6 +277,7 @@ describe("MappingsPage", () => {
       expect(screen.getByRole("button", { name: "确认覆盖" })).toBeInTheDocument();
     });
     expect(batchSaveButton).toBeDisabled();
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("待确认覆盖范围，请先处理冲突确认。");
 
     fireEvent.click(batchSaveButton);
     expect(previewMapping).toHaveBeenCalledTimes(1);

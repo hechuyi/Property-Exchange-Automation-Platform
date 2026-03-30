@@ -1,5 +1,6 @@
 import { Alert, Button, Card, Progress, Space, Typography } from "antd";
 import { TaskActivityPanel } from "../features/tasks/TaskActivityPanel";
+import { formatProgressTitle } from "../features/tasks/formatters";
 import { useWorkbench } from "../features/workbench/useWorkbench";
 import { PAGE_TEST_IDS } from "../testing/selectors";
 
@@ -16,6 +17,9 @@ export default function WorkbenchPage() {
     runtimeSummary,
     taskActivity,
   } = useWorkbench();
+  const latestProgress = (overviewQuery.data?.latest_progress as Record<string, unknown> | undefined) || {};
+  const latestJob = (overviewQuery.data?.latest_job as Record<string, unknown> | null | undefined) || null;
+  const progressTitle = formatProgressTitle(latestProgress, latestJob, (overviewQuery.data || {}) as Record<string, unknown>);
 
   return (
     <div data-testid={PAGE_TEST_IDS.overview.page}>
@@ -76,7 +80,7 @@ export default function WorkbenchPage() {
                 <Typography.Text type="secondary">加载中…</Typography.Text>
               ) : (
                 <Space direction="vertical" style={{ width: "100%" }} size={8}>
-                  <Typography.Text strong>{String((overviewQuery.data?.latest_progress as Record<string, unknown> | undefined)?.phase_label || "暂无任务")}</Typography.Text>
+                  <Typography.Text strong>{progressTitle}</Typography.Text>
                   <Typography.Text>{`${Math.max(0, Math.min(100, Math.round(progressView.width)))}%`}</Typography.Text>
                   <Progress percent={Math.max(0, Math.min(100, Math.round(progressView.width)))} showInfo={false} />
                   <Typography.Text>{progressMeta || "暂无任务数据"}</Typography.Text>

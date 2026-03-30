@@ -107,11 +107,14 @@ describe("WorkbenchPage", () => {
 
     expect(await screen.findByTestId(PAGE_TEST_IDS.overview.page)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.primaryActions)).toBeInTheDocument();
+    const progressCard = screen.getByTestId(PAGE_TEST_IDS.overview.progressCard);
+    expect(await within(progressCard).findByText("一键执行 · 进行中")).toBeInTheDocument();
+    expect(within(progressCard).queryByText(/^正在保存网页$/)).not.toBeInTheDocument();
 
     const activityPanel = await screen.findByTestId("task-activity-panel");
     expect(within(activityPanel).getByText("任务活动")).toBeInTheDocument();
     expect(within(activityPanel).getByText(/日常监控已内联到工作台/)).toBeInTheDocument();
-    expect(within(activityPanel).getByText(/一键执行 · 执行中/)).toBeInTheDocument();
-    expect(await within(activityPanel).findByText(/正在保存网页 · P-1/)).toBeInTheDocument();
+    expect(within(activityPanel).getByText(/一键执行 · 进行中/)).toBeInTheDocument();
+    expect(await within(activityPanel).findByText(/进行中 · P-1/)).toBeInTheDocument();
   });
 });

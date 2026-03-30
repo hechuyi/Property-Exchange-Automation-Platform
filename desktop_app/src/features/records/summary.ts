@@ -1,3 +1,5 @@
+import { RECORD_WORKFLOW_LABELS } from "./table";
+
 function countValue(value: unknown) {
   const numeric = Number(value || 0);
   return Number.isFinite(numeric) ? numeric : 0;
@@ -33,10 +35,10 @@ export function formatRecordsSummary(payload: RecordsSummaryPayload = {}) {
     `共 ${countValue(summary.total_count ?? payload.total_count)} 条`,
     `第 ${countValue(payload.page || summary.page || 1)} / ${countValue(payload.page_count || summary.page_count || 0)} 页`,
     `本页 ${countValue(summary.visible_count)} 条`,
-    readyCount > 0 ? `已就绪 ${readyCount} 条` : "",
-    pendingMappingCount > 0 ? `待补映射 ${pendingMappingCount} 条` : "",
-    skippedCount > 0 ? `已跳过 ${skippedCount} 条` : "",
-    attentionCount > 0 ? `需人工处理 ${attentionCount} 条` : "",
+    readyCount > 0 ? `${RECORD_WORKFLOW_LABELS.ready} ${readyCount} 条` : "",
+    pendingMappingCount > 0 ? `${RECORD_WORKFLOW_LABELS.blocked} ${pendingMappingCount} 条` : "",
+    skippedCount > 0 ? `${RECORD_WORKFLOW_LABELS.skipped} ${skippedCount} 条` : "",
+    attentionCount > 0 ? `${RECORD_WORKFLOW_LABELS.attention} ${attentionCount} 条` : "",
   ]
     .filter(Boolean)
     .join(" · ");

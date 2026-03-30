@@ -16,6 +16,13 @@ export type RecordsRow = {
 
 export type RecordStatusTone = "ready" | "blocked" | "attention" | "muted";
 
+export const RECORD_WORKFLOW_LABELS = {
+  ready: "已就绪",
+  blocked: "待补映射",
+  attention: "需人工处理",
+  skipped: "已跳过",
+} as const;
+
 type RecordDisplayStatus = {
   label: string;
   tone: RecordStatusTone;
@@ -31,8 +38,8 @@ const PROJECT_TYPE_LABELS: Record<string, string> = {
 
 const FALLBACK_STATUS_DETAIL: Record<string, string> = {
   ready: "记录已整理完成，可直接查看或导出。",
-  pending_mapping: "映射信息仍需补齐后，才能继续后续处理。",
-  mapping_conflict: "现有映射规则存在冲突，需要先确认映射口径。",
+  pending_mapping: "待补映射尚未完成，请先补齐后再继续处理。",
+  mapping_conflict: "存在待确认的映射口径，请先统一后再继续处理。",
   skipped: "该记录已被明确跳过，不会参与后续导出。",
   parse_failed: "内容解析未完成，需要人工检查源文件。",
   postprocess_failed: "后处理未完成，需要人工检查整理结果。",
@@ -57,15 +64,15 @@ export function resolveRecordStatus(row: RecordsRow): RecordDisplayStatus {
   const detail = String(row.status_detail || "").trim() || FALLBACK_STATUS_DETAIL[state] || "记录状态需要人工确认。";
 
   if (state === "ready") {
-    return { label: "已就绪", tone: "ready", detail };
+    return { label: RECORD_WORKFLOW_LABELS.ready, tone: "ready", detail };
   }
   if (state === "pending_mapping" || state === "mapping_conflict") {
-    return { label: "待补映射", tone: "blocked", detail };
+    return { label: RECORD_WORKFLOW_LABELS.blocked, tone: "blocked", detail };
   }
   if (state === "skipped") {
-    return { label: "已跳过", tone: "muted", detail };
+    return { label: RECORD_WORKFLOW_LABELS.skipped, tone: "muted", detail };
   }
-  return { label: "需人工处理", tone: "attention", detail };
+  return { label: RECORD_WORKFLOW_LABELS.attention, tone: "attention", detail };
 }
 
 export function statusText(row: RecordsRow) {

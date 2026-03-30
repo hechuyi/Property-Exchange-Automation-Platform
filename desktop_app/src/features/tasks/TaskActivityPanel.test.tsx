@@ -40,11 +40,12 @@ describe("TaskActivityPanel", () => {
 
     const panel = screen.getByTestId("task-activity-panel");
     expect(within(panel).getByText(/日常监控已内联到工作台/)).toBeInTheDocument();
-    expect(within(panel).getByText(/一键执行 · 执行中/)).toBeInTheDocument();
+    expect(within(panel).getByText(/一键执行 · 进行中/)).toBeInTheDocument();
+    expect(within(panel).getByText(/进行中 · P-1/)).toBeInTheDocument();
     expect(within(panel).getByText(/只显示前 2 条事件/)).toBeInTheDocument();
-    expect(within(panel).getByText(/手动导入失败，请在工作台查看任务活动。/)).toBeInTheDocument();
+    expect(within(panel).getByText(/手动导入需人工处理，请在工作台查看任务活动。/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /手动导入解析 · 执行失败/ }));
+    fireEvent.click(screen.getByRole("button", { name: /手动导入解析 · 需人工处理/ }));
     expect(onSelectJob).toHaveBeenCalledWith("job-2");
   });
 });

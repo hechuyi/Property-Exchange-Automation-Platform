@@ -37,6 +37,11 @@ type ConflictFlowType = "single" | "batch";
 
 type BatchSavePhase = "idle" | "in-flight" | "waiting-conflict";
 
+const DEFAULT_PREVIEW_TEXT = "等待处理结果";
+const CONFLICT_WAIT_TEXT = "待确认覆盖范围，请先处理冲突确认。";
+const MAPPING_SAVE_ERROR_TEXT = "映射规则需人工处理，请在工作台查看任务活动。";
+const PENDING_REPROCESS_ERROR_TEXT = "待补映射需人工处理，请在工作台查看任务活动。";
+
 function formatCapacityNotice(payload: Record<string, any>) {
   const returnedCount = Number(payload.affected_returned_count ?? payload.affected_count ?? 0);
   const totalCount = Number(payload.affected_total_count ?? returnedCount);
@@ -56,7 +61,7 @@ export default function MappingsPage() {
   const [editingEntryKey, setEditingEntryKey] = useState("");
   const [entriesKeyword, setEntriesKeyword] = useState("");
   const [entriesRuleKind, setEntriesRuleKind] = useState("all");
-  const [previewText, setPreviewText] = useState("");
+  const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
   const [previewError, setPreviewError] = useState("");
   const [conflictPreview, setConflictPreview] = useState<Record<string, any> | null>(null);
   const conflictResolverRef = useRef<{ flowType: ConflictFlowType; resolve: (value: boolean) => void } | null>(null);
@@ -148,10 +153,9 @@ export default function MappingsPage() {
     }
     if (flowType === "batch") {
       setBatchSavePhase("waiting-conflict");
-      setPreviewText("批量保存已暂停，等待冲突确认...");
     }
     setConflictPreview(preview);
-    setPreviewText(formatMappingConflictSummary(preview));
+    setPreviewText(CONFLICT_WAIT_TEXT);
     setPreviewError("");
     return new Promise<boolean>((resolve) => {
       conflictResolverRef.current = { flowType, resolve };
@@ -235,7 +239,7 @@ export default function MappingsPage() {
     }
 
     setPreviewError("");
-    setPreviewText(`正在逐条检查并保存 ${filledDrafts.length} 条已填写规则...`);
+    setPreviewText(`规则保存进行中，正在逐条检查 ${filledDrafts.length} 条已填写规则。`);
     setBatchSavePhase("in-flight");
     try {
       const result = await runBatchMappingUpsertFlow({
@@ -248,10 +252,10 @@ export default function MappingsPage() {
 
       setDrafts((current) => current.filter((item) => !result.savedRecordIds.has(item.recordId)));
       setPreviewText(formatBatchMappingSaveSummary(result));
-      setPreviewError(result.savedCount === 0 && result.failedCount > 0 ? "映射规则保存失败，请到任务页查看明细。" : "");
+      setPreviewError(result.savedCount === 0 && result.failedCount > 0 ? MAPPING_SAVE_ERROR_TEXT : "");
       await loadMappings();
     } catch {
-      setPreviewError("映射规则保存失败，请到任务页查看明细。");
+      setPreviewError(MAPPING_SAVE_ERROR_TEXT);
     } finally {
       setBatchSavePhase("idle");
     }
@@ -269,7 +273,7 @@ export default function MappingsPage() {
     }
     setSingleSaving(true);
     setPreviewError("");
-    setPreviewText("正在检查并保存单条规则...");
+    setPreviewText("规则保存进行中，正在检查当前规则。");
     try {
       const result = await runMappingUpsertFlow({
         draft: {
@@ -292,7 +296,7 @@ export default function MappingsPage() {
       setPreviewError("");
       await loadMappings();
     } catch {
-      setPreviewError("映射规则保存失败，请到任务页查看明细。");
+      setPreviewError(MAPPING_SAVE_ERROR_TEXT);
     } finally {
       setSingleSaving(false);
     }
@@ -309,7 +313,7 @@ export default function MappingsPage() {
       setPreviewError("");
       await loadMappings();
     } catch {
-      setPreviewError("待补映射批量重处理失败，请到任务页查看明细。");
+      setPreviewError(PENDING_REPROCESS_ERROR_TEXT);
     }
   };
 
@@ -317,7 +321,7 @@ export default function MappingsPage() {
     setSingleDraft(EMPTY_SINGLE_DRAFT);
     setEditingEntryKey("");
     setPreviewError("");
-    setPreviewText("已切换到新建规则模式");
+    setPreviewText("当前编辑器已就绪，可开始新建规则。");
   };
 
   const loadEntryToSingleDraft = (entry: (typeof filteredEntries)[number]) => {
