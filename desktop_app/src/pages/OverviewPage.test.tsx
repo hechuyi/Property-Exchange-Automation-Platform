@@ -90,6 +90,7 @@ describe("OverviewPage", () => {
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.primaryActions)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.progressCard)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.runtimeCard)).toBeInTheDocument();
+    expect(screen.getByText("任务活动")).toBeInTheDocument();
 
     expect(await screen.findByText("正在保存网页")).toBeInTheDocument();
     expect(screen.getByText("56%")).toBeInTheDocument();

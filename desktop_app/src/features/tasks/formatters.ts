@@ -107,23 +107,23 @@ function terminalProgressHint(progressView: Record<string, unknown> = {}, latest
   const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
   const status = String(latestJob?.status || progressView.job_status || "").trim();
   if (jobType === "export_excel") {
-    if (status === "failed") return "导出失败，请到任务页查看详细原因。";
-    if (status === "interrupted") return "导出已中断，请到任务页查看详细原因。";
+    if (status === "failed") return "导出失败，请在工作台查看任务活动。";
+    if (status === "interrupted") return "导出已中断，请在工作台查看任务活动。";
     if (status === "success_with_warnings") return "导出已结束，但当前条件下没有形成新的导出文件。";
     return "导出已完成，可以从导出目录直接打开文件。";
   }
   if (jobType === "manual_import") {
-    if (status === "failed") return "手动导入失败，请到任务页查看结果。";
-    if (status === "interrupted") return "手动导入已中断，请到任务页查看结果。";
-    return "手动导入已完成，请到任务页查看结果。";
+    if (status === "failed") return "手动导入失败，请在工作台查看任务活动。";
+    if (status === "interrupted") return "手动导入已中断，请在工作台查看任务活动。";
+    return "手动导入已完成，可在工作台查看任务活动。";
   }
   if (jobType === "mapping_refresh") {
-    if (status === "failed") return "映射回刷失败，请到任务页查看结果。";
-    if (status === "interrupted") return "映射回刷已中断，请到任务页查看结果。";
-    return "映射回刷已完成，请到任务页查看结果。";
+    if (status === "failed") return "映射回刷失败，请在工作台查看任务活动。";
+    if (status === "interrupted") return "映射回刷已中断，请在工作台查看任务活动。";
+    return "映射回刷已完成，可在工作台查看任务活动。";
   }
-  if (status === "failed") return "任务执行失败，请到任务页查看详细原因。";
-  if (status === "interrupted") return "任务已中断，请到任务页查看详细原因。";
+  if (status === "failed") return "任务执行失败，请在工作台查看任务活动。";
+  if (status === "interrupted") return "任务已中断，请在工作台查看任务活动。";
   if (status === "success_with_warnings") return "任务已完成，但仍有待补映射或失败项；请先处理后再导出 Excel。";
   const downloaded = countValue(progressView.downloaded_count);
   const persisted = countValue(progressView.persisted_count);
@@ -206,7 +206,7 @@ function genericHint(progressView: Record<string, unknown> = {}, latestJob: Reco
   } else if (phaseCode === "completed_with_warnings") {
     hint = "任务已完成，但仍有待补映射或失败项；请先处理后再导出 Excel。";
   } else if (phaseCode === "failed") {
-    hint = "任务失败时，详细原因会出现在任务页的任务明细里。";
+    hint = "任务失败时，可在工作台的任务活动中查看详细原因。";
   }
   return dateText ? `${hint} 当前日期范围：${dateText}。` : hint;
 }
@@ -312,9 +312,9 @@ export function formatEventTitle(event: Record<string, unknown> = {}) {
 }
 
 const EVENT_ERROR_LABELS: Record<string, string> = {
-  mapping_refresh_failed: "映射回刷失败，请到任务页查看明细。",
-  manual_import_failed: "手动导入失败，请到任务页查看明细。",
-  export_failed: "导出失败，请到任务页查看明细。",
+  mapping_refresh_failed: "映射回刷失败，请在工作台查看任务活动。",
+  manual_import_failed: "手动导入失败，请在工作台查看任务活动。",
+  export_failed: "导出失败，请在工作台查看任务活动。",
 };
 
 export function formatEventDetail(event: Record<string, unknown> = {}) {
@@ -324,8 +324,8 @@ export function formatEventDetail(event: Record<string, unknown> = {}) {
   const errorType = String(event.error_type || "").trim();
   if (EVENT_ERROR_LABELS[errorType]) return EVENT_ERROR_LABELS[errorType];
   const status = String(event.status || "").trim();
-  if (status === "failed") return "任务执行失败，请到任务页查看明细。";
-  if (status === "interrupted") return "任务已中断，请到任务页查看明细。";
+  if (status === "failed") return "任务执行失败，请在工作台查看任务活动。";
+  if (status === "interrupted") return "任务已中断，请在工作台查看任务活动。";
   if (status) return jobStatusLabel(status);
   return "";
 }

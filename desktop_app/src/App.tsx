@@ -13,7 +13,7 @@ import {
 } from "./features/shell/navigation";
 
 const PAGE_COMPONENTS = {
-  workbench: lazy(() => import("./pages/OverviewPage")),
+  workbench: lazy(() => import("./pages/WorkbenchPage")),
   records: lazy(() => import("./pages/RecordsPage")),
   mappings: lazy(() => import("./pages/MappingsPage")),
   settings: lazy(() => import("./pages/SettingsPage")),
