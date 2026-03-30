@@ -4,20 +4,20 @@ import { SMOKE_SELECTOR_BRIDGE } from "./smoke-bridge";
 
 describe("SMOKE_SELECTOR_BRIDGE", () => {
   test("maps nav selectors from desktop selector contract", () => {
-    expect(SMOKE_SELECTOR_BRIDGE.nav.workbench[0]).toBe(
-      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.nav.primary.workbench}"]`,
+    expect(SMOKE_SELECTOR_BRIDGE.nav.overview[0]).toBe(
+      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.nav.overview}"]`,
     );
     expect(SMOKE_SELECTOR_BRIDGE.nav.mappings[0]).toBe(
-      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.nav.primary.mappings}"]`,
+      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.nav.mappings}"]`,
     );
     expect(SMOKE_SELECTOR_BRIDGE.nav.records[0]).toBe(
-      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.nav.primary.records}"]`,
+      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.nav.records}"]`,
     );
   });
 
   test("maps page roots from desktop selector contract", () => {
-    expect(SMOKE_SELECTOR_BRIDGE.pages.workbench[0]).toBe(
-      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.workbench.page}"]`,
+    expect(SMOKE_SELECTOR_BRIDGE.pages.overview[0]).toBe(
+      `[data-testid="${DESKTOP_SELECTOR_SCHEMA.overview.page}"]`,
     );
     expect(SMOKE_SELECTOR_BRIDGE.pages.mappings[0]).toBe(
       `[data-testid="${DESKTOP_SELECTOR_SCHEMA.mappings.page}"]`,
@@ -60,9 +60,10 @@ describe("SMOKE_SELECTOR_BRIDGE", () => {
     );
   });
 
-  test("keeps smoke selectors limited to the three workflow destinations", () => {
-    expect(Object.keys(SMOKE_SELECTOR_BRIDGE.nav)).toEqual(["workbench", "records", "mappings"]);
-    expect(Object.keys(SMOKE_SELECTOR_BRIDGE.pages)).toEqual(["workbench", "records", "mappings"]);
-    expect(SMOKE_SELECTOR_BRIDGE).toEqual(DESKTOP_SMOKE_SELECTOR_CONTRACT);
+  test("keeps runtime js embedded contract equivalent to ts bridge contract", async () => {
+    const runtimeModule = await import("../../smoke_driver.js");
+    const runtimeExports = runtimeModule.default ?? runtimeModule;
+    expect(runtimeExports.__internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE).toEqual(DESKTOP_SMOKE_SELECTOR_CONTRACT);
+    expect(runtimeExports.__internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE).toEqual(SMOKE_SELECTOR_BRIDGE);
   });
 });

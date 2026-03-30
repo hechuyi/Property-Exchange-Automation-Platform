@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -109,14 +110,83 @@ def _first_error_message(raw_errors: object) -> str:
     return ""
 
 
+_LIST_FAILURE_RE = re.compile(
+    r"^(?P<exchange>[a-z0-9_]+)-list-failed:\s*(?P<reason>.+)$",
+    re.IGNORECASE,
+)
+_COLLECT_FAILURE_RE = re.compile(
+    r"^(?P<prefix>[a-z0-9_:-]+):\s*collect-failed:\s*(?P<reason>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _structured_collect_error(
+    *,
+    exchange: str,
+    failure_kind: str,
+    raw_message: str,
+    raw_reason: str,
+    task_id: str = "",
+) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "exchange": exchange,
+        "stage": "prepare_tasks",
+        "failure_kind": failure_kind,
+        "raw_reason": raw_reason,
+    }
+    normalized_task_id = str(task_id or "").strip()
+    if normalized_task_id:
+        details["task_id"] = normalized_task_id
+    return {
+        "error_code": f"{exchange}_{failure_kind}_failed",
+        "error_message": raw_message,
+        "error_details": details,
+    }
+
+
 def _classify_collect_error(raw_errors: object) -> dict[str, Any]:
     message = _first_error_message(raw_errors)
     if not message:
         return {}
-    return {
-        "error_code": "collect_failed",
-        "error_message": message,
-    }
+    if (
+        "www.suaee.com" in message
+        and "queryAllNew" in message
+        and "HTTP Error 404" in message
+    ):
+        return {
+            "error_code": "sse_list_api_not_found",
+            "error_message": "上交所列表接口 queryAllNew 返回 404，当前扫描已中止",
+            "error_details": {
+                "exchange": "sse",
+                "stage": "prepare_tasks",
+                "upstream_url": "https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew",
+            },
+        }
+    list_failed_match = _LIST_FAILURE_RE.match(message)
+    if list_failed_match:
+        exchange = str(list_failed_match.group("exchange") or "").strip().lower()
+        reason = str(list_failed_match.group("reason") or "").strip()
+        if exchange and reason:
+            return _structured_collect_error(
+                exchange=exchange,
+                failure_kind="list",
+                raw_message=message,
+                raw_reason=reason,
+            )
+    collect_failed_match = _COLLECT_FAILURE_RE.match(message)
+    if collect_failed_match:
+        task_prefix = str(collect_failed_match.group("prefix") or "").strip().lower()
+        exchange = task_prefix.split(":", 1)[0].strip()
+        reason = str(collect_failed_match.group("reason") or "").strip()
+        if exchange and reason:
+            return _structured_collect_error(
+                exchange=exchange,
+                failure_kind="collect",
+                raw_message=message,
+                raw_reason=reason,
+                task_id=task_prefix if ":" in task_prefix else "",
+            )
+    return {"error_message": message}
 
 
 def _stage_error_message(summary_payload: dict[str, Any] | None) -> str:

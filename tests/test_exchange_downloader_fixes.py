@@ -8,11 +8,9 @@ import tempfile
 import types
 import unittest
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
-try:
-    import bs4  # noqa: F401
-except ImportError:
+if "bs4" not in sys.modules:
     fake_bs4 = types.ModuleType("bs4")
 
     class _FakeTag:
@@ -30,23 +28,6 @@ except ImportError:
     class _FakeBeautifulSoup:
         def __init__(self, html: str, _parser: str) -> None:
             self._html = html
-
-        def find(self, name=None, attrs=None, class_=None, href=False):
-            items = self.find_all(name=name, href=href)
-            attrs = attrs or {}
-            for item in items:
-                if class_ is not None:
-                    class_names = str(item.get("class") or "").split()
-                    if class_ not in class_names:
-                        continue
-                matched = True
-                for key, value in attrs.items():
-                    if item.get(key) != value:
-                        matched = False
-                        break
-                if matched:
-                    return item
-            return None
 
         def find_all(self, name=None, href=False):
             if not (name in (None, "a") or (isinstance(name, list) and "a" in name)):
@@ -298,97 +279,6 @@ class SseDownloaderFixTest(unittest.TestCase):
 
             self.assertEqual(captured["output_dir"], temp_dir)
 
-    def test_query_list_page_posts_live_si_contract(self) -> None:
-        downloader = ShanghaiPhysicalAssetDownloader(html_root="C:\\temp")
-        captured: dict[str, object] = {}
-
-        def fake_post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
-            captured["url"] = url
-            captured["payload"] = payload
-            return {"code": 200, "data": [], "extra": 0}
-
-        with patch.object(downloader, "_post_json", side_effect=fake_post_json):
-            result = downloader._query_list_page(
-                page_index=3,
-                list_project_type="ignored",
-                gplx="ignored",
-            )
-
-        self.assertEqual(captured["url"], "https://www.suaee.com/si/prjs/realright/list")
-        self.assertEqual(captured["payload"], {"pageNo": 3, "pageSize": downloader.page_size})
-        self.assertEqual(result, {"code": 200, "data": [], "extra": 0})
-
-    def test_collect_list_candidates_uses_live_shape_and_xmid_detail_route(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            downloader = ShanghaiPhysicalAssetDownloader(html_root=temp_dir)
-            payload = {
-                "code": 200,
-                "data": [
-                    {
-                        "ID": 9001,
-                        "XMID": 114211,
-                        "XMBH": "TR2025SH1000143-2",
-                        "XMMC": "上海测试项目",
-                        "PLKSRQ": "2026-03-10",
-                    }
-                ],
-                "extra": 1,
-            }
-
-            with patch.object(downloader, "_query_list_page", return_value=payload):
-                summary = downloader.run(start_date="2026-03-10", end_date="2026-03-10", list_only=True)
-
-        self.assertEqual(summary.pages_requested, 1)
-        self.assertEqual(summary.listed_items, 1)
-        self.assertEqual(summary.skipped_by_missing_xmid, 0)
-        self.assertEqual(summary.detail_candidates, 1)
-        self.assertEqual(summary.errors, [])
-        self.assertEqual(summary.candidate_entries[0]["xmid"], "114211")
-        self.assertEqual(summary.candidate_entries[0]["project_code"], "TR2025SH1000143-2")
-        self.assertEqual(
-            summary.candidate_entries[0]["page_url"],
-            "https://www.suaee.com/xmzx.html#/zczrDetail?XMID=114211",
-        )
-        self.assertEqual(summary.candidate_entries[0]["row"]["XMID"], 114211)
-
-    def test_fetch_rendered_html_waits_for_captured_suaee_detail_payload(self) -> None:
-        downloader = ShanghaiPhysicalAssetDownloader(html_root="C:\\temp")
-        calls: list[tuple[str, object]] = []
-
-        class _FakePage:
-            async def add_init_script(self, script: str) -> None:
-                calls.append(("add_init_script", script))
-
-            async def goto(self, page_url: str, wait_until: str, timeout: int) -> None:
-                calls.append(("goto", {"page_url": page_url, "wait_until": wait_until, "timeout": timeout}))
-
-            async def wait_for_function(self, script: str, arg=None, timeout: int | None = None) -> None:
-                calls.append(("wait_for_function", {"script": script, "arg": arg, "timeout": timeout}))
-
-            async def wait_for_timeout(self, timeout_ms: int) -> None:
-                calls.append(("wait_for_timeout", timeout_ms))
-
-            async def content(self) -> str:
-                return "<html><body>ok</body></html>"
-
-        html = asyncio.run(
-            downloader._fetch_rendered_html(
-                page=_FakePage(),
-                page_url="https://www.suaee.com/xmzx.html#/zczrDetail?XMID=114211",
-                expected_project_code="TR2025SH1000143-2",
-                expected_xmid="114211",
-            )
-        )
-
-        self.assertEqual(html, "<html><body>ok</body></html>")
-        self.assertEqual(calls[0][0], "add_init_script")
-        self.assertEqual(calls[1][0], "goto")
-        self.assertEqual(calls[2][0], "wait_for_function")
-        self.assertIn("/si/prjs/realright/detail_zspl", str(calls[0][1]))
-        self.assertIn("window.__PEAP_SUAEE_DETAIL__", str(calls[2][1]["script"]))
-        self.assertEqual(calls[2][1]["arg"], {"projectCode": "TR2025SH1000143-2", "xmid": "114211"})
-        self.assertTrue(all(call[0] != "wait_for_selector" for call in calls))
-
 
 class CbexDownloaderFixTest(unittest.TestCase):
     def test_run_uses_submission_root_directly_without_type_subdir(self) -> None:
@@ -406,6 +296,76 @@ class CbexDownloaderFixTest(unittest.TestCase):
                 downloader.run(start_date="2026-03-10", end_date="2026-03-10", list_only=True)
 
             self.assertEqual(captured["output_dir"], temp_dir)
+
+    def test_api_with_retry_logs_only_three_retries_before_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            downloader = CbexPhysicalAssetDownloader(
+                html_root=temp_dir,
+                output_type="实物资产",
+            )
+            page = types.SimpleNamespace(wait_for_timeout=AsyncMock())
+            source = types.SimpleNamespace(label="房屋土地")
+            downloader._api_one = AsyncMock(side_effect=[RuntimeError("api-http-521")] * 4)
+            downloader._warmup = AsyncMock()
+            downloader.logger = Mock()
+
+            with self.assertRaisesRegex(RuntimeError, "list-api-failed 房屋土地 p=1: api-http-521"):
+                asyncio.run(
+                    downloader._api_with_retry(
+                        context=object(),
+                        page=page,
+                        source=source,
+                        page_index=1,
+                    )
+                )
+
+            self.assertEqual(downloader._api_one.await_count, 4)
+            self.assertEqual(page.wait_for_timeout.await_count, 3)
+            self.assertEqual(downloader._warmup.await_count, 3)
+            self.assertEqual(downloader.logger.warning.call_count, 3)
+            self.assertEqual(
+                [call.args[1] for call in downloader.logger.warning.call_args_list],
+                [1, 2, 3],
+            )
+
+    def test_api_with_retry_returns_after_third_retry_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            downloader = CbexPhysicalAssetDownloader(
+                html_root=temp_dir,
+                output_type="实物资产",
+            )
+            page = types.SimpleNamespace(wait_for_timeout=AsyncMock())
+            source = types.SimpleNamespace(label="股权转让")
+            expected = {"result": True}
+            downloader._api_one = AsyncMock(
+                side_effect=[
+                    RuntimeError("api-http-521"),
+                    RuntimeError("api-http-521"),
+                    RuntimeError("api-http-521"),
+                    expected,
+                ]
+            )
+            downloader._warmup = AsyncMock()
+            downloader.logger = Mock()
+
+            result = asyncio.run(
+                downloader._api_with_retry(
+                    context=object(),
+                    page=page,
+                    source=source,
+                    page_index=1,
+                )
+            )
+
+            self.assertEqual(result, expected)
+            self.assertEqual(downloader._api_one.await_count, 4)
+            self.assertEqual(page.wait_for_timeout.await_count, 3)
+            self.assertEqual(downloader._warmup.await_count, 3)
+            self.assertEqual(downloader.logger.warning.call_count, 3)
+            self.assertEqual(
+                [call.args[1] for call in downloader.logger.warning.call_args_list],
+                [1, 2, 3],
+            )
 
 
 if __name__ == "__main__":

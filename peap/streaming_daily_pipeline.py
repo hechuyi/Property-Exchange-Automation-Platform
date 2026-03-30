@@ -83,10 +83,19 @@ def _stage_error_type(payload: Dict[str, Any]) -> str:
     explicit = str(payload.get("error_code") or payload.get("error_type") or "").strip()
     if explicit:
         return explicit
+    message = _stage_error_message(payload)
+    if (
+        "suaee.com/manageprojectweb/foreign/project/queryAllNew" in message
+        and "HTTP Error 404: Not Found" in message
+    ):
+        return "sse_list_api_not_found"
     return ""
 
 
 def _stage_display_error_message(payload: Dict[str, Any]) -> str:
+    error_type = _stage_error_type(payload)
+    if error_type == "sse_list_api_not_found":
+        return "上交所列表接口 queryAllNew 返回 404，当前扫描已中止"
     return _stage_error_message(payload)
 
 

@@ -6,6 +6,14 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   mapping_refresh: "映射回刷",
 };
 
+const JOB_STATUS_LABELS: Record<string, string> = {
+  running: "执行中",
+  success: "已完成",
+  success_with_warnings: "已完成，但有待处理项",
+  interrupted: "已中断",
+  failed: "执行失败",
+};
+
 const STAGE_LABELS: Record<string, string> = {
   prepare_tasks: "正在扫描网页",
   save_pages: "正在保存网页",
@@ -20,26 +28,6 @@ const STAGE_LABELS: Record<string, string> = {
   failed: "处理失败",
 };
 
-const WORKFLOW_STATUS_LABELS = {
-  active: "进行中",
-  ready: "已就绪",
-  blocked: "待补映射",
-  attention: "需人工处理",
-  interrupted: "已中断",
-  skipped: "已跳过",
-} as const;
-
-const ACTIVE_JOB_STATUSES = new Set(["accepted", "queued", "pending", "running", "in_progress", "processing"]);
-const READY_JOB_STATUSES = new Set(["success", "completed", "done"]);
-const BLOCKED_JOB_STATUSES = new Set(["success_with_warnings", "completed_with_warnings"]);
-const ATTENTION_JOB_STATUSES = new Set(["failed", "error"]);
-const INTERRUPTED_JOB_STATUSES = new Set(["interrupted"]);
-const ACTIVE_STAGE_CODES = new Set(["prepare_tasks", "save_pages", "manual_import_scan", "reprocessing", "archive_pending", "exporting", "queued_for_parse"]);
-const READY_STAGE_CODES = new Set(["downloaded", "persisted", "completed"]);
-const BLOCKED_STAGE_CODES = new Set(["completed_with_warnings"]);
-const ATTENTION_STAGE_CODES = new Set(["failed"]);
-const INTERRUPTED_STAGE_CODES = new Set(["interrupted"]);
-
 const TERMINAL_JOB_STATUSES = new Set(["success", "success_with_warnings", "interrupted", "failed"]);
 const TERMINAL_PHASE_CODES = new Set(["completed", "completed_with_warnings", "interrupted", "failed"]);
 
@@ -52,92 +40,8 @@ function jobTypeLabel(jobType: unknown) {
   return JOB_TYPE_LABELS[String(jobType || "").trim()] || String(jobType || "").trim() || "任务";
 }
 
-function blockedStatusLabel(pendingCount: number, exceptionCount: number) {
-  if (pendingCount > 0) {
-    return WORKFLOW_STATUS_LABELS.blocked;
-  }
-  if (exceptionCount > 0) {
-    return WORKFLOW_STATUS_LABELS.attention;
-  }
-  return "待处理";
-}
-
-function statusLabelFromCategory(
-  status: string,
-  { pendingCount = 0, exceptionCount = 0 }: { pendingCount?: number; exceptionCount?: number } = {},
-) {
-  const normalized = String(status || "").trim().toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized === "skipped") {
-    return WORKFLOW_STATUS_LABELS.skipped;
-  }
-  if (ACTIVE_JOB_STATUSES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.active;
-  }
-  if (READY_JOB_STATUSES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.ready;
-  }
-  if (BLOCKED_JOB_STATUSES.has(normalized)) {
-    return blockedStatusLabel(pendingCount, exceptionCount);
-  }
-  if (INTERRUPTED_JOB_STATUSES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.interrupted;
-  }
-  if (ATTENTION_JOB_STATUSES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.attention;
-  }
-  return "";
-}
-
-function stageStatusLabel(
-  stage: unknown,
-  { pendingCount = 0, exceptionCount = 0 }: { pendingCount?: number; exceptionCount?: number } = {},
-) {
-  const normalized = String(stage || "").trim().toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized === "skipped") {
-    return WORKFLOW_STATUS_LABELS.skipped;
-  }
-  if (ACTIVE_STAGE_CODES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.active;
-  }
-  if (READY_STAGE_CODES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.ready;
-  }
-  if (BLOCKED_STAGE_CODES.has(normalized)) {
-    return blockedStatusLabel(pendingCount, exceptionCount);
-  }
-  if (INTERRUPTED_STAGE_CODES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.interrupted;
-  }
-  if (ATTENTION_STAGE_CODES.has(normalized)) {
-    return WORKFLOW_STATUS_LABELS.attention;
-  }
-  return "";
-}
-
-function resolveSummary(jobLike: Record<string, unknown> = {}) {
-  return jobLike.summary && typeof jobLike.summary === "object" && jobLike.summary
-    ? (jobLike.summary as Record<string, unknown>)
-    : {};
-}
-
-function pendingCountFrom(source: Record<string, unknown> = {}, fallback = 0) {
-  const summary = resolveSummary(source);
-  return countValue(source.pending_mapping_count ?? summary.pending_mapping_count ?? fallback);
-}
-
-function exceptionCountFrom(source: Record<string, unknown> = {}, fallback = 0) {
-  const summary = resolveSummary(source);
-  return countValue(source.exception_count ?? summary.exception_count ?? fallback);
-}
-
-function jobStatusLabel(status: unknown, options: { pendingCount?: number; exceptionCount?: number } = {}) {
-  return statusLabelFromCategory(String(status || ""), options) || String(status || "").trim() || "未知";
+function jobStatusLabel(status: unknown) {
+  return JOB_STATUS_LABELS[String(status || "").trim()] || String(status || "").trim() || "未知";
 }
 
 function stageLabel(stage: unknown) {
@@ -154,35 +58,14 @@ function isTerminalProgress(progressView: Record<string, unknown> = {}) {
   return Boolean(progressView.is_terminal || TERMINAL_JOB_STATUSES.has(jobStatus) || TERMINAL_PHASE_CODES.has(phaseCode));
 }
 
-function resolveProgressStatusLabel(
-  progressView: Record<string, unknown> = {},
-  latestJob: Record<string, unknown> | null = null,
-  overview: Record<string, unknown> = {},
-) {
-  const pendingCount = pendingCountFrom(progressView, pendingCountFrom(latestJob || {}, countValue(overview.pending_mapping_count)));
-  const exceptionCount = exceptionCountFrom(progressView, exceptionCountFrom(latestJob || {}));
-  const jobStatus = statusLabelFromCategory(String(latestJob?.status || progressView.job_status || ""), { pendingCount, exceptionCount });
-  if (jobStatus) {
-    return jobStatus;
-  }
-  const stageStatus = stageStatusLabel(progressView.phase_code, { pendingCount, exceptionCount });
-  if (stageStatus) {
-    return stageStatus;
-  }
-  if (String(progressView.phase_label || "").trim() || String(progressView.current_item_label || "").trim()) {
-    return WORKFLOW_STATUS_LABELS.active;
-  }
-  return "";
-}
-
 function terminalProgressMeta(progressView: Record<string, unknown> = {}, latestJob: Record<string, unknown> | null = null, overview: Record<string, unknown> = {}) {
   const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
+  const statusLabel = jobStatusLabel(String(latestJob?.status || progressView.job_status || "").trim());
   const downloaded = countValue(progressView.downloaded_count);
   const persisted = countValue(progressView.persisted_count);
   const skipped = countValue(progressView.skipped_count);
   const pending = countValue(progressView.pending_mapping_count);
   const exceptions = countValue(progressView.exception_count);
-  const statusLabel = resolveProgressStatusLabel(progressView, latestJob, overview);
   const archiveCompleted = countValue(progressView.archive_completed_count);
   const overallCounts = (overview.record_state_counts as Record<string, unknown>) || {};
   const overallPending = countValue((overview.pending_mapping_count as unknown) || overallCounts.pending_mapping);
@@ -224,23 +107,23 @@ function terminalProgressHint(progressView: Record<string, unknown> = {}, latest
   const jobType = String(latestJob?.job_type || progressView.job_type || "").trim();
   const status = String(latestJob?.status || progressView.job_status || "").trim();
   if (jobType === "export_excel") {
-    if (status === "failed") return "导出需人工处理，请在工作台查看任务活动。";
-    if (status === "interrupted") return "导出已中断，请在工作台查看任务活动。";
+    if (status === "failed") return "导出失败，请到任务页查看详细原因。";
+    if (status === "interrupted") return "导出已中断，请到任务页查看详细原因。";
     if (status === "success_with_warnings") return "导出已结束，但当前条件下没有形成新的导出文件。";
     return "导出已完成，可以从导出目录直接打开文件。";
   }
   if (jobType === "manual_import") {
-    if (status === "failed") return "手动导入需人工处理，请在工作台查看任务活动。";
-    if (status === "interrupted") return "手动导入已中断，请在工作台查看任务活动。";
-    return "手动导入已完成，可在工作台查看任务活动。";
+    if (status === "failed") return "手动导入失败，请到任务页查看结果。";
+    if (status === "interrupted") return "手动导入已中断，请到任务页查看结果。";
+    return "手动导入已完成，请到任务页查看结果。";
   }
   if (jobType === "mapping_refresh") {
-    if (status === "failed") return "映射回刷需人工处理，请在工作台查看任务活动。";
-    if (status === "interrupted") return "映射回刷已中断，请在工作台查看任务活动。";
-    return "映射回刷已完成，可在工作台查看任务活动。";
+    if (status === "failed") return "映射回刷失败，请到任务页查看结果。";
+    if (status === "interrupted") return "映射回刷已中断，请到任务页查看结果。";
+    return "映射回刷已完成，请到任务页查看结果。";
   }
-  if (status === "failed") return "当前任务需人工处理，请在工作台查看任务活动。";
-  if (status === "interrupted") return "任务已中断，请在工作台查看任务活动。";
+  if (status === "failed") return "任务执行失败，请到任务页查看详细原因。";
+  if (status === "interrupted") return "任务已中断，请到任务页查看详细原因。";
   if (status === "success_with_warnings") return "任务已完成，但仍有待补映射或失败项；请先处理后再导出 Excel。";
   const downloaded = countValue(progressView.downloaded_count);
   const persisted = countValue(progressView.persisted_count);
@@ -323,7 +206,7 @@ function genericHint(progressView: Record<string, unknown> = {}, latestJob: Reco
   } else if (phaseCode === "completed_with_warnings") {
     hint = "任务已完成，但仍有待补映射或失败项；请先处理后再导出 Excel。";
   } else if (phaseCode === "failed") {
-    hint = "当前任务需人工处理，可在工作台的任务活动中查看详细原因。";
+    hint = "任务失败时，详细原因会出现在任务页的任务明细里。";
   }
   return dateText ? `${hint} 当前日期范围：${dateText}。` : hint;
 }
@@ -369,27 +252,12 @@ export function formatProgressHint(
   return genericHint(progressView, latestJob);
 }
 
-export function formatProgressTitle(
-  progressView: Record<string, unknown> = {},
-  latestJob: Record<string, unknown> | null = null,
-  overview: Record<string, unknown> = {},
-) {
-  const statusLabel = resolveProgressStatusLabel(progressView, latestJob, overview);
-  if (!statusLabel) {
-    return "暂无任务";
-  }
-  return `${jobTypeLabel(latestJob?.job_type || progressView.job_type || "任务")} · ${statusLabel}`;
-}
-
 export function formatJobTitle(job: Record<string, unknown> = {}) {
-  return `${jobTypeLabel(job.job_type)} · ${jobStatusLabel(job.status, {
-    pendingCount: pendingCountFrom(job),
-    exceptionCount: exceptionCountFrom(job),
-  })}`;
+  return `${jobTypeLabel(job.job_type)} · ${jobStatusLabel(job.status)}`;
 }
 
 export function formatJobMeta(job: Record<string, unknown> = {}) {
-  const summary = resolveSummary(job);
+  const summary = job && typeof job.summary === "object" && job.summary ? (job.summary as Record<string, unknown>) : {};
   const skippedCount = countValue(summary.skipped_count);
   const pendingCount = countValue(summary.pending_mapping_count);
   const downloadedCount = countValue(job.downloaded_count);
@@ -431,24 +299,22 @@ export function formatCapacityNotice({ returnedCount = 0, totalCount = 0, noun =
 
 export function formatEventTitle(event: Record<string, unknown> = {}) {
   const code = String(event.project_code || "").trim();
-  const pendingCount = pendingCountFrom(event);
-  const exceptionCount = exceptionCountFrom(event);
-  const statusText = statusLabelFromCategory(String(event.status || ""), { pendingCount, exceptionCount });
-  if (statusText) {
-    return code ? `${statusText} · ${code}` : statusText;
+  const status = String(event.status || "").trim();
+  if (status === "skipped") {
+    return code ? `已跳过 · ${code}` : "已跳过";
   }
-  const stageText = stageStatusLabel(event.stage, { pendingCount, exceptionCount });
-  if (stageText) {
-    return code ? `${stageText} · ${code}` : stageText;
+  if (TERMINAL_JOB_STATUSES.has(status)) {
+    return code ? `${jobStatusLabel(status)} · ${code}` : jobStatusLabel(status);
   }
-  const fallbackText = stageLabel(event.stage);
-  return code ? `${fallbackText} · ${code}` : fallbackText;
+  const stage = String(event.stage || "").trim();
+  const stageText = stageLabel(stage);
+  return code ? `${stageText} · ${code}` : stageText;
 }
 
 const EVENT_ERROR_LABELS: Record<string, string> = {
-  mapping_refresh_failed: "映射回刷需人工处理，请在工作台查看任务活动。",
-  manual_import_failed: "手动导入需人工处理，请在工作台查看任务活动。",
-  export_failed: "导出需人工处理，请在工作台查看任务活动。",
+  mapping_refresh_failed: "映射回刷失败，请到任务页查看明细。",
+  manual_import_failed: "手动导入失败，请到任务页查看明细。",
+  export_failed: "导出失败，请到任务页查看明细。",
 };
 
 export function formatEventDetail(event: Record<string, unknown> = {}) {
@@ -458,8 +324,8 @@ export function formatEventDetail(event: Record<string, unknown> = {}) {
   const errorType = String(event.error_type || "").trim();
   if (EVENT_ERROR_LABELS[errorType]) return EVENT_ERROR_LABELS[errorType];
   const status = String(event.status || "").trim();
-  if (status === "failed") return "当前任务需人工处理，请在工作台查看任务活动。";
-  if (status === "interrupted") return "任务已中断，请在工作台查看任务活动。";
+  if (status === "failed") return "任务执行失败，请到任务页查看明细。";
+  if (status === "interrupted") return "任务已中断，请到任务页查看明细。";
   if (status) return jobStatusLabel(status);
   return "";
 }

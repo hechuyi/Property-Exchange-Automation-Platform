@@ -84,14 +84,6 @@ export function toDraft(item: PendingMapping): MappingDraftItem {
   };
 }
 
-export function describePendingMappingItem(item: PendingMapping) {
-  const rawRecord = item.payload || {};
-  return {
-    projectCode: item.project_code || rawRecord["项目编号"] || "无编号",
-    projectName: rawRecord["项目名称"] || "未命名项目",
-  };
-}
-
 export function pendingSummary(payload: Record<string, any>, pendingCount: number) {
   const returnedCount = Number(payload.returned_count ?? pendingCount);
   const totalCount = Number(payload.total_count ?? returnedCount);

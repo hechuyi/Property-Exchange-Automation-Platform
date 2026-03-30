@@ -4,10 +4,7 @@ import {
   DEFAULT_RECORD_SCOPE,
   DESKTOP_COMMAND_NAMES,
   DESKTOP_PANEL_KEYS,
-  DESKTOP_PRIMARY_PANEL_KEYS,
-  DESKTOP_SECONDARY_PANEL_KEYS,
   DESKTOP_SELECTOR_SCHEMA,
-  DESKTOP_SMOKE_SELECTOR_CONTRACT,
 } from "./contracts";
 
 describe("desktop contract scaffolding", () => {
@@ -27,9 +24,7 @@ describe("desktop contract scaffolding", () => {
   });
 
   it("freezes panel keys, default record scope, command names, and selector schema for later workers", () => {
-    expect(DESKTOP_PRIMARY_PANEL_KEYS).toEqual(["workbench", "records", "mappings"]);
-    expect(DESKTOP_SECONDARY_PANEL_KEYS).toEqual(["settings"]);
-    expect(DESKTOP_PANEL_KEYS).toEqual(["workbench", "records", "mappings", "settings"]);
+    expect(DESKTOP_PANEL_KEYS).toEqual(["overview", "tasks", "records", "mappings", "settings"]);
     expect(DEFAULT_RECORD_SCOPE).toEqual({
       recordFamily: "listing",
       state: "all",
@@ -61,20 +56,22 @@ describe("desktop contract scaffolding", () => {
         content: "desktop-app-content",
       },
       nav: {
-        primary: {
-          workbench: "desktop-nav-workbench",
-          records: "desktop-nav-records",
-          mappings: "desktop-nav-mappings",
-        },
-        secondary: {
-          settings: "desktop-nav-settings",
-        },
+        overview: "desktop-nav-overview",
+        tasks: "desktop-nav-tasks",
+        records: "desktop-nav-records",
+        mappings: "desktop-nav-mappings",
+        settings: "desktop-nav-settings",
       },
-      workbench: {
+      overview: {
         page: "overview-page",
         primaryActions: "overview-primary-actions",
         progressCard: "overview-progress-card",
         runtimeCard: "overview-runtime-card",
+      },
+      tasks: {
+        page: "tasks-page",
+        jobList: "tasks-job-list",
+        eventList: "tasks-event-list",
       },
       records: {
         page: "records-page",
@@ -93,17 +90,6 @@ describe("desktop contract scaffolding", () => {
         form: "settings-form",
         runtimeActions: "settings-runtime-actions",
       },
-    });
-
-    expect(DESKTOP_SMOKE_SELECTOR_CONTRACT.nav).toEqual({
-      workbench: ['[data-testid="desktop-nav-workbench"]'],
-      records: ['[data-testid="desktop-nav-records"]'],
-      mappings: ['[data-testid="desktop-nav-mappings"]'],
-    });
-    expect(DESKTOP_SMOKE_SELECTOR_CONTRACT.pages).toEqual({
-      workbench: ['[data-testid="overview-page"]'],
-      records: ['[data-testid="records-page"]'],
-      mappings: ['[data-testid="mappings-page"]'],
     });
   });
 });

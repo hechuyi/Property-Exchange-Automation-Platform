@@ -6,12 +6,8 @@ import {
   RECORDS_FILTER_NODE_IDS,
   SHELL_TEST_IDS,
 } from "../testing/selectors";
-export {
-  DESKTOP_PANEL_KEYS,
-  DESKTOP_PRIMARY_PANEL_KEYS,
-  DESKTOP_SECONDARY_PANEL_KEYS,
-  type DesktopPanelKey,
-} from "../features/shell/navigation";
+
+export const DESKTOP_PANEL_KEYS = ["overview", "tasks", "records", "mappings", "settings"] as const;
 
 export const DEFAULT_RECORD_SCOPE = {
   recordFamily: "listing",
@@ -46,16 +42,14 @@ export const DESKTOP_SELECTOR_SCHEMA = {
     content: SHELL_TEST_IDS.content,
   },
   nav: {
-    primary: {
-      workbench: SHELL_TEST_IDS.navWorkbench,
-      records: SHELL_TEST_IDS.navRecords,
-      mappings: SHELL_TEST_IDS.navMappings,
-    },
-    secondary: {
-      settings: SHELL_TEST_IDS.navSettings,
-    },
+    overview: SHELL_TEST_IDS.navOverview,
+    tasks: SHELL_TEST_IDS.navTasks,
+    records: SHELL_TEST_IDS.navRecords,
+    mappings: SHELL_TEST_IDS.navMappings,
+    settings: SHELL_TEST_IDS.navSettings,
   },
-  workbench: PAGE_TEST_IDS.overview,
+  overview: PAGE_TEST_IDS.overview,
+  tasks: PAGE_TEST_IDS.tasks,
   records: PAGE_TEST_IDS.records,
   mappings: PAGE_TEST_IDS.mappings,
   settings: PAGE_TEST_IDS.settings,
@@ -66,12 +60,12 @@ const byId = (id: string) => `#${id}`;
 
 export const DESKTOP_SMOKE_SELECTOR_CONTRACT = {
   nav: {
-    workbench: [byTestId(SHELL_TEST_IDS.navWorkbench)],
+    overview: [byTestId(SHELL_TEST_IDS.navOverview)],
     records: [byTestId(SHELL_TEST_IDS.navRecords)],
     mappings: [byTestId(SHELL_TEST_IDS.navMappings)],
   },
   pages: {
-    workbench: [byTestId(PAGE_TEST_IDS.overview.page)],
+    overview: [byTestId(PAGE_TEST_IDS.overview.page)],
     records: [byTestId(PAGE_TEST_IDS.records.page)],
     mappings: [byTestId(PAGE_TEST_IDS.mappings.page)],
   },
@@ -95,6 +89,8 @@ export const DESKTOP_SMOKE_SELECTOR_CONTRACT = {
     keywordInput: [byId(RECORDS_FILTER_NODE_IDS.recordsKeywordInput)],
   },
 } as const;
+
+export type DesktopPanelKey = (typeof DESKTOP_PANEL_KEYS)[number];
 export type DesktopCommandName = (typeof DESKTOP_COMMAND_NAMES)[number];
 
 export type BackendConfig = {

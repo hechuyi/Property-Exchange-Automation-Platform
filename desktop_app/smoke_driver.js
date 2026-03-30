@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { applyControlledInputValue } = require("./smoke_dom");
 
 const DESKTOP_API_TOKEN_HEADER = "X-PEAP-Desktop-Token";
 const TERMINAL_JOB_STATUSES = new Set(["success", "success_with_warnings", "failed", "interrupted"]);
@@ -7,12 +8,12 @@ const SMOKE_FETCH_TRACE_KEY = "__PEAP_DESKTOP_SMOKE_FETCH_TRACE";
 const SMOKE_INTERACTION_TRACE_KEY = "__PEAP_DESKTOP_SMOKE_INTERACTION_TRACE";
 const EMBEDDED_SMOKE_SELECTOR_BRIDGE = {
   nav: {
-    workbench: ['[data-testid="desktop-nav-workbench"]'],
+    overview: ['[data-testid="desktop-nav-overview"]'],
     records: ['[data-testid="desktop-nav-records"]'],
     mappings: ['[data-testid="desktop-nav-mappings"]'],
   },
   pages: {
-    workbench: ['[data-testid="overview-page"]'],
+    overview: ['[data-testid="overview-page"]'],
     records: ['[data-testid="records-page"]'],
     mappings: ['[data-testid="mappings-page"]'],
   },
@@ -137,7 +138,7 @@ async function orchestrateSmoke({
     let mappingPass = 0;
     while (pendingCount > 0 && mappingPass < maxMappingPasses) {
       mappingPass += 1;
-      const mappingRefreshJob = await runStep(report, `mapping_refresh_${mappingPass}`, async () => {
+      await runStep(report, `mapping_refresh_${mappingPass}`, async () => {
         await actions.openMappingsPanel();
         await actions.importPendingMappings();
         await actions.fillPendingMappingDrafts({
@@ -148,13 +149,6 @@ async function orchestrateSmoke({
         return actions.waitForJobTerminal(job.job_id);
       });
       pendingCount = await actions.getPendingMappingsCount();
-      if (
-        mappingRefreshJob
-        && mappingRefreshJob.summary
-        && Number.isFinite(Number(mappingRefreshJob.summary.pending_mapping_count))
-      ) {
-        pendingCount = Math.max(pendingCount, Number(mappingRefreshJob.summary.pending_mapping_count));
-      }
     }
 
     if (pendingCount > 0) {
@@ -169,7 +163,7 @@ async function orchestrateSmoke({
         if (actions.prepareExportScope) {
           await actions.prepareExportScope();
         }
-        await actions.openWorkbenchPanel();
+        await actions.openOverviewPanel();
         const job = await actions.triggerExport();
         const result = await actions.waitForJobTerminal(job.job_id);
         const artifacts = Array.isArray(result?.summary?.artifacts)
@@ -188,7 +182,7 @@ async function orchestrateSmoke({
 
     await runStep(report, "interrupt_restart", async () => {
       try {
-        await actions.openWorkbenchPanel();
+        await actions.openOverviewPanel();
         const job = await actions.triggerManualImport();
         await actions.waitForJobRunning(job.job_id);
         if (actions.waitForForceStopReady) {
@@ -426,6 +420,9 @@ function buildSmokeActions({
       fetchFn,
     });
     const pendingEnvelope = payload.pending;
+    if (Array.isArray(pendingEnvelope)) {
+      return pendingEnvelope.length;
+    }
     if (pendingEnvelope && typeof pendingEnvelope === "object") {
       const totalCount = Number(pendingEnvelope.total_count);
       if (Number.isFinite(totalCount)) {
@@ -645,30 +642,16 @@ function buildSmokeActions({
       pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.mappings,
       pageLabel: "mappings",
     }),
-    importPendingMappings: async () => {
-      await runJavaScript(window, `(() => {
-        const node = document.getElementById("importPendingMappingBtn");
-        if (!node) {
-          throw new Error("importPendingMappingBtn missing");
-        }
-        node.click();
-        return true;
-      })()`);
-      return waitForCondition("pending mapping drafts", async () => {
-        const count = Number(await runJavaScript(window, `(() => {
-          return document.querySelectorAll(".mapping-draft-item").length;
-        })()`));
-        return count > 0
-          ? { done: true, value: count }
-          : { done: false };
-      }, { timeoutMs: 10000, intervalMs: 100, sleepFn });
-    },
-    fillPendingMappingDrafts: async ({ groupName, sourceType }) => runJavaScript(window, `(() => {
-      const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-      const setInputValue = descriptor && descriptor.set;
-      if (typeof setInputValue !== "function") {
-        throw new Error("input value setter unavailable");
+    importPendingMappings: async () => runJavaScript(window, `(() => {
+      const node = document.getElementById("importPendingMappingBtn");
+      if (!node) {
+        throw new Error("importPendingMappingBtn missing");
       }
+      node.click();
+      return document.querySelectorAll(".mapping-draft-item").length;
+    })()`),
+    fillPendingMappingDrafts: async ({ groupName, sourceType }) => runJavaScript(window, `(() => {
+      const applyControlledInputValue = ${applyControlledInputValue.toString()};
       const drafts = [...document.querySelectorAll(".mapping-draft-item")];
       drafts.forEach((draft) => {
         const ruleKindNode = draft.querySelector('[data-draft-field="ruleKind"]');
@@ -676,11 +659,11 @@ function buildSmokeActions({
         if (!ruleKindNode || !targetNode) {
           return;
         }
-        const ruleKind = String(ruleKindNode.value || "");
-        const nextValue = ruleKind.endsWith("_group") ? ${JSON.stringify(groupName)} : ${JSON.stringify(sourceType)};
-        setInputValue.call(targetNode, nextValue);
-        targetNode.dispatchEvent(new Event("input", { bubbles: true }));
-        targetNode.dispatchEvent(new Event("change", { bubbles: true }));
+        const ruleKindLabel = String(ruleKindNode.textContent || "");
+        const nextValue = ruleKindLabel.includes("类型")
+          ? ${JSON.stringify(sourceType)}
+          : ${JSON.stringify(groupName)};
+        applyControlledInputValue(targetNode, nextValue);
       });
       return drafts.length;
     })()`),
@@ -694,11 +677,11 @@ function buildSmokeActions({
         node.click();
       })()`,
     }),
-    openWorkbenchPanel: async () => openPanel({
-      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.workbench,
-      navMissingMessage: "workbench panel button missing",
-      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.workbench,
-      pageLabel: "workbench",
+    openOverviewPanel: async () => openPanel({
+      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.overview,
+      navMissingMessage: "overview panel button missing",
+      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.overview,
+      pageLabel: "overview",
     }),
     openRecordsPanel: async () => openPanel({
       navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.records,

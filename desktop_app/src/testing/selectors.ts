@@ -1,7 +1,8 @@
 export const SHELL_TEST_IDS = {
   app: "desktop-app-shell",
   content: "desktop-app-content",
-  navWorkbench: "desktop-nav-workbench",
+  navOverview: "desktop-nav-overview",
+  navTasks: "desktop-nav-tasks",
   navRecords: "desktop-nav-records",
   navMappings: "desktop-nav-mappings",
   navSettings: "desktop-nav-settings",

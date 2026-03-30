@@ -101,6 +101,27 @@ EXCHANGE_LABELS = {
     "重交所": "重交所",
 }
 
+EXCHANGE_CODES = {
+    "all": "all",
+    "beijing": "cbex",
+    "cbex": "cbex",
+    "北京产权交易所": "cbex",
+    "北交所": "cbex",
+    "北交互联": "cbex",
+    "shanghai": "sse",
+    "sse": "sse",
+    "上海联合产权交易所": "sse",
+    "上交所": "sse",
+    "tianjin": "tpre",
+    "tpre": "tpre",
+    "天津产权交易中心": "tpre",
+    "天交所": "tpre",
+    "chongqing": "cquae",
+    "cquae": "cquae",
+    "重庆联交所": "cquae",
+    "重交所": "cquae",
+}
+
 MAPPING_MATCH_FIELDS = {
     "transferor": ("转让方", "融资方", "转让方名称", "融资方名称", "company_name_primary"),
     "group": ("隶属集团", "集团名称", "group_name"),
@@ -215,11 +236,6 @@ def _parse_positive_int(raw_value: Any, *, field_name: str, default: int) -> int
     return value
 
 
-def _normalize_setting_path(raw_value: Any, *, fallback: str) -> str:
-    text = str(raw_value or "").strip()
-    return text or str(fallback or "").strip()
-
-
 def _summary_count(summary: Dict[str, Any], key: str) -> int:
     return _coerce_int(summary.get(key), default=0)
 
@@ -246,6 +262,19 @@ def _normalize_exchange_label(raw_value: str) -> str:
         if key_text and key_text in lowered:
             return label
     return text
+
+
+def _normalize_exchange_code(raw_value: Any) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in EXCHANGE_CODES:
+        return EXCHANGE_CODES[lowered]
+    if text in EXCHANGE_CODES:
+        return EXCHANGE_CODES[text]
+    normalized_label = _normalize_exchange_label(text)
+    return EXCHANGE_CODES.get(normalized_label, text)
 
 
 def _resolve_project_type_filter(raw_value: str) -> tuple[str | None, str | None]:
@@ -680,21 +709,12 @@ class AppService:
         value = self.store.get_setting(self._basic_settings_key(), default=defaults)
         merged = dict(defaults)
         merged.update(value)
-        try:
-            merged["default_concurrency"] = _parse_positive_int(
-                merged.get("default_concurrency"),
-                field_name="default_concurrency",
-                default=int(self.config.DOWNLOADER_DEFAULTS["concurrency"]),
-            )
-        except UserInputError:
-            merged["default_concurrency"] = int(self.config.DOWNLOADER_DEFAULTS["concurrency"])
-        merged["workspace_root"] = _normalize_setting_path(merged.get("workspace_root"), fallback=self.app_home)
-        merged["archive_root"] = _normalize_setting_path(merged.get("archive_root"), fallback=self.default_archive_root)
-        merged["export_root"] = _normalize_setting_path(merged.get("export_root"), fallback=self.default_export_root)
+        merged["archive_root"] = self.default_archive_root
+        merged["export_root"] = self.default_export_root
+        merged["workspace_root"] = self.app_home
         return merged
 
     def get_advanced_settings(self) -> Dict[str, Any]:
-        basic = self.get_basic_settings()
         defaults = {
             "app_home": self.app_home,
             "streaming_db": self.db_path,
@@ -702,11 +722,11 @@ class AppService:
             "postprocess_config": self.default_postprocess_config,
             "log_dir": str(self.config.LOG_DIR),
             "cache_dir": str(getattr(self.config, "CACHE_DIR", "")),
-            "raw_auto_root": basic["archive_root"],
+            "raw_auto_root": self.default_archive_root,
             "raw_manual_root": str(getattr(self.config, "HTML_FOLDER", "")),
             "browser_cache_dir": str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", "")),
-            "archive_root": basic["archive_root"],
-            "export_root": basic["export_root"],
+            "archive_root": self.default_archive_root,
+            "export_root": self.default_export_root,
         }
         value = self.store.get_setting(self._advanced_settings_key(), default=defaults)
         merged = dict(defaults)
@@ -717,26 +737,21 @@ class AppService:
             merged["postprocess_config"] = self.default_postprocess_config
         merged["log_dir"] = str(self.config.LOG_DIR)
         merged["cache_dir"] = str(getattr(self.config, "CACHE_DIR", ""))
-        merged["raw_auto_root"] = basic["archive_root"]
+        merged["raw_auto_root"] = self.default_archive_root
         merged["raw_manual_root"] = str(getattr(self.config, "HTML_FOLDER", ""))
         merged["browser_cache_dir"] = str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))
-        merged["archive_root"] = basic["archive_root"]
-        merged["export_root"] = basic["export_root"]
+        merged["archive_root"] = self.default_archive_root
+        merged["export_root"] = self.default_export_root
         return merged
 
     def set_basic_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         value = self.get_basic_settings()
-        for key in ("default_exchange", "default_project_type", "default_concurrency", "workspace_root", "archive_root", "export_root"):
+        for key in ("default_exchange", "default_project_type", "default_concurrency"):
             if key in dict(payload or {}):
                 value[key] = dict(payload or {})[key]
-        value["default_concurrency"] = _parse_positive_int(
-            value.get("default_concurrency"),
-            field_name="default_concurrency",
-            default=int(self.config.DOWNLOADER_DEFAULTS["concurrency"]),
-        )
-        value["workspace_root"] = _normalize_setting_path(value.get("workspace_root"), fallback=self.app_home)
-        value["archive_root"] = _normalize_setting_path(value.get("archive_root"), fallback=self.default_archive_root)
-        value["export_root"] = _normalize_setting_path(value.get("export_root"), fallback=self.default_export_root)
+        value["archive_root"] = self.default_archive_root
+        value["export_root"] = self.default_export_root
+        value["workspace_root"] = self.app_home
         self.store.set_setting(self._basic_settings_key(), value)
         self.store.add_audit_entry("settings_basic_updated", value)
         return value
@@ -751,14 +766,13 @@ class AppService:
         value["streaming_db"] = self.db_path
         if not str(value.get("postprocess_config") or "").strip():
             value["postprocess_config"] = self.default_postprocess_config
-        basic = self.get_basic_settings()
         value["log_dir"] = str(self.config.LOG_DIR)
         value["cache_dir"] = str(getattr(self.config, "CACHE_DIR", ""))
-        value["raw_auto_root"] = basic["archive_root"]
+        value["raw_auto_root"] = self.default_archive_root
         value["raw_manual_root"] = str(getattr(self.config, "HTML_FOLDER", ""))
         value["browser_cache_dir"] = str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))
-        value["archive_root"] = basic["archive_root"]
-        value["export_root"] = basic["export_root"]
+        value["archive_root"] = self.default_archive_root
+        value["export_root"] = self.default_export_root
         self.store.set_setting(self._advanced_settings_key(), value)
         self.store.add_audit_entry("settings_advanced_updated", value)
         return value
@@ -770,7 +784,7 @@ class AppService:
         return {
             "ok": True,
             "db_path": self.db_path,
-            "workspace_root": self.get_basic_settings()["workspace_root"],
+            "workspace_root": self.app_home,
             "archive_root": self.get_basic_settings()["archive_root"],
             "export_root": self.get_basic_settings()["export_root"],
             "app_home": self.app_home,
@@ -786,11 +800,10 @@ class AppService:
         }
 
     def readiness(self) -> Dict[str, Any]:
-        basic = self.get_basic_settings()
         return {
             "ok": True,
             "db_path": self.db_path,
-            "workspace_root": basic["workspace_root"],
+            "workspace_root": self.app_home,
             "app_home": self.app_home,
         }
 
@@ -808,7 +821,7 @@ class AppService:
             "archive_root": basic["archive_root"],
             "export_root": basic["export_root"],
             "db_path": self.db_path,
-            "workspace_root": basic["workspace_root"],
+            "workspace_root": self.app_home,
             "app_home": self.app_home,
             "cache_dir": str(getattr(self.config, "CACHE_DIR", "")),
             "raw_auto_root": basic["archive_root"],
@@ -1329,7 +1342,7 @@ class AppService:
         item_state = "mapping_conflict" if analysis.get("has_conflict") else str(record.get("state") or "")
         return {
             "record_id": str(record.get("record_id") or ""),
-            "revision_id": int(record.get("latest_revision_id") or 0),
+            "revision_id": int(record.get("revision_id") or record.get("latest_revision_id") or 0),
             "project_code": str(record.get("project_code") or payload.get("项目编号") or ""),
             "payload": payload,
             "created_at": str(record.get("updated_at") or ""),
@@ -2094,63 +2107,63 @@ class AppService:
     ) -> Dict[str, Any]:
         from peap.streaming_daily_pipeline import run_streaming_daily_pipeline
 
-        self._normalize_legacy_views()
-        self._repair_missing_archives_once()
         self._reserve_mutating_job(job_type)
-        _validate_streaming_job_dates(payload)
-        basic = self.get_basic_settings()
-        advanced = self.get_advanced_settings()
-        response: dict[str, Any] = {"job_id": "", "db_path": self.db_path}
-        ready = threading.Event()
-
-        def _job_created(job_id: str, db_path: str) -> None:
-            response["job_id"] = job_id
-            response["db_path"] = db_path
-            ready.set()
-
-        args = _namespace(
-            start_date=str(payload.get("start_date") or ""),
-            end_date=str(payload.get("end_date") or ""),
-            exchange=str(payload.get("exchange") or basic["default_exchange"]),
-            project_type=str(payload.get("project_type") or basic["default_project_type"]),
-            concurrency=_parse_positive_int(
-                payload.get("concurrency"),
-                field_name="concurrency",
-                default=int(basic["default_concurrency"]),
-            ),
-            page_size=payload.get("page_size"),
-            max_pages=payload.get("max_pages"),
-            with_refresh=False,
-            no_resume=bool(payload.get("no_resume", False)),
-            save_json=bool(payload.get("save_json", advanced.get("save_json", False))),
-            postprocess_config=str(
-                payload.get("postprocess_config")
-                or advanced.get("postprocess_config")
-                or self.default_postprocess_config
-                or ""
-            ),
-            verbose=bool(payload.get("verbose", False)),
-            streaming_db=self.db_path,
-            no_auto_export=not auto_export,
-        )
-
-        def _run() -> None:
-            try:
-                with playwright_env(str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))):
-                    run_streaming_daily_pipeline(
-                        args,
-                        config_obj=self.config,
-                        emit_console=False,
-                        job_created_callback=_job_created,
-                        job_type=job_type,
-                        archive_root=basic["archive_root"],
-                        export_root=basic["export_root"],
-                        auto_export=auto_export,
-                    )
-            finally:
-                self._release_mutating_job(job_type)
-
         try:
+            self._normalize_legacy_views()
+            self._repair_missing_archives_once()
+            _validate_streaming_job_dates(payload)
+            basic = self.get_basic_settings()
+            advanced = self.get_advanced_settings()
+            response: dict[str, Any] = {"job_id": "", "db_path": self.db_path}
+            ready = threading.Event()
+
+            def _job_created(job_id: str, db_path: str) -> None:
+                response["job_id"] = job_id
+                response["db_path"] = db_path
+                ready.set()
+
+            args = _namespace(
+                start_date=str(payload.get("start_date") or ""),
+                end_date=str(payload.get("end_date") or ""),
+                exchange=_normalize_exchange_code(payload.get("exchange") or basic["default_exchange"]),
+                project_type=str(payload.get("project_type") or basic["default_project_type"]),
+                concurrency=_parse_positive_int(
+                    payload.get("concurrency"),
+                    field_name="concurrency",
+                    default=int(basic["default_concurrency"]),
+                ),
+                page_size=payload.get("page_size"),
+                max_pages=payload.get("max_pages"),
+                with_refresh=False,
+                no_resume=bool(payload.get("no_resume", False)),
+                save_json=bool(payload.get("save_json", advanced.get("save_json", False))),
+                postprocess_config=str(
+                    payload.get("postprocess_config")
+                    or advanced.get("postprocess_config")
+                    or self.default_postprocess_config
+                    or ""
+                ),
+                verbose=bool(payload.get("verbose", False)),
+                streaming_db=self.db_path,
+                no_auto_export=not auto_export,
+            )
+
+            def _run() -> None:
+                try:
+                    with playwright_env(str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))):
+                        run_streaming_daily_pipeline(
+                            args,
+                            config_obj=self.config,
+                            emit_console=False,
+                            job_created_callback=_job_created,
+                            job_type=job_type,
+                            archive_root=basic["archive_root"],
+                            export_root=basic["export_root"],
+                            auto_export=auto_export,
+                        )
+                finally:
+                    self._release_mutating_job(job_type)
+
             thread = threading.Thread(target=_run, name=f"peap-{job_type}-{int(time.time())}", daemon=True)
             thread.start()
             with self._lock:

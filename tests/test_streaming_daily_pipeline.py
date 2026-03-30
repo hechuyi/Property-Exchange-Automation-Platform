@@ -273,10 +273,11 @@ class StreamingDailyPipelineTest(unittest.TestCase):
                     "phase_code": "prepare_tasks",
                     "status": "failed",
                     "label": "正在扫描网页",
-                    "error_code": "collect_failed",
-                    "error_message": "list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway",
-                    "errors": ["list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway"],
-                    "summary_payload": {"errors": ["list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway"]},
+                    "error_code": "sse_list_api_not_found",
+                    "error_details": {"exchange": "sse", "stage": "prepare_tasks"},
+                    "error_message": "上交所列表接口 queryAllNew 返回 404，当前扫描已中止",
+                    "errors": ["tpre: collect-failed: upstream 500"],
+                    "summary_payload": {"errors": ["tpre: collect-failed: upstream 500"]},
                 }
             )
             return _FakeDownloadOneClickRunResult(
@@ -313,18 +314,96 @@ class StreamingDailyPipelineTest(unittest.TestCase):
         prepare_failed = next(
             event for event in events if event["stage"] == "prepare_tasks" and event["status"] == "failed"
         )
-        self.assertEqual(prepare_failed["error_type"], "collect_failed")
-        self.assertEqual(
-            prepare_failed["error_message"],
-            "list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway",
-        )
+        self.assertEqual(prepare_failed["error_type"], "sse_list_api_not_found")
+        self.assertEqual(prepare_failed["error_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
         job = store.get_job(result.job_id)
-        self.assertEqual(job["summary"]["failure_code"], "collect_failed")
+        self.assertEqual(job["summary"]["failure_code"], "sse_list_api_not_found")
         self.assertEqual(job["summary"]["failure_stage"], "prepare_tasks")
-        self.assertEqual(
-            job["summary"]["failure_message"],
-            "list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway",
+        self.assertEqual(job["summary"]["failure_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
+
+    def test_streaming_pipeline_persists_generic_collect_failure_code_from_payload(self) -> None:
+        args = argparse.Namespace(
+            start_date="2026-03-20",
+            end_date="2026-03-21",
+            exchange="all",
+            project_type="all",
+            concurrency=2,
+            page_size=None,
+            max_pages=None,
+            with_refresh=False,
+            no_resume=False,
+            save_json=False,
+            postprocess_config=None,
+            verbose=False,
+            streaming_db=None,
+            no_auto_export=True,
         )
+
+        fake_download_runner = types.ModuleType("peap.download_runner")
+        fake_download_runner.DownloadRunRequest = _FakeDownloadRunRequest
+
+        fake_download_oneclick = types.ModuleType("peap.download_oneclick")
+        fake_download_oneclick.DownloadOneClickRequest = _FakeDownloadOneClickRequest
+        raw_error = "cbex-list-failed: list-api-failed 股权转让 p=1: api-http-521"
+
+        def _fake_run_download_oneclick(request, *, config_obj, emit_console):
+            request.stage_callback(
+                {
+                    "phase_code": "prepare_tasks",
+                    "status": "failed",
+                    "label": "扫描失败",
+                    "error_code": "cbex_list_failed",
+                    "error_details": {
+                        "exchange": "cbex",
+                        "stage": "prepare_tasks",
+                        "failure_kind": "list",
+                        "raw_reason": "list-api-failed 股权转让 p=1: api-http-521",
+                    },
+                    "error_message": raw_error,
+                    "errors": [raw_error],
+                    "summary_payload": {"errors": [raw_error]},
+                }
+            )
+            return _FakeDownloadOneClickRunResult(
+                exit_code=1,
+                log_file="download.log",
+                plan_file=request.plan_file,
+                plan_file_exists=False,
+                plan_file_removed=True,
+                start="2026-03-20 00:00:00",
+                end="2026-03-20 00:00:01",
+                duration_sec=1.0,
+                aggregate_summary={"saved": 0, "errors": 1},
+                task_summaries={},
+                errors=[raw_error],
+            )
+
+        fake_download_oneclick.run_download_oneclick = _fake_run_download_oneclick
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "peap.download_runner": fake_download_runner,
+                    "peap.download_oneclick": fake_download_oneclick,
+                },
+            ),
+            patch("peap.streaming_daily_pipeline.StreamingIngestRunner", _FakeRunner),
+        ):
+            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False)
+
+        self.assertEqual(result.exit_code, 1)
+        store = StreamingStore(result.db_path)
+        events = store.list_job_events(result.job_id, limit=20)
+        prepare_failed = next(
+            event for event in events if event["stage"] == "prepare_tasks" and event["status"] == "failed"
+        )
+        self.assertEqual(prepare_failed["error_type"], "cbex_list_failed")
+        self.assertEqual(prepare_failed["error_message"], raw_error)
+        job = store.get_job(result.job_id)
+        self.assertEqual(job["summary"]["failure_code"], "cbex_list_failed")
+        self.assertEqual(job["summary"]["failure_stage"], "prepare_tasks")
+        self.assertEqual(job["summary"]["failure_message"], raw_error)
 
     def test_streaming_pipeline_defaults_to_today_only(self) -> None:
         args = argparse.Namespace(

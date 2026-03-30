@@ -396,12 +396,23 @@ class CbexPhysicalAssetDownloader:
 
     async def _api_with_retry(self, *, context, page, source: _ListSource, page_index: int) -> Dict[str, Any]:
         last: Optional[Exception] = None
-        for k in range(1, 5):
+        total_attempts = 4
+        max_retries = total_attempts - 1
+        for attempt in range(1, total_attempts + 1):
             try:
                 return await self._api_one(context=context, source=source, page_index=page_index)
             except Exception as exc:  # noqa: BLE001
                 last = exc
-                self.logger.warning("List API retry %s/3 (%s p=%s): %s", k, source.label, page_index, exc)
+                if attempt >= total_attempts:
+                    break
+                self.logger.warning(
+                    "List API retry %s/%s (%s p=%s): %s",
+                    attempt,
+                    max_retries,
+                    source.label,
+                    page_index,
+                    exc,
+                )
                 await page.wait_for_timeout(int(1000 + random.random() * 1800))
                 try:
                     await self._warmup(page)

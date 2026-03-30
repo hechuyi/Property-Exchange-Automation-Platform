@@ -43,54 +43,6 @@ describe("settings api error normalization", () => {
     await expect(saveSettingsSnapshot(config, { basic: {}, advanced: {} })).rejects.toThrow("默认并发必须是正整数");
   });
 
-  it("sends expanded editable location fields when saving settings", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ ok: true }),
-    });
-
-    await saveSettingsSnapshot(config, {
-      basic: {
-        default_exchange: "all",
-        default_project_type: "all",
-        default_concurrency: 2,
-        workspace_root: "/tmp/workspace",
-        archive_root: "/tmp/archive",
-        export_root: "/tmp/export",
-      },
-      advanced: {
-        postprocess_config: "/tmp/postprocess.json",
-        save_json: true,
-      },
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:42679/api/settings/basic",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          default_exchange: "all",
-          default_project_type: "all",
-          default_concurrency: 2,
-          workspace_root: "/tmp/workspace",
-          archive_root: "/tmp/archive",
-          export_root: "/tmp/export",
-        }),
-      }),
-    );
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:42679/api/settings/advanced",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          postprocess_config: "/tmp/postprocess.json",
-          save_json: true,
-        }),
-      }),
-    );
-  });
-
   it("normalizes runtime check and install errors", async () => {
     fetchMock.mockResolvedValue({
       ok: false,

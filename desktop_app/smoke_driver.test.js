@@ -3,69 +3,6 @@ const assert = require("node:assert/strict");
 
 const { runDesktopSmoke, runJavaScript, __internal } = require("./smoke_driver");
 
-test("embedded smoke selector bridge points primary navigation at workbench", () => {
-  assert.ok(__internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.workbench);
-  assert.ok(__internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.workbench);
-  assert.equal("overview" in __internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav, false);
-  assert.equal("overview" in __internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages, false);
-});
-
-test("buildSmokeActions waits for imported mapping drafts to appear before continuing", async () => {
-  let draftCountChecks = 0;
-  const actions = __internal.buildSmokeActions({
-    window: {
-      webContents: {
-        executeJavaScript: async (source) => {
-          const script = String(source || "");
-          if (script.includes('document.getElementById("importPendingMappingBtn")')) {
-            return 0;
-          }
-          if (script.includes('document.querySelectorAll(".mapping-draft-item").length')) {
-            draftCountChecks += 1;
-            return draftCountChecks >= 2 ? 1 : 0;
-          }
-          return true;
-        },
-      },
-    },
-    backendUrl: "http://127.0.0.1:42679",
-    apiToken: "token",
-    fetchFn: async () => ({ ok: true, json: async () => ({}) }),
-    sleepFn: async () => {},
-  });
-
-  const importedCount = await actions.importPendingMappings();
-  assert.equal(importedCount, 1);
-  assert.ok(draftCountChecks >= 2);
-});
-
-test("buildSmokeActions fills draft inputs with React-compatible native setters", async () => {
-  const scripts = [];
-  const actions = __internal.buildSmokeActions({
-    window: {
-      webContents: {
-        executeJavaScript: async (source) => {
-          scripts.push(String(source || ""));
-          return 1;
-        },
-      },
-    },
-    backendUrl: "http://127.0.0.1:42679",
-    apiToken: "token",
-    fetchFn: async () => ({ ok: true, json: async () => ({}) }),
-    sleepFn: async () => {},
-  });
-
-  await actions.fillPendingMappingDrafts({
-    groupName: "测试集团",
-    sourceType: "国资",
-  });
-
-  const script = scripts[scripts.length - 1] || "";
-  assert.match(script, /Object\.getOwnPropertyDescriptor\(window\.HTMLInputElement\.prototype,\s*"value"\)/);
-  assert.match(script, /setInputValue\.call\(targetNode,/);
-});
-
 test("runDesktopSmoke orchestrates manual import mapping export and interrupt recovery", async () => {
   const steps = [];
   const pendingCounts = [1, 1, 0];
@@ -111,8 +48,8 @@ test("runDesktopSmoke orchestrates manual import mapping export and interrupt re
         mappingSaveCalls += 1;
         return { job_id: `map-${mappingSaveCalls}` };
       },
-      openWorkbenchPanel: async () => {
-        steps.push("open-workbench");
+      openOverviewPanel: async () => {
+        steps.push("open-overview");
       },
       prepareExportScope: async () => {
         steps.push("prepare-export");
@@ -153,72 +90,6 @@ test("runDesktopSmoke orchestrates manual import mapping export and interrupt re
   assert.match(JSON.stringify(steps), /fill-drafts:测试集团:国资/);
 });
 
-test("runDesktopSmoke keeps remediating when mapping job summary still reports pending items", async () => {
-  const steps = [];
-  let mappingSaveCalls = 0;
-  let manualImportCalls = 0;
-
-  const report = await runDesktopSmoke({
-    actions: {
-      waitForRendererReady: async () => {},
-      triggerManualImport: async () => {
-        manualImportCalls += 1;
-        return { job_id: `manual-${manualImportCalls}` };
-      },
-      waitForJobTerminal: async (jobId) => {
-        if (jobId === "manual-1") {
-          return { job_id: jobId, status: "success_with_warnings", summary: { pending_mapping_count: 1 } };
-        }
-        if (jobId === "map-1") {
-          return { job_id: jobId, status: "success_with_warnings", summary: { pending_mapping_count: 1 } };
-        }
-        if (jobId === "map-2") {
-          return { job_id: jobId, status: "success", summary: { pending_mapping_count: 0 } };
-        }
-        if (jobId === "export-1") {
-          return { job_id: jobId, status: "success", summary: { artifacts: ["out.xlsx"] } };
-        }
-        if (jobId === "manual-2") {
-          return { job_id: jobId, status: "interrupted" };
-        }
-        throw new Error(`unexpected terminal wait: ${jobId}`);
-      },
-      getPendingMappingsCount: async () => 0,
-      openMappingsPanel: async () => {
-        steps.push("open-mappings");
-      },
-      importPendingMappings: async () => {
-        steps.push("import-pending");
-      },
-      fillPendingMappingDrafts: async () => {
-        steps.push("fill-drafts");
-      },
-      saveDraftMappings: async () => {
-        mappingSaveCalls += 1;
-        return { job_id: `map-${mappingSaveCalls}` };
-      },
-      openRecordsPanel: async () => {},
-      prepareExportScope: async () => {},
-      openWorkbenchPanel: async () => {},
-      triggerExport: async () => ({ job_id: "export-1" }),
-      waitForJobRunning: async () => ({ status: "running" }),
-      forceStopCurrentJob: async () => {},
-      readInteractionTrace: async () => ({
-        forceStop: {
-          mutationEvents: [{ ts: 1, phase: "request_started" }],
-        },
-      }),
-    },
-  });
-
-  assert.equal(report.ok, true);
-  assert.equal(mappingSaveCalls, 2);
-  assert.deepEqual(
-    report.steps.map((item) => item.name).filter((name) => name.startsWith("mapping_refresh_")),
-    ["mapping_refresh_1", "mapping_refresh_2"],
-  );
-});
-
 test("runDesktopSmoke prepares export scope on records panel before triggering export", async () => {
   const steps = [];
   let manualImportCalls = 0;
@@ -256,8 +127,8 @@ test("runDesktopSmoke prepares export scope on records panel before triggering e
       prepareExportScope: async () => {
         steps.push("prepare-export");
       },
-      openWorkbenchPanel: async () => {
-        steps.push("open-workbench");
+      openOverviewPanel: async () => {
+        steps.push("open-overview");
       },
       triggerExport: async () => {
         steps.push("trigger-export");
@@ -278,7 +149,7 @@ test("runDesktopSmoke prepares export scope on records panel before triggering e
   assert.equal(report.ok, true);
   assert.deepEqual(
     steps.slice(2, 6),
-    ["open-records", "prepare-export", "open-workbench", "trigger-export"],
+    ["open-records", "prepare-export", "open-overview", "trigger-export"],
   );
 });
 
@@ -312,7 +183,7 @@ test("runDesktopSmoke waits for force stop button to become enabled before click
       saveDraftMappings: async () => ({ job_id: "map-1" }),
       openRecordsPanel: async () => {},
       prepareExportScope: async () => {},
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => {
         steps.push("running");
@@ -369,7 +240,7 @@ test("runDesktopSmoke waits for backend recovery before reading interrupted term
       saveDraftMappings: async () => ({ job_id: "map-1" }),
       openRecordsPanel: async () => {},
       prepareExportScope: async () => {},
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => ({ status: "running" }),
       waitForForceStopReady: async () => true,
@@ -423,7 +294,7 @@ test("runDesktopSmoke waits for force stop mutation success before polling termi
       saveDraftMappings: async () => ({ job_id: "map-1" }),
       openRecordsPanel: async () => {},
       prepareExportScope: async () => {},
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => ({ status: "running" }),
       waitForForceStopReady: async () => true,
@@ -472,7 +343,7 @@ test("runDesktopSmoke export failures append fetch and interaction traces explic
       prepareExportScope: async () => {
         throw new Error("recordsStateFilter missing");
       },
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       readFetchTrace: async () => [{ url: "/api/overview", method: "GET", status: 200, ok: true }],
       readInteractionTrace: async () => ({ windowErrors: [{ message: "recordsStateFilter missing" }] }),
@@ -512,7 +383,7 @@ test("runDesktopSmoke preserves original export error when trace reads also fail
       prepareExportScope: async () => {
         throw new Error("recordsStateFilter missing");
       },
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       readFetchTrace: async () => {
         throw new Error("fetch trace unavailable");
@@ -578,7 +449,7 @@ test("runDesktopSmoke interrupt restart fails explicitly when stop evidence is m
       importPendingMappings: async () => {},
       fillPendingMappingDrafts: async () => {},
       saveDraftMappings: async () => ({ job_id: "map-1" }),
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => ({ status: "running" }),
       forceStopCurrentJob: async () => {},
@@ -622,7 +493,7 @@ test("runDesktopSmoke interrupt restart fails explicitly when job reaches termin
       importPendingMappings: async () => {},
       fillPendingMappingDrafts: async () => {},
       saveDraftMappings: async () => ({ job_id: "map-1" }),
-      openWorkbenchPanel: async () => {},
+      openOverviewPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async (jobId) => {
         throw new Error(`job ${jobId} reached terminal status success before running`);
@@ -641,4 +512,23 @@ test("runDesktopSmoke interrupt restart fails explicitly when job reaches termin
   assert.match(String(interruptStep.error || ""), /reached terminal status success before running/);
   assert.match(String(interruptStep.error || ""), /fetch_trace=/);
   assert.match(String(interruptStep.error || ""), /interaction_trace=/);
+});
+
+test("buildSmokeActions counts array-form pending mappings from /api/mappings", async () => {
+  const actions = __internal.buildSmokeActions({
+    window: {},
+    backendUrl: "http://127.0.0.1:42679",
+    apiToken: "token",
+    fetchFn: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        pending: [{ record_id: "rec-1" }],
+      }),
+    }),
+  });
+
+  const pendingCount = await actions.getPendingMappingsCount();
+
+  assert.equal(pendingCount, 1);
 });

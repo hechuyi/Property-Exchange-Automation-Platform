@@ -7,7 +7,6 @@ import {
   editableSettingsChanged,
   type EditableSettingsSnapshot,
 } from "../features/settings/form";
-import { PathSettingField } from "../features/settings/PathSettingField";
 import { summarizeSettingsRuntimeState } from "../features/settings/runtime";
 
 type SettingsState = {
@@ -124,9 +123,6 @@ export default function SettingsPage() {
           default_exchange: editableSnapshot.default_exchange,
           default_project_type: editableSnapshot.default_project_type,
           default_concurrency: editableSnapshot.default_concurrency,
-          workspace_root: editableSnapshot.workspace_root,
-          archive_root: editableSnapshot.archive_root,
-          export_root: editableSnapshot.export_root,
         },
         advanced: {
           postprocess_config: editableSnapshot.postprocess_config,
@@ -182,46 +178,14 @@ export default function SettingsPage() {
     if (!targetPath || !window.peapDesktop) {
       return;
     }
-    try {
-      const result = locate && window.peapDesktop.showItemInFolder
-        ? await window.peapDesktop.showItemInFolder(targetPath)
-        : window.peapDesktop.openPath
-          ? await window.peapDesktop.openPath(targetPath)
-          : "";
-      const errorText = String(result || "").trim();
-      if (errorText) {
-        setErrorStatus(`${locate ? "在系统中显示" : "打开路径"}失败：${errorText}`);
-        return;
-      }
-      setStatusError("");
-    } catch (error) {
-      setErrorStatus(`${locate ? "在系统中显示" : "打开路径"}失败：${String((error as Error)?.message || error || "unknown error")}`);
+    if (locate && window.peapDesktop.showItemInFolder) {
+      await window.peapDesktop.showItemInFolder(targetPath);
+      return;
+    }
+    if (window.peapDesktop.openPath) {
+      await window.peapDesktop.openPath(targetPath);
     }
   };
-
-  const pickDirectoryField = useCallback(async (field: "workspace_root" | "archive_root" | "export_root") => {
-    const picker = window.peapDesktop?.pickDirectory;
-    if (!picker || actionInFlight) {
-      return;
-    }
-    const selectedPath = String(await picker(formState[field]) || "").trim();
-    if (!selectedPath) {
-      return;
-    }
-    setFormState((state) => ({ ...state, [field]: selectedPath }));
-  }, [actionInFlight, formState]);
-
-  const pickPostprocessConfig = useCallback(async () => {
-    const picker = window.peapDesktop?.pickFile;
-    if (!picker || actionInFlight) {
-      return;
-    }
-    const selectedPath = String(await picker(formState.postprocess_config) || "").trim();
-    if (!selectedPath) {
-      return;
-    }
-    setFormState((state) => ({ ...state, postprocess_config: selectedPath }));
-  }, [actionInFlight, formState.postprocess_config]);
 
   const restartBackend = async () => {
     if (!window.peapDesktop?.restartBackend) {
@@ -234,7 +198,6 @@ export default function SettingsPage() {
   return (
     <div data-testid={PAGE_TEST_IDS.settings.page}>
       <section data-testid={PAGE_TEST_IDS.settings.form}>
-        <h2>默认值</h2>
         <label htmlFor="default_exchange">默认交易所</label>
         <input
           id="default_exchange"
@@ -258,6 +221,13 @@ export default function SettingsPage() {
           onChange={(event) => setFormState((state) => ({ ...state, default_concurrency: Number(event.target.value || 1) }))}
         />
 
+        <label htmlFor="postprocess_config">后处理配置</label>
+        <input
+          id="postprocess_config"
+          value={formState.postprocess_config}
+          onChange={(event) => setFormState((state) => ({ ...state, postprocess_config: event.target.value }))}
+        />
+
         <label htmlFor="save_json">保存 JSON</label>
         <input
           id="save_json"
@@ -266,45 +236,40 @@ export default function SettingsPage() {
           onChange={(event) => setFormState((state) => ({ ...state, save_json: event.target.checked }))}
         />
 
-        <h2>位置</h2>
-        <PathSettingField
-          id="workspace_root"
-          label="工作目录"
-          value={formState.workspace_root}
-          onPick={() => pickDirectoryField("workspace_root")}
-          onReveal={() => openPath(formState.workspace_root, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="archive_root"
-          label="归档目录"
-          value={formState.archive_root}
-          onPick={() => pickDirectoryField("archive_root")}
-          onReveal={() => openPath(formState.archive_root, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="export_root"
-          label="导出目录"
-          value={formState.export_root}
-          onPick={() => pickDirectoryField("export_root")}
-          onReveal={() => openPath(formState.export_root, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="postprocess_config"
-          label="后处理配置"
-          value={formState.postprocess_config}
-          pickerLabel="选择文件…"
-          onPick={pickPostprocessConfig}
-          onReveal={() => openPath(formState.postprocess_config, true)}
-          disabled={actionInFlight}
-        />
+        <label htmlFor="workspace_root">工作目录</label>
+        <input id="workspace_root" readOnly value={formState.workspace_root} />
+
+        <label htmlFor="archive_root">归档目录</label>
+        <input id="archive_root" readOnly value={formState.archive_root} />
+
+        <label htmlFor="export_root">导出目录</label>
+        <input id="export_root" readOnly value={formState.export_root} />
+
+        <label htmlFor="streaming_db">数据库</label>
+        <input id="streaming_db" readOnly value={formState.streaming_db} />
+
+        <label htmlFor="app_home">应用目录</label>
+        <input id="app_home" readOnly value={formState.app_home} />
+
+        <label htmlFor="log_dir">日志目录</label>
+        <input id="log_dir" readOnly value={formState.log_dir} />
+
+        <label htmlFor="cache_dir">缓存目录</label>
+        <input id="cache_dir" readOnly value={formState.cache_dir} />
+
+        <label htmlFor="raw_auto_root">自动导入目录</label>
+        <input id="raw_auto_root" readOnly value={formState.raw_auto_root} />
+
+        <label htmlFor="raw_manual_root">手动导入目录</label>
+        <input id="raw_manual_root" readOnly value={formState.raw_manual_root} />
+
+        <label htmlFor="browser_cache_dir">浏览器缓存目录</label>
+        <input id="browser_cache_dir" readOnly value={formState.browser_cache_dir} />
+
         <button type="button" onClick={onSave} disabled={actionInFlight || !isFormDirty}>保存设置</button>
       </section>
 
       <section data-testid={PAGE_TEST_IDS.settings.runtimeActions}>
-        <h2>运行环境</h2>
         <p>{runtimeSummary.headline}</p>
         <p>{runtimeSummary.browserState}</p>
         {runtimeSummary.detailLines.map((line) => (
@@ -312,62 +277,22 @@ export default function SettingsPage() {
         ))}
         <button type="button" onClick={runRuntimeCheck} disabled={actionInFlight}>检测运行环境</button>
         <button type="button" onClick={runRuntimeInstall} disabled={installActionDisabled}>安装浏览器</button>
-
-        <h2>维护</h2>
-        <PathSettingField
-          id="streaming_db"
-          label="数据库"
-          value={formState.streaming_db}
-          onReveal={() => openPath(formState.streaming_db, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="app_home"
-          label="应用目录"
-          value={formState.app_home}
-          onReveal={() => openPath(formState.app_home, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="log_dir"
-          label="日志目录"
-          value={formState.log_dir}
-          onReveal={() => openPath(formState.log_dir, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="cache_dir"
-          label="缓存目录"
-          value={formState.cache_dir}
-          onReveal={() => openPath(formState.cache_dir, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="raw_auto_root"
-          label="自动导入目录"
-          value={formState.raw_auto_root}
-          onReveal={() => openPath(formState.raw_auto_root, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="raw_manual_root"
-          label="手动导入目录"
-          value={formState.raw_manual_root}
-          onReveal={() => openPath(formState.raw_manual_root, true)}
-          disabled={actionInFlight}
-        />
-        <PathSettingField
-          id="browser_cache_dir"
-          label="浏览器缓存目录"
-          value={formState.browser_cache_dir}
-          onReveal={() => openPath(formState.browser_cache_dir, true)}
-          disabled={actionInFlight}
-        />
+        <button type="button" onClick={() => openPath(formState.workspace_root)} disabled={!formState.workspace_root}>打开工作目录</button>
+        <button type="button" onClick={() => openPath(formState.archive_root)} disabled={!formState.archive_root}>打开归档目录</button>
+        <button type="button" onClick={() => openPath(formState.export_root)} disabled={!formState.export_root}>打开导出目录</button>
+        <button type="button" onClick={() => openPath(formState.postprocess_config)} disabled={!formState.postprocess_config}>打开后处理配置目录</button>
+        <button type="button" onClick={() => openPath(formState.app_home)} disabled={!formState.app_home}>打开应用目录</button>
+        <button type="button" onClick={() => openPath(formState.log_dir)} disabled={!formState.log_dir}>打开日志目录</button>
+        <button type="button" onClick={() => openPath(formState.cache_dir)} disabled={!formState.cache_dir}>打开缓存目录</button>
+        <button type="button" onClick={() => openPath(formState.raw_auto_root)} disabled={!formState.raw_auto_root}>打开自动导入目录</button>
+        <button type="button" onClick={() => openPath(formState.raw_manual_root)} disabled={!formState.raw_manual_root}>打开手动导入目录</button>
+        <button type="button" onClick={() => openPath(formState.browser_cache_dir)} disabled={!formState.browser_cache_dir}>打开浏览器缓存目录</button>
+        <button type="button" onClick={() => openPath(formState.streaming_db, true)} disabled={!formState.streaming_db}>定位数据库</button>
         <button type="button" onClick={restartBackend}>重启后端</button>
       </section>
 
-      {statusText ? <p role="status">{statusText}</p> : null}
-      {statusError ? <p role="alert">{statusError}</p> : null}
+      {statusText ? <p>{statusText}</p> : null}
+      {statusError ? <p>{statusError}</p> : null}
     </div>
   );
 }

@@ -130,21 +130,6 @@ function consumeSmokePickDirectory() {
   };
 }
 
-function normalizeDesktopPath(targetPath) {
-  return String(targetPath || "").trim();
-}
-
-function validateDesktopPath(targetPath) {
-  const normalizedPath = normalizeDesktopPath(targetPath);
-  if (!normalizedPath) {
-    return { path: "", error: "empty path" };
-  }
-  if (!fs.existsSync(normalizedPath)) {
-    return { path: normalizedPath, error: "path does not exist" };
-  }
-  return { path: normalizedPath, error: "" };
-}
-
 function normalizeBackendStartupError(error) {
   const message = String((error && error.message) || error || "Desktop backend failed during startup");
   if (/did not become ready within \d+ms/i.test(message)) {
@@ -364,27 +349,17 @@ app.whenReady().then(async () => {
     apiToken: BACKEND_API_TOKEN,
   }));
   ipcMain.handle("peap:open-path", async (_event, targetPath) => {
-    const validated = validateDesktopPath(targetPath);
-    if (validated.error) {
-      return validated.error;
+    if (!targetPath) {
+      return "empty path";
     }
-    try {
-      return await shell.openPath(validated.path);
-    } catch (error) {
-      return String((error && error.message) || error || "open path failed");
-    }
+    return shell.openPath(String(targetPath));
   });
   ipcMain.handle("peap:show-item-in-folder", async (_event, targetPath) => {
-    const validated = validateDesktopPath(targetPath);
-    if (validated.error) {
-      return validated.error;
+    if (!targetPath) {
+      return "empty path";
     }
-    try {
-      shell.showItemInFolder(validated.path);
-      return "";
-    } catch (error) {
-      return String((error && error.message) || error || "show item in folder failed");
-    }
+    shell.showItemInFolder(String(targetPath));
+    return "";
   });
   ipcMain.handle("peap:pick-directory", async (_event, defaultPath) => {
     const smokeOverride = consumeSmokePickDirectory();
@@ -410,20 +385,6 @@ app.whenReady().then(async () => {
     }
     const selectedPath = String(result.filePaths[0] || "");
     appendStartupLog("pick_directory_resolved", { source: "dialog", path: selectedPath });
-    return selectedPath;
-  });
-  ipcMain.handle("peap:pick-file", async (_event, defaultPath) => {
-    const result = await dialog.showOpenDialog({
-      title: "选择文件",
-      defaultPath: defaultPath || undefined,
-      properties: ["openFile"],
-    });
-    if (result.canceled || !result.filePaths.length) {
-      appendStartupLog("pick_file_resolved", { source: "dialog", path: "" });
-      return "";
-    }
-    const selectedPath = String(result.filePaths[0] || "");
-    appendStartupLog("pick_file_resolved", { source: "dialog", path: selectedPath });
     return selectedPath;
   });
   ipcMain.handle("peap:restart-backend", async () => restartBackend());

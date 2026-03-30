@@ -37,9 +37,6 @@ function loadMainWithMocks({
   spawnImpl = () => createChildProcessStub(),
   smokeDriverImpl,
   showOpenDialogImpl = async () => ({ canceled: true, filePaths: [] }),
-  openPathImpl = async () => "",
-  showItemInFolderImpl = () => {},
-  existsSyncImpl = () => true,
   env = {},
 } = {}) {
   const originalLoad = Module._load;
@@ -108,8 +105,8 @@ function loadMainWithMocks({
       },
     },
     shell: {
-      openPath: openPathImpl,
-      showItemInFolder: showItemInFolderImpl,
+      openPath: async () => "",
+      showItemInFolder: () => {},
     },
   };
 
@@ -124,13 +121,6 @@ function loadMainWithMocks({
           spawnedProcesses.push(child);
           return child;
         },
-      };
-    }
-    if (request === "fs") {
-      const realFs = originalLoad(request, parent, isMain);
-      return {
-        ...realFs,
-        existsSync: existsSyncImpl,
       };
     }
     if (request === "./backend_launch" && parent && parent.filename === MAIN_MODULE_PATH) {
@@ -324,63 +314,6 @@ test("pick-directory IPC consumes configured smoke directory queue before openin
     assert.equal(await pickDirectory.handler({}, "/tmp/default"), "/tmp/one");
     assert.equal(await pickDirectory.handler({}, "/tmp/default"), "/tmp/two");
     assert.equal(await pickDirectory.handler({}, "/tmp/default"), "/tmp/dialog");
-  } finally {
-    harness.restore();
-  }
-});
-
-test("open-path IPC returns a visible error string when the target path is missing", async () => {
-  const harness = loadMainWithMocks({
-    existsSyncImpl: () => false,
-  });
-
-  try {
-    harness.whenReadyDeferred.resolve();
-    await flushMicrotasks();
-
-    const openPath = harness.ipcHandles.find((item) => item.channel === "peap:open-path");
-    assert.ok(openPath);
-
-    assert.equal(await openPath.handler({}, "/tmp/missing-file.xlsx"), "path does not exist");
-  } finally {
-    harness.restore();
-  }
-});
-
-test("show-item-in-folder IPC returns a visible error string when the target path is missing", async () => {
-  const showItemInFolderImpl = () => {
-    throw new Error("should not reach shell");
-  };
-  const harness = loadMainWithMocks({
-    existsSyncImpl: () => false,
-    showItemInFolderImpl,
-  });
-
-  try {
-    harness.whenReadyDeferred.resolve();
-    await flushMicrotasks();
-
-    const showItemInFolder = harness.ipcHandles.find((item) => item.channel === "peap:show-item-in-folder");
-    assert.ok(showItemInFolder);
-
-    assert.equal(await showItemInFolder.handler({}, "/tmp/missing-folder"), "path does not exist");
-  } finally {
-    harness.restore();
-  }
-});
-
-test("pick-file IPC returns the selected file path", async () => {
-  const harness = loadMainWithMocks({
-    showOpenDialogImpl: async () => ({ canceled: false, filePaths: ["/tmp/postprocess.json"] }),
-  });
-
-  try {
-    harness.whenReadyDeferred.resolve();
-    await flushMicrotasks();
-
-    const pickFile = harness.ipcHandles.find((item) => item.channel === "peap:pick-file");
-    assert.ok(pickFile);
-    assert.equal(await pickFile.handler({}, "/tmp/default.json"), "/tmp/postprocess.json");
   } finally {
     harness.restore();
   }

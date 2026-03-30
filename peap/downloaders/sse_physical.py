@@ -33,10 +33,8 @@ from ..constants import (
 )
 from ..submission_layout import resolve_submission_snapshot_target
 
-LIST_API_URL = "https://www.suaee.com/si/prjs/realright/list"
-DETAIL_API_URL = "https://www.suaee.com/si/prjs/realright/detail_zspl"
-DETAIL_PAGE_URL = "https://www.suaee.com/xmzx.html#/zczrDetail?XMID={xmid}"
-OFFLINE_ARTIFACT_SCRIPT_ID = "peap-suaee-offline-artifact"
+LIST_API_URL = "https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew"
+DETAIL_PAGE_URL = "https://www.suaee.com/suaeeHome/#/projectdetail/jymhzichan"
 
 REQUEST_HEADERS = {
     "Content-Type": "application/json;charset=UTF-8",
@@ -85,53 +83,6 @@ class _DownloadCandidate:
     page_url: str
     html_path: str
     row: Dict[str, Any]
-
-
-def _response_code_ok(payload: Dict[str, Any]) -> bool:
-    try:
-        return int(payload.get("code", -1)) in {0, 200}
-    except Exception:
-        return False
-
-
-def _row_value(row: Dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in row and row.get(key) not in (None, ""):
-            return row.get(key)
-    return None
-
-
-def _extract_list_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    data = payload.get("data")
-    if isinstance(data, list):
-        return [dict(item) for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        rows = data.get("data")
-        if isinstance(rows, list):
-            return [dict(item) for item in rows if isinstance(item, dict)]
-    return []
-
-
-def _extract_list_page_count(payload: Dict[str, Any], *, page_size: int) -> int:
-    data = payload.get("data")
-    if isinstance(data, dict):
-        try:
-            page_count = int(data.get("pageCount") or 0)
-        except Exception:
-            page_count = 0
-        if page_count > 0:
-            return page_count
-    try:
-        total = int(payload.get("extra") or 0)
-    except Exception:
-        total = 0
-    if total > 0:
-        return max(1, (total + max(1, int(page_size)) - 1) // max(1, int(page_size)))
-    return 1 if _extract_list_rows(payload) else 0
-
-
-def _coerce_xmid_payload(xmid: str) -> int | str:
-    return int(xmid) if str(xmid).isdigit() else str(xmid)
 
 
 def _parse_date(value: Any) -> Optional[dt.date]:
@@ -280,12 +231,12 @@ class ShanghaiPhysicalAssetDownloader:
         self.save_json = bool(save_json)
         self.output_type = str(output_type or TYPE_PHYSICAL_ASSET)
         if not list_query_specs:
-            list_query_specs = [("realright", "")]
+            list_query_specs = [("ZICHANZHUANRANG", "2")]
         self.list_query_specs: List[Tuple[str, str]] = [
             (str(project_type), str(gplx))
             for project_type, gplx in list_query_specs
         ]
-        self._default_detail_route = str(default_detail_route or "zczrDetail").strip("/") or "zczrDetail"
+        self._default_detail_route = str(default_detail_route or "jymhzichan").strip("/") or "jymhzichan"
         self.logger = logger or logging.getLogger("parser_v2")
         self.item_saved_callback = item_saved_callback
         self._render_timeout_ms = max(120, self.timeout) * 1000
@@ -429,13 +380,13 @@ class ShanghaiPhysicalAssetDownloader:
                     f"list-{list_project_type}-{gplx}-page-1-request-failed: {exc}"
                 )
                 continue
-            if not _response_code_ok(first_page):
+            if int(first_page.get("code", -1)) != 0:
                 summary.errors.append(
                     f"list-{list_project_type}-{gplx}-api-failed: {first_page.get('message')}"
                 )
                 continue
 
-            page_count = _extract_list_page_count(first_page, page_size=self.page_size)
+            page_count = int(first_page.get("data", {}).get("pageCount") or 0)
             if page_count <= 0:
                 self.logger.info(
                     "No list data for projectType=%s gplx=%s.",
@@ -463,26 +414,13 @@ class ShanghaiPhysicalAssetDownloader:
                         )
                         continue
                 summary.pages_requested += 1
-                if not _response_code_ok(payload):
+                if int(payload.get("code", -1)) != 0:
                     summary.errors.append(
                         f"list-{list_project_type}-{gplx}-page-{page_index}-failed: {payload.get('message')}"
                     )
                     continue
 
-                rows = _extract_list_rows(payload)
-                if not rows:
-                    if payload.get("data") not in ({}, [], None):
-                        self.logger.info(
-                            "No list rows on page projectType=%s gplx=%s page=%s.",
-                            list_project_type,
-                            gplx,
-                            page_index,
-                        )
-                    elif page_index == 1:
-                        summary.errors.append(
-                            f"list-{list_project_type}-{gplx}-page-{page_index}-invalid-data"
-                        )
-                    continue
+                rows = payload.get("data", {}).get("data") or []
                 if not isinstance(rows, list):
                     summary.errors.append(
                         f"list-{list_project_type}-{gplx}-page-{page_index}-invalid-data"
@@ -494,7 +432,7 @@ class ShanghaiPhysicalAssetDownloader:
                         continue
                     summary.listed_items += 1
 
-                    xmid = str(_row_value(row, "XMID", "xmid") or "").strip()
+                    xmid = str(row.get("xmid") or "").strip()
                     if not xmid:
                         summary.skipped_by_missing_xmid += 1
                         summary.errors.append(
@@ -506,16 +444,14 @@ class ShanghaiPhysicalAssetDownloader:
                         continue
                     seen_xmid.add(xmid)
 
-                    list_disclosure_start = _parse_date(
-                        _row_value(row, "PLKSRQ", "GPKSRQ", "plksrq", "gpksrq")
-                    )
+                    list_disclosure_start = _parse_date(row.get("plksrq") or row.get("gpksrq"))
                     if start or end:
                         if list_disclosure_start and not _in_range(list_disclosure_start, start, end):
                             summary.skipped_by_list_date += 1
                             continue
 
-                    project_code = str(_row_value(row, "XMBH", "xmbh") or xmid).strip()
-                    project_name = str(_row_value(row, "XMMC", "xmmc") or "").strip()
+                    project_code = str(row.get("xmbh") or xmid).strip()
+                    project_name = str(row.get("xmmc") or "").strip()
                     html_path, _ = resolve_submission_snapshot_target(
                         archive_root=output_dir,
                         project_code=project_code.upper(),
@@ -587,7 +523,7 @@ class ShanghaiPhysicalAssetDownloader:
             summary.listed_items += 1
             entry = dict(raw)
 
-            xmid = str(entry.get("xmid") or entry.get("XMID") or "").strip()
+            xmid = str(entry.get("xmid") or "").strip()
             if not xmid:
                 summary.skipped_by_missing_xmid += 1
                 summary.errors.append(f"prefetched-entry-{index}-missing-xmid")
@@ -600,8 +536,7 @@ class ShanghaiPhysicalAssetDownloader:
             row_raw = entry.get("row")
             row = row_raw if isinstance(row_raw, dict) else {}
             list_disclosure_start = _parse_date(
-                entry.get("list_disclosure_start")
-                or _row_value(row, "PLKSRQ", "GPKSRQ", "plksrq", "gpksrq")
+                entry.get("list_disclosure_start") or row.get("plksrq") or row.get("gpksrq")
             )
             if list_disclosure_start and "list_disclosure_start" not in row:
                 row = {**row, "list_disclosure_start": list_disclosure_start.isoformat()}
@@ -610,13 +545,13 @@ class ShanghaiPhysicalAssetDownloader:
                     summary.skipped_by_list_date += 1
                     continue
 
-            project_code = str(entry.get("project_code") or _row_value(row, "XMBH", "xmbh") or xmid).strip().upper()
+            project_code = str(entry.get("project_code") or row.get("xmbh") or xmid).strip().upper()
             page_url = str(entry.get("page_url") or self._resolve_page_url(row=row, xmid=xmid)).strip()
             if not page_url:
                 summary.errors.append(f"prefetched-entry-{index}-missing-page-url: xmid={xmid}")
                 continue
 
-            project_name = str(entry.get("project_name") or _row_value(row, "XMMC", "xmmc") or "").strip()
+            project_name = str(entry.get("project_name") or row.get("xmmc") or "").strip()
             html_path, _ = resolve_submission_snapshot_target(
                 archive_root=output_dir,
                 project_code=project_code or xmid,
@@ -651,45 +586,34 @@ class ShanghaiPhysicalAssetDownloader:
                 summary.candidate_dates.append(list_disclosure_start.isoformat())
 
     def _query_list_page(self, *, page_index: int, list_project_type: str, gplx: str) -> Dict[str, Any]:
-        payload = {"pageNo": int(page_index), "pageSize": self.page_size}
+        payload = {
+            "projectType": str(list_project_type),
+            "gplx": str(gplx),
+            "isGw": True,
+            "pageQuery": {"pageIndex": int(page_index), "pageSize": self.page_size},
+        }
         return self._post_json(LIST_API_URL, payload)
 
     def _resolve_page_url(self, *, row: Dict[str, Any], xmid: str) -> str:
-        xmurl = str(_row_value(row, "XMURL", "xmurl") or "").strip()
+        xmurl = str(row.get("xmurl") or "").strip()
         if xmurl:
             if xmurl.startswith(("http://", "https://")):
                 return xmurl
             return urllib.parse.urljoin("https://www.suaee.com/", xmurl)
-        return DETAIL_PAGE_URL.format(xmid=urllib.parse.quote(xmid))
+
+        route = self._guess_detail_route(row=row)
+        return f"https://www.suaee.com/suaeeHome/#/projectdetail/{route}?xmid={urllib.parse.quote(xmid)}"
 
     def _guess_detail_route(self, *, row: Dict[str, Any]) -> str:
-        list_project_type = str(_row_value(row, "projectType", "PROJECTTYPE") or "").upper()
+        list_project_type = str(row.get("projectType") or "").upper()
         gplx = str(row.get("gplx") or "")
         if list_project_type == "ZICHANZHUANRANG":
-            return "zczrDetail"
+            return "jymhzichan"
         if list_project_type == "CHANQUAN":
             return "jymhchanquanyu" if gplx == "1" else "jymhchanquan"
         if list_project_type == "ZENGZI":
             return "jymhzengziyu" if gplx == "1" else "jymhzengzi"
         return self._default_detail_route
-
-    def _query_detail_payload(self, *, xmid: str) -> Dict[str, Any]:
-        return self._post_json(DETAIL_API_URL, {"XMID": _coerce_xmid_payload(xmid)})
-
-    def _build_offline_artifact(
-        self,
-        *,
-        candidate: _DownloadCandidate,
-        detail_response: Dict[str, Any] | None = None,
-    ) -> Dict[str, Any]:
-        artifact: Dict[str, Any] = {
-            "schema_version": 1,
-            "page_url": candidate.page_url,
-            "list_row": dict(candidate.row),
-        }
-        if detail_response:
-            artifact["detail_response"] = dict(detail_response)
-        return artifact
 
     def _build_verified_ssl_context(self) -> ssl.SSLContext:
         if self.ssl_ca_bundle:
@@ -804,7 +728,6 @@ class ShanghaiPhysicalAssetDownloader:
         timeout_error_cls,
     ) -> None:
         rendered_html: Optional[str] = None
-        detail_response: Dict[str, Any] | None = None
         last_exc: Optional[Exception] = None
 
         for attempt in range(1, self._detail_retries + 2):
@@ -814,7 +737,6 @@ class ShanghaiPhysicalAssetDownloader:
                     page=page,
                     page_url=candidate.page_url,
                     expected_project_code=candidate.project_code,
-                    expected_xmid=candidate.xmid,
                 )
                 actual_code = self._extract_project_code(rendered_html)
                 if actual_code and actual_code != candidate.project_code:
@@ -857,19 +779,11 @@ class ShanghaiPhysicalAssetDownloader:
                 self.logger.error("Detail fetch failed: xmid=%s error=%s", candidate.xmid, last_exc)
             return
 
-        try:
-            detail_response = await self._run_blocking(
-                self._query_detail_payload,
-                xmid=candidate.xmid,
-            )
-        except Exception as exc:  # noqa: BLE001
-            summary.errors.append(f"xmid={candidate.xmid} detail-api-failed: {exc}")
-            detail_response = None
-
         disclosure_start = self._extract_disclosure_start_date(rendered_html)
         list_start = _parse_date(
             candidate.row.get("list_disclosure_start")
-            or _row_value(candidate.row, "PLKSRQ", "GPKSRQ", "plksrq", "gpksrq")
+            or candidate.row.get("plksrq")
+            or candidate.row.get("gpksrq")
         )
         if start or end:
             check_date = list_start if list_start is not None else disclosure_start
@@ -883,10 +797,6 @@ class ShanghaiPhysicalAssetDownloader:
                 rendered_html=rendered_html,
                 page_url=candidate.page_url,
                 html_path=candidate.html_path,
-                offline_artifact=self._build_offline_artifact(
-                    candidate=candidate,
-                    detail_response=detail_response,
-                ),
             )
         except Exception as exc:  # noqa: BLE001
             summary.detail_failed += 1
@@ -894,11 +804,14 @@ class ShanghaiPhysicalAssetDownloader:
             return
 
         if self.save_json:
-            sidecar = self._build_offline_artifact(
-                candidate=candidate,
-                detail_response=detail_response,
-            )
-            sidecar["disclosure_start_date"] = disclosure_start.isoformat() if disclosure_start else None
+            sidecar = {
+                "xmid": candidate.xmid,
+                "xmbh": candidate.row.get("xmbh"),
+                "xmmc": candidate.row.get("xmmc"),
+                "page_url": candidate.page_url,
+                "list_row": candidate.row,
+                "disclosure_start_date": disclosure_start.isoformat() if disclosure_start else None,
+            }
             json_path = os.path.splitext(candidate.html_path)[0] + ".json"
             await self._run_blocking(self._write_json, json_path=json_path, payload=sidecar)
         self._notify_item_saved(candidate=candidate, disclosure_start=disclosure_start or list_start)
@@ -910,86 +823,24 @@ class ShanghaiPhysicalAssetDownloader:
         page,
         page_url: str,
         expected_project_code: Optional[str] = None,
-        expected_xmid: Optional[str] = None,
     ) -> str:
-        detail_path = urllib.parse.urlparse(DETAIL_API_URL).path
-        await page.add_init_script(
-            f"""
-            (() => {{
-              const detailPath = {json.dumps(detail_path)};
-              const assignDetail = (url, payload) => {{
-                if (!url || String(url).indexOf(detailPath) === -1) {{
-                  return;
-                }}
-                try {{
-                  window.__PEAP_SUAEE_DETAIL__ = JSON.parse(String(payload || 'null'));
-                }} catch (error) {{
-                  window.__PEAP_SUAEE_DETAIL__ = payload || null;
-                }}
-              }};
-
-              if (typeof window.fetch === 'function') {{
-                const originalFetch = window.fetch.bind(window);
-                window.fetch = async (...args) => {{
-                  const response = await originalFetch(...args);
-                  try {{
-                    const targetUrl = String((args[0] && args[0].url) || args[0] || response.url || '');
-                    if (targetUrl.indexOf(detailPath) !== -1) {{
-                      response.clone().text().then((text) => assignDetail(targetUrl, text)).catch(() => null);
-                    }}
-                  }} catch (error) {{
-                    void error;
-                  }}
-                  return response;
-                }};
-              }}
-
-              if (window.XMLHttpRequest) {{
-                const originalOpen = XMLHttpRequest.prototype.open;
-                const originalSend = XMLHttpRequest.prototype.send;
-                XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
-                  this.__peapUrl = url;
-                  return originalOpen.call(this, method, url, ...rest);
-                }};
-                XMLHttpRequest.prototype.send = function(body) {{
-                  this.addEventListener('load', function() {{
-                    assignDetail(this.__peapUrl || this.responseURL || '', this.responseText || '');
-                  }});
-                  return originalSend.call(this, body);
-                }};
-              }}
-            }})();
-            """
-        )
         await page.goto(page_url, wait_until="domcontentloaded", timeout=self._render_timeout_ms)
-        await page.wait_for_function(
-            """
-            (expected) => {
-                const detail = window.__PEAP_SUAEE_DETAIL__ || null;
-                const detailData = detail && typeof detail === 'object' && detail.data ? detail.data : detail;
-                const bodyText = String((document.body && document.body.innerText) || '');
-                const expectedCode = String((expected && expected.projectCode) || '').toUpperCase();
-                if (expectedCode && bodyText.toUpperCase().includes(expectedCode)) {
-                    return true;
-                }
-                const expectedXmid = String((expected && expected.xmid) || '');
-                const detailXmid = String(
-                    (detailData && (detailData.XMID || detailData.xmid))
-                    || (detail && (detail.XMID || detail.xmid))
-                    || ''
-                );
-                if (expectedXmid && detailXmid && detailXmid === expectedXmid) {
-                    return true;
-                }
-                return !!detail;
-            }
-            """,
-            arg={
-                "projectCode": str(expected_project_code or ""),
-                "xmid": str(expected_xmid or ""),
-            },
+        await page.wait_for_selector(
+            "div.project_code, div.project_xmmc, div.project_content",
             timeout=self._render_timeout_ms,
         )
+        if expected_project_code:
+            await page.wait_for_function(
+                """
+                (expectedCode) => {
+                    const codeNode = document.querySelector('div.project_code');
+                    const codeText = (codeNode ? codeNode.innerText : document.body.innerText || '').toUpperCase();
+                    return codeText.includes(String(expectedCode || '').toUpperCase());
+                }
+                """,
+                arg=expected_project_code,
+                timeout=self._render_timeout_ms,
+            )
         await page.wait_for_timeout(1500)
         return await page.content()
 
@@ -1048,14 +899,7 @@ class ShanghaiPhysicalAssetDownloader:
         )
         return match.group(0).upper() if match else ""
 
-    def _save_complete_page(
-        self,
-        *,
-        rendered_html: str,
-        page_url: str,
-        html_path: str,
-        offline_artifact: Dict[str, Any] | None = None,
-    ) -> None:
+    def _save_complete_page(self, *, rendered_html: str, page_url: str, html_path: str) -> None:
         base_name = os.path.splitext(os.path.basename(html_path))[0]
         final_assets_dir = f"{os.path.splitext(html_path)[0]}_files"
         temp_assets_dir = f"{final_assets_dir}.part"
@@ -1110,14 +954,6 @@ class ShanghaiPhysicalAssetDownloader:
                     downloaded_by_url=downloaded_by_url,
                     source_url_by_local=source_url_by_local,
                 )
-
-            if offline_artifact:
-                script = soup.new_tag("script", id=OFFLINE_ARTIFACT_SCRIPT_ID, type="application/json")
-                script.string = json.dumps(offline_artifact, ensure_ascii=False)
-                if soup.body is not None:
-                    soup.body.append(script)
-                else:
-                    soup.append(script)
 
             with open(temp_html_path, "w", encoding="utf-8") as handle:
                 handle.write(str(soup))

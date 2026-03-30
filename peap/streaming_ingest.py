@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List
 from .io_utils import read_text_with_fallback
 from .submission_layout import resolve_submission_snapshot_target
 from .streaming_models import IngestedRecord, ItemSavedPayload, PostProcessFinding, RecordState
-from .streaming_postprocess import BUSINESS_PROJECT_TYPES, classify_record_state, normalize_record_payload, run_record_postprocess
+from .streaming_postprocess import BUSINESS_PROJECT_TYPES, normalize_record_payload, run_record_postprocess
 from .streaming_store import StreamingStore
 
 LISTING_DATE_FIELDS = ("挂牌开始日期", "预披露开始日期", "披露开始日期", "信息披露起始日期")
@@ -195,6 +195,17 @@ def _rewrite_archived_asset_references(*, target_file: str, source_file: str) ->
         handle.write(updated_content)
 
 
+def classify_record_state(findings: Iterable[PostProcessFinding], *, had_conflict: bool = False) -> RecordState:
+    finding_types = {str(item.type) for item in findings}
+    if "mapping_conflict" in finding_types:
+        return "mapping_conflict"
+    if {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"} & finding_types:
+        return "pending_mapping"
+    if had_conflict:
+        return "conflict"
+    return "ready"
+
+
 def _resolve_project_type_label(*values: Any) -> str:
     for raw_value in values:
         text = str(raw_value or "").strip()
@@ -293,12 +304,10 @@ class StreamingIngestRunner:
                 mapping_entries=self.store.list_mapping_entries(),
                 rules_config=self.rules_config,
             )
-            rule_filtered = any(str(finding.type or "") in {"rule_filtered"} for finding in findings)
             postprocess_payload, findings = normalize_record_payload(
                 parser_payload=parser_payload,
                 postprocess_payload=postprocess_payload,
                 findings=findings,
-                suppress_mapping_findings=rule_filtered,
             )
             if page_url and not str(postprocess_payload.get("page_url") or "").strip():
                 postprocess_payload["page_url"] = page_url
@@ -319,7 +328,6 @@ class StreamingIngestRunner:
                     parser_payload=parser_payload,
                     postprocess_payload=postprocess_payload,
                     findings=[finding for finding in findings if str(finding.type or "") != "project_type_unknown"],
-                    suppress_mapping_findings=rule_filtered,
                 )
         except Exception as exc:
             payload = {"source_file": source_file, "project_code": project_code, "parser_payload": parser_payload}

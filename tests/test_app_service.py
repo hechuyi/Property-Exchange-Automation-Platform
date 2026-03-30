@@ -258,6 +258,32 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(captured["playwright"], self.config.PLAYWRIGHT_BROWSERS_PATH)
         self.assertEqual(captured["peap"], self.config.PLAYWRIGHT_BROWSERS_PATH)
 
+    def test_launch_one_click_normalizes_exchange_alias_to_downloader_code(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run_streaming_daily_pipeline(
+            args,
+            *,
+            config_obj,
+            emit_console,
+            job_created_callback,
+            job_type,
+            archive_root,
+            export_root,
+            auto_export,
+        ):
+            captured["exchange"] = args.exchange
+            job_created_callback("job-normalized-exchange", self.service.db_path)
+            return None
+
+        with patch("peap.streaming_daily_pipeline.run_streaming_daily_pipeline", side_effect=fake_run_streaming_daily_pipeline):
+            payload = self.service.launch_one_click(
+                {"start_date": "2026-03-22", "end_date": "2026-03-22", "exchange": "beijing"}
+            )
+
+        self.assertEqual(payload["job_id"], "job-normalized-exchange")
+        self.assertEqual(captured["exchange"], "cbex")
+
     def test_service_init_syncs_process_playwright_cache_env_from_config(self) -> None:
         with patch.dict(
             os.environ,
@@ -316,6 +342,30 @@ class AppServiceTest(unittest.TestCase):
     def test_launch_one_click_rejects_invalid_start_date(self) -> None:
         with self.assertRaisesRegex(UserInputError, "invalid start_date"):
             self.service.launch_one_click({"start_date": "2026/03/22", "end_date": "2026-03-22"})
+
+    def test_launch_one_click_releases_mutating_lock_after_invalid_start_date(self) -> None:
+        with self.assertRaisesRegex(UserInputError, "invalid start_date"):
+            self.service.launch_one_click({"start_date": "2026/03/22", "end_date": "2026-03-22"})
+
+        def fake_run_streaming_daily_pipeline(
+            args,
+            *,
+            config_obj,
+            emit_console,
+            job_created_callback,
+            job_type,
+            archive_root,
+            export_root,
+            auto_export,
+        ):
+            job_created_callback("job-after-invalid", self.service.db_path)
+            return None
+
+        with patch("peap.streaming_daily_pipeline.run_streaming_daily_pipeline", side_effect=fake_run_streaming_daily_pipeline):
+            payload = self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
+
+        self.assertEqual(payload["job_id"], "job-after-invalid")
+        self.assertEqual(payload["job_type"], "one_click")
 
     def test_launch_one_click_rejects_invalid_concurrency(self) -> None:
         with self.assertRaisesRegex(UserInputError, "invalid concurrency"):
@@ -392,54 +442,6 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["state"], "pending_mapping")
         self.assertEqual(payload["rows"][0]["status_label"], "待补映射")
         self.assertEqual(payload["rows"][0]["values"]["挂牌次数"], "四次挂牌")
-
-    def test_overview_normalizes_rule_filtered_ready_record_to_skipped(self) -> None:
-        source_file = os.path.join(self.temp_dir.name, "filtered.html")
-        with open(source_file, "w", encoding="utf-8") as handle:
-            handle.write("<html><body>filtered</body></html>")
-
-        self.service.store.upsert_record(
-            IngestedRecord(
-                record_id="rec-filtered",
-                revision_hash="hash-filtered",
-                project_code="G32025SH1000888",
-                project_name="报废设备处置",
-                project_type="实物资产",
-                exchange="shanghai",
-                listing_date="2026-03-21",
-                state="ready",
-                source_file=source_file,
-                archive_path=os.path.join(self.temp_dir.name, "archive", "filtered.html"),
-                parser_payload={
-                    "项目编号": "G32025SH1000888",
-                    "项目名称": "报废设备处置",
-                    "项目类型": "实物资产",
-                    "转让方": "上海电气集团恒联企业发展有限公司",
-                },
-                postprocess_payload={
-                    "项目编号": "G32025SH1000888",
-                    "项目名称": "报废设备处置",
-                    "转让方": "上海电气集团恒联企业发展有限公司",
-                },
-                findings=[
-                    PostProcessFinding(
-                        severity="warn",
-                        type="rule_filtered",
-                        message="rule filtered record: R010_filter_scrap_physical_asset",
-                        evidence={"rule_id": "R010_filter_scrap_physical_asset"},
-                    )
-                ],
-            )
-        )
-
-        overview = self.service.overview()
-        record = self.service.store.get_record("rec-filtered")
-
-        self.assertEqual(overview["pending_mapping_count"], 0)
-        self.assertEqual(overview["record_state_counts"].get("skipped", 0), 1)
-        self.assertEqual(record["state"], "skipped")
-        self.assertTrue(all(str(item.get("type") or "") != "mapping_missing" for item in record["findings"]))
-        self.assertTrue(all(str(item.get("type") or "") != "project_type_unknown" for item in record["findings"]))
 
     def test_overview_reclassifies_legacy_conflict_record_back_to_ready(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "legacy-conflict.html")
@@ -555,6 +557,20 @@ class AppServiceTest(unittest.TestCase):
         self.assertTrue(pending[0]["has_conflict"])
         self.assertEqual(pending[0]["gap_codes"], ["has_conflict"])
         self.assertGreaterEqual(len(pending[0]["candidate_resolutions"]), 2)
+
+    def test_list_pending_mappings_preserves_latest_revision_id(self) -> None:
+        self._insert_record_with_mapping_source(
+            record_id="rec-map-revision",
+            state="pending_mapping",
+            transferor="上海测试公司",
+        )
+
+        latest = self.service.store.get_record("rec-map-revision")
+        pending = self.service.list_pending_mappings()
+
+        self.assertEqual(len(pending), 1)
+        self.assertGreater(int(latest["revision_id"]), 0)
+        self.assertEqual(pending[0]["revision_id"], latest["revision_id"])
 
     def test_list_pending_mappings_exposes_non_mapping_blocker_when_record_state_still_pending(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "project-type-unknown.html")
@@ -1148,7 +1164,8 @@ class AppServiceTest(unittest.TestCase):
             create=True,
         ):
             payload = self.service.launch_manual_import({"input_dir": import_root})
-            job = self._wait_for_job_status(str(payload["job_id"]))
+
+        job = self._wait_for_job_status(str(payload["job_id"]))
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["summary"]["failed_count"], 1)
 
@@ -1398,25 +1415,19 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(updated["postprocess_config"], "rules.json")
         self.assertTrue(updated["save_json"])
 
-    def test_set_basic_settings_allows_editable_location_paths(self) -> None:
+    def test_set_basic_settings_keeps_workspace_derived_archive_and_export_paths(self) -> None:
         updated = self.service.set_basic_settings(
             {
-                "workspace_root": "/tmp/workspace_override",
-                "archive_root": "/tmp/archive_override",
-                "export_root": "/tmp/export_override",
+                "archive_root": "/tmp/ignored_archive",
+                "export_root": "/tmp/ignored_export",
                 "default_exchange": "cbex",
             }
         )
 
-        self.assertEqual(updated["workspace_root"], "/tmp/workspace_override")
-        self.assertEqual(updated["archive_root"], "/tmp/archive_override")
-        self.assertEqual(updated["export_root"], "/tmp/export_override")
+        self.assertEqual(updated["workspace_root"], self.service.app_home)
+        self.assertEqual(updated["archive_root"], self.config.ARCHIVE_ROOT)
+        self.assertEqual(updated["export_root"], self.config.OUTPUT_EXCEL_DIR)
         self.assertEqual(updated["default_exchange"], "cbex")
-
-        health = self.service.health()
-        self.assertEqual(health["workspace_root"], "/tmp/workspace_override")
-        self.assertEqual(health["archive_root"], "/tmp/archive_override")
-        self.assertEqual(health["export_root"], "/tmp/export_override")
 
     def test_advanced_settings_do_not_expose_refresh_toggle(self) -> None:
         defaults = self.service.get_advanced_settings()

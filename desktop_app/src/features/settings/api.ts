@@ -5,20 +5,6 @@ type RuntimeConfig = {
   apiToken: string;
 };
 
-export type BasicSettingsPayload = {
-  default_exchange?: string;
-  default_project_type?: string;
-  default_concurrency?: number;
-  workspace_root?: string;
-  archive_root?: string;
-  export_root?: string;
-};
-
-export type AdvancedSettingsPayload = {
-  postprocess_config?: string;
-  save_json?: boolean;
-};
-
 type RequestScene = "load" | "save" | "runtime-check" | "runtime-install";
 
 function defaultSceneErrorMessage(scene: RequestScene) {
@@ -78,8 +64,8 @@ export function saveSettingsSnapshot(
     basic,
     advanced,
   }: {
-    basic: BasicSettingsPayload;
-    advanced: AdvancedSettingsPayload;
+    basic: Record<string, any>;
+    advanced: Record<string, any>;
   },
 ) {
   return Promise.all([

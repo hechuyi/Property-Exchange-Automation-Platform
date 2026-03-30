@@ -1,12 +1,9 @@
-import { Button, Card, Space, Typography } from "antd";
+import { Button, Card, Input, Select, Space, Typography } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDesktopRuntime } from "../desktop/provider";
 import { PAGE_TEST_IDS } from "../testing/selectors";
 import {
-  formatBatchMappingSaveSummary,
   formatMappingConflictSummary,
-  formatPendingReprocessSummary,
-  formatSingleMappingSaveSummary,
   runBatchMappingUpsertFlow,
   runMappingUpsertFlow,
 } from "../features/mappings/flows";
@@ -18,13 +15,12 @@ import {
 import {
   buildDraftSourceValue,
   MAPPING_RULE_CONFIG,
+  pendingRecordCompany,
+  pendingSummary,
   toDraft,
   type MappingDraftItem,
   type PendingMapping,
 } from "../features/mappings/model";
-import { PendingMappingsPane } from "../features/mappings/PendingMappingsPane";
-import { RuleEditorPane } from "../features/mappings/RuleEditorPane";
-import { SavedRulesPane } from "../features/mappings/SavedRulesPane";
 
 const EMPTY_SINGLE_DRAFT = {
   ruleKind: "transferor_group",
@@ -36,11 +32,6 @@ const EMPTY_SINGLE_DRAFT = {
 type ConflictFlowType = "single" | "batch";
 
 type BatchSavePhase = "idle" | "in-flight" | "waiting-conflict";
-
-const DEFAULT_PREVIEW_TEXT = "等待处理结果";
-const CONFLICT_WAIT_TEXT = "待确认覆盖范围，请先处理冲突确认。";
-const MAPPING_SAVE_ERROR_TEXT = "映射规则需人工处理，请在工作台查看任务活动。";
-const PENDING_REPROCESS_ERROR_TEXT = "待补映射需人工处理，请在工作台查看任务活动。";
 
 function formatCapacityNotice(payload: Record<string, any>) {
   const returnedCount = Number(payload.affected_returned_count ?? payload.affected_count ?? 0);
@@ -61,7 +52,7 @@ export default function MappingsPage() {
   const [editingEntryKey, setEditingEntryKey] = useState("");
   const [entriesKeyword, setEntriesKeyword] = useState("");
   const [entriesRuleKind, setEntriesRuleKind] = useState("all");
-  const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
+  const [previewText, setPreviewText] = useState("");
   const [previewError, setPreviewError] = useState("");
   const [conflictPreview, setConflictPreview] = useState<Record<string, any> | null>(null);
   const conflictResolverRef = useRef<{ flowType: ConflictFlowType; resolve: (value: boolean) => void } | null>(null);
@@ -105,10 +96,6 @@ export default function MappingsPage() {
   const singleRuleConfig = MAPPING_RULE_CONFIG[singleDraft.ruleKind] || MAPPING_RULE_CONFIG.transferor_group;
   const singleSourceLabel = singleRuleConfig?.sourceLabel || "来源名称";
   const singleTargetLabel = singleRuleConfig?.targetLabel || "目标值";
-  const ruleOptions = useMemo(
-    () => Object.entries(MAPPING_RULE_CONFIG).map(([value, config]) => ({ value, label: config.title })),
-    [],
-  );
   const editingExistingEntry = Boolean(editingEntryKey);
   const batchSaving = batchSavePhase === "in-flight";
   const batchWaitingConflict = batchSavePhase === "waiting-conflict";
@@ -153,9 +140,10 @@ export default function MappingsPage() {
     }
     if (flowType === "batch") {
       setBatchSavePhase("waiting-conflict");
+      setPreviewText("批量保存已暂停，等待冲突确认...");
     }
     setConflictPreview(preview);
-    setPreviewText(CONFLICT_WAIT_TEXT);
+    setPreviewText(formatMappingConflictSummary(preview));
     setPreviewError("");
     return new Promise<boolean>((resolve) => {
       conflictResolverRef.current = { flowType, resolve };
@@ -239,7 +227,7 @@ export default function MappingsPage() {
     }
 
     setPreviewError("");
-    setPreviewText(`规则保存进行中，正在逐条检查 ${filledDrafts.length} 条已填写规则。`);
+    setPreviewText(`正在逐条检查并保存 ${filledDrafts.length} 条已填写规则...`);
     setBatchSavePhase("in-flight");
     try {
       const result = await runBatchMappingUpsertFlow({
@@ -251,11 +239,26 @@ export default function MappingsPage() {
       });
 
       setDrafts((current) => current.filter((item) => !result.savedRecordIds.has(item.recordId)));
-      setPreviewText(formatBatchMappingSaveSummary(result));
-      setPreviewError(result.savedCount === 0 && result.failedCount > 0 ? MAPPING_SAVE_ERROR_TEXT : "");
+      const affectedCount = result.refreshJobs.reduce((sum, item) => sum + Number(item.affected_count || 0), 0);
+      const parts = [`已保存 ${result.savedCount} 条规则`];
+      if (result.refreshJobs.length) {
+        parts.push(`启动 ${result.refreshJobs.length} 个映射回刷任务`);
+      }
+      if (affectedCount) {
+        parts.push(`共影响 ${affectedCount} 条记录`);
+      }
+      if (result.skippedOverwriteCount) {
+        parts.push(`跳过 ${result.skippedOverwriteCount} 条未确认覆盖规则`);
+      }
+      if (result.failedCount) {
+        const failureHint = result.failureMessages[0] ? `首个失败：${result.failureMessages[0]}` : "";
+        parts.push(`另有 ${result.failedCount} 条保存失败${failureHint ? `，${failureHint}` : ""}`);
+      }
+      setPreviewText(parts.join("，"));
+      setPreviewError(result.savedCount === 0 && result.failedCount > 0 ? "映射规则保存失败，请到任务页查看明细。" : "");
       await loadMappings();
     } catch {
-      setPreviewError(MAPPING_SAVE_ERROR_TEXT);
+      setPreviewError("映射规则保存失败，请到任务页查看明细。");
     } finally {
       setBatchSavePhase("idle");
     }
@@ -273,7 +276,7 @@ export default function MappingsPage() {
     }
     setSingleSaving(true);
     setPreviewError("");
-    setPreviewText("规则保存进行中，正在检查当前规则。");
+    setPreviewText("正在检查并保存单条规则...");
     try {
       const result = await runMappingUpsertFlow({
         draft: {
@@ -291,12 +294,21 @@ export default function MappingsPage() {
         return;
       }
       const payload = result.response || {};
+      const actionLabel = result.preview?.mode === "overwrite"
+        ? "映射规则已覆盖"
+        : result.preview?.mode === "update"
+          ? "映射规则已更新"
+          : "映射规则已保存";
       const capacityNotice = formatCapacityNotice(payload);
-      setPreviewText(formatSingleMappingSaveSummary(payload, result.preview, capacityNotice));
+      setPreviewText(
+        payload.job_id
+          ? `${actionLabel}，已启动映射回刷任务：${payload.job_id}，影响 ${Number(payload.affected_count || 0)} 条记录${capacityNotice ? `。${capacityNotice}` : ""}`
+          : `${actionLabel}，当前没有匹配到需要回刷的记录`,
+      );
       setPreviewError("");
       await loadMappings();
     } catch {
-      setPreviewError(MAPPING_SAVE_ERROR_TEXT);
+      setPreviewError("映射规则保存失败，请到任务页查看明细。");
     } finally {
       setSingleSaving(false);
     }
@@ -309,11 +321,19 @@ export default function MappingsPage() {
     try {
       const payload = await commands.reprocessPendingMappings({});
       const capacityNotice = formatCapacityNotice(payload || {});
-      setPreviewText(formatPendingReprocessSummary(payload || {}, capacityNotice));
+      if (payload?.job_id) {
+        setPreviewText(
+          capacityNotice
+            ? `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录。${capacityNotice}`
+            : `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录`,
+        );
+      } else {
+        setPreviewText("当前没有待补映射需要重处理");
+      }
       setPreviewError("");
       await loadMappings();
     } catch {
-      setPreviewError(PENDING_REPROCESS_ERROR_TEXT);
+      setPreviewError("待补映射批量重处理失败，请到任务页查看明细。");
     }
   };
 
@@ -321,7 +341,7 @@ export default function MappingsPage() {
     setSingleDraft(EMPTY_SINGLE_DRAFT);
     setEditingEntryKey("");
     setPreviewError("");
-    setPreviewText("当前编辑器已就绪，可开始新建规则。");
+    setPreviewText("已切换到新建规则模式");
   };
 
   const loadEntryToSingleDraft = (entry: (typeof filteredEntries)[number]) => {
@@ -339,67 +359,190 @@ export default function MappingsPage() {
   return (
     <div data-testid={PAGE_TEST_IDS.mappings.page}>
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <div
-          data-layout="remediation-workspace"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(320px, 0.95fr) minmax(0, 1.25fr)",
-            gap: 16,
-            alignItems: "start",
-          }}
-        >
-          <PendingMappingsPane
-            pendingPayload={pendingPayload}
-            pending={pending}
-            disabled={batchSavePhase !== "idle" || singleSaving || Boolean(conflictPreview)}
-            onImportAll={importAllPending}
-            onImportItem={importPendingItem}
-            onTriggerReprocess={() => {
-              void triggerPendingReprocess();
-            }}
-          />
+        <Card title="待补映射" data-testid={PAGE_TEST_IDS.mappings.pendingList}>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Typography.Text>{pendingSummary(pendingPayload, pending.length)}</Typography.Text>
+            <Space>
+              <Button onClick={importAllPending}>导入全部待补项</Button>
+              <Button
+                id="runPendingMappingRefreshBtn"
+                onClick={triggerPendingReprocess}
+                disabled={batchSavePhase !== "idle" || singleSaving || Boolean(conflictPreview)}
+              >
+                一键重处理当前所有待补项
+              </Button>
+            </Space>
+            {pending.length === 0 ? (
+              <Typography.Text type="secondary">当前没有待补映射</Typography.Text>
+            ) : (
+              pending.map((item) => {
+                const record = item.payload || {};
+                return (
+                  <Card key={item.record_id} size="small">
+                    <Space direction="vertical" style={{ width: "100%" }}>
+                      <Typography.Text>{`${item.project_code || "无编号"} · ${record["项目名称"] || "未命名项目"}`}</Typography.Text>
+                      <Typography.Text type="secondary">{`公司：${pendingRecordCompany(record) || "未识别"}`}</Typography.Text>
+                      <Space>
+                        <Button id="importPendingMappingBtn" onClick={() => importPendingItem(item)}>导入到草稿</Button>
+                      </Space>
+                    </Space>
+                  </Card>
+                );
+              })
+            )}
+          </Space>
+        </Card>
 
-          <RuleEditorPane
-            editingExistingEntry={editingExistingEntry}
-            singleDraft={singleDraft}
-            singleSourceLabel={singleSourceLabel}
-            singleTargetLabel={singleTargetLabel}
-            ruleOptions={ruleOptions}
-            singleSaving={singleSaving}
-            singleSaveDisabled={singleSaveDisabled}
-            onSingleDraftChange={(field, value) => {
-              setSingleDraft((draft) => ({ ...draft, [field]: value }));
-            }}
-            onSaveSingle={() => {
-              void saveSingleMapping();
-            }}
-            onStartNewSingleDraft={startNewSingleDraft}
-            drafts={drafts}
-            onUpdateDraft={updateDraft}
-            batchSaving={batchSaving}
-            batchWaitingConflict={batchWaitingConflict}
-            saveDraftDisabled={saveDraftDisabled}
-            onSaveDraftMappings={() => {
-              void saveDraftMappings();
-            }}
-            previewText={previewText}
-            previewError={previewError}
-          />
-        </div>
+        <Card title="规则编辑" data-testid={PAGE_TEST_IDS.mappings.editor}>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            {editingExistingEntry ? (
+              <Typography.Text type="warning">
+                正在编辑已保存规则；来源名称与规则类型已锁定，如需新建请点击“新建规则”
+              </Typography.Text>
+            ) : (
+              <Typography.Text type="secondary">新建规则模式：可编辑规则类型、来源名称、目标值与备注</Typography.Text>
+            )}
+            <Space wrap>
+              <Select
+                value={singleDraft.ruleKind}
+                style={{ width: 220 }}
+                disabled={editingExistingEntry}
+                aria-label="规则类型"
+                onChange={(value) => setSingleDraft((draft) => ({ ...draft, ruleKind: value }))}
+                options={Object.entries(MAPPING_RULE_CONFIG).map(([value, config]) => ({ value, label: config.title }))}
+              />
+              <Input
+                aria-label="来源名称"
+                placeholder={singleSourceLabel}
+                value={singleDraft.sourceName}
+                disabled={editingExistingEntry}
+                onChange={(event) => setSingleDraft((draft) => ({ ...draft, sourceName: event.target.value }))}
+              />
+              <Input
+                aria-label="目标值"
+                placeholder={singleTargetLabel}
+                value={singleDraft.targetValue}
+                onChange={(event) => setSingleDraft((draft) => ({ ...draft, targetValue: event.target.value }))}
+              />
+              <Input
+                aria-label="备注"
+                placeholder="备注"
+                value={singleDraft.notes}
+                onChange={(event) => setSingleDraft((draft) => ({ ...draft, notes: event.target.value }))}
+              />
+              <Button type="primary" loading={singleSaving} disabled={singleSaveDisabled} onClick={saveSingleMapping}>保存单条规则</Button>
+              {editingExistingEntry ? <Button onClick={startNewSingleDraft}>新建规则</Button> : null}
+            </Space>
 
-        <SavedRulesPane
-          entriesRuleKind={entriesRuleKind}
-          entriesKeyword={entriesKeyword}
-          ruleOptions={ruleOptions}
-          onEntriesRuleKindChange={setEntriesRuleKind}
-          onEntriesKeywordChange={setEntriesKeyword}
-          savedEntriesSummary={savedEntriesSummary}
-          editableEntries={editableEntries}
-          filteredEntries={filteredEntries}
-          abnormalEntries={abnormalEntries}
-          editingEntryKey={editingEntryKey}
-          onLoadEntryToSingleDraft={loadEntryToSingleDraft}
-        />
+            {drafts.map((draft, index) => (
+              <div className="mapping-draft-item" data-draft-index={index} key={draft.recordId}>
+                <Space direction="vertical" style={{ width: "100%" }}>
+                  <Typography.Text>{`${draft.project_code || "无编号"} · ${draft.project_name || "未命名项目"}`}</Typography.Text>
+                  <Space wrap>
+                    <Select
+                      value={draft.ruleKind}
+                      data-draft-field="ruleKind"
+                      onChange={(value) => updateDraft(index, "ruleKind", value)}
+                      options={Object.entries(MAPPING_RULE_CONFIG).map(([value, config]) => ({ value, label: config.title }))}
+                      style={{ width: 200 }}
+                    />
+                    <Input
+                      value={draft.sourceName}
+                      data-draft-field="sourceName"
+                      onChange={(event) => updateDraft(index, "sourceName", event.target.value)}
+                    />
+                    <Input
+                      value={draft.targetValue}
+                      data-draft-field="targetValue"
+                      onChange={(event) => updateDraft(index, "targetValue", event.target.value)}
+                    />
+                    <Input
+                      value={draft.notes}
+                      data-draft-field="notes"
+                      onChange={(event) => updateDraft(index, "notes", event.target.value)}
+                    />
+                  </Space>
+                </Space>
+              </div>
+            ))}
+
+            <Button id="saveDraftMappingsBtn" type="primary" loading={batchSaving} disabled={saveDraftDisabled} onClick={saveDraftMappings}>
+              {batchWaitingConflict ? "等待冲突确认..." : batchSaving ? "批量保存中..." : "保存已填写规则"}
+            </Button>
+          </Space>
+        </Card>
+
+        <Card title="预览 / 结果" data-testid={PAGE_TEST_IDS.mappings.preview}>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Typography.Text>{previewText || "等待预览或保存结果"}</Typography.Text>
+            {previewError ? <Typography.Text type="danger">{previewError}</Typography.Text> : null}
+          </Space>
+        </Card>
+
+        <Card title="已保存规则">
+          <div id="mappingEntriesTableWrap" className="records-table-wrap compact-list">
+            <Space direction="vertical" style={{ width: "100%" }}>
+              <Space wrap>
+                <Select
+                  value={entriesRuleKind}
+                  style={{ width: 220 }}
+                  aria-label="已保存规则类型筛选"
+                  onChange={setEntriesRuleKind}
+                  options={[
+                    { value: "all", label: "全部规则类型" },
+                    ...Object.entries(MAPPING_RULE_CONFIG).map(([value, config]) => ({ value, label: config.title })),
+                  ]}
+                />
+                <Input
+                  aria-label="已保存规则关键字筛选"
+                  placeholder="按来源/目标值/备注筛选"
+                  value={entriesKeyword}
+                  onChange={(event) => setEntriesKeyword(event.target.value)}
+                />
+              </Space>
+              <Typography.Text>{savedEntriesSummary}</Typography.Text>
+              {filteredEntries.length === 0 ? (
+                <Typography.Text type="secondary">
+                  {editableEntries.length === 0
+                    ? "当前没有单独维护的映射规则；已录入记录也可能是网页本身已提供完整类型和集团信息"
+                    : "当前筛选条件没有命中规则，请调整规则类型或关键字"}
+                </Typography.Text>
+              ) : (
+                filteredEntries.map((entry) => (
+                  <Card key={entry.key} size="small">
+                    <Space direction="vertical" style={{ width: "100%" }}>
+                      <Typography.Text strong>{entry.sourceName || "未命名来源"}</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {`${entry.ruleTitle} · ${entry.targetValue || "空值"}`}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {`备注：${entry.notes || "无"}${entry.updatedAt ? ` · 最近更新：${entry.updatedAt}` : ""}`}
+                      </Typography.Text>
+                      <Space>
+                        <Button onClick={() => loadEntryToSingleDraft(entry)}>加载到单条编辑</Button>
+                        {editingEntryKey === entry.key ? <Typography.Text type="warning">当前正在编辑该规则</Typography.Text> : null}
+                      </Space>
+                    </Space>
+                  </Card>
+                ))
+              )}
+              {abnormalEntries.length > 0 ? (
+                <Card size="small">
+                  <Space direction="vertical" style={{ width: "100%" }}>
+                    <Typography.Text type="warning">异常/不支持条目（只读）：{abnormalEntries.length} 条</Typography.Text>
+                    {abnormalEntries.map((entry) => (
+                      <div key={entry.key}>
+                        <Typography.Text>{entry.sourceName || "未命名来源"}</Typography.Text>
+                        <Typography.Text type="secondary">{` · ${entry.ruleTitle}`}</Typography.Text>
+                        <Typography.Text type="secondary">{` · ${entry.issueText.join("；")}`}</Typography.Text>
+                      </div>
+                    ))}
+                  </Space>
+                </Card>
+              ) : null}
+            </Space>
+          </div>
+        </Card>
       </Space>
 
       {conflictPreview ? (

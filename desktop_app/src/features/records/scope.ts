@@ -5,12 +5,12 @@ export type RecordsScope = Required<RecordScope>;
 
 export const RECORD_STATE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "all", label: "全部状态" },
-  { value: "ready", label: "已就绪" },
+  { value: "ready", label: "已录入" },
   { value: "pending_mapping", label: "待补映射" },
   { value: "skipped", label: "已跳过" },
-  { value: "parse_failed", label: "需人工处理（内容解析）" },
-  { value: "postprocess_failed", label: "需人工处理（后处理）" },
-  { value: "conflict", label: "需人工处理（归档重名）" },
+  { value: "parse_failed", label: "解析失败" },
+  { value: "postprocess_failed", label: "处理失败" },
+  { value: "conflict", label: "归档重名" },
 ];
 
 export const PROJECT_TYPE_OPTIONS: Array<{ value: string; label: string }> = [

@@ -7,7 +7,7 @@ import re
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
-from .streaming_models import PostProcessFinding, RecordState
+from .streaming_models import PostProcessFinding
 
 COMPANY_FIELDS = (
     "转让方",
@@ -24,8 +24,6 @@ MATCH_GROUP = "group"
 TARGET_GROUP = "group_name"
 TARGET_TYPE = "source_type"
 BUSINESS_PROJECT_TYPES = {"股权转让", "实物资产", "增资扩股", "预披露"}
-FILTER_FINDING_TYPES = {"rule_filtered"}
-MAPPING_FINDING_TYPES = {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"}
 
 
 def _first_non_empty(payload: Dict[str, Any], fields: Iterable[str]) -> str:
@@ -75,32 +73,16 @@ def _required_mapping_fields(payload: Dict[str, Any]) -> List[str]:
     return missing
 
 
-def classify_record_state(findings: Iterable[PostProcessFinding], *, had_conflict: bool = False) -> RecordState:
-    finding_types = {str(item.type) for item in findings}
-    if finding_types & FILTER_FINDING_TYPES:
-        return "skipped"
-    if "mapping_conflict" in finding_types:
-        return "mapping_conflict"
-    if MAPPING_FINDING_TYPES & finding_types:
-        return "pending_mapping"
-    if had_conflict:
-        return "conflict"
-    return "ready"
-
-
 def finalize_streaming_payload(
     payload: Dict[str, Any],
     *,
     findings: Iterable[PostProcessFinding] | None = None,
-    suppress_mapping_findings: bool = False,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     resolved = dict(payload or {})
     normalized_findings: List[PostProcessFinding] = []
     preserved_project_type_unknown: PostProcessFinding | None = None
     for item in findings or []:
         finding_type = str(item.type or "")
-        if suppress_mapping_findings and finding_type in MAPPING_FINDING_TYPES:
-            continue
         if finding_type == "mapping_missing":
             continue
         if finding_type == "project_type_unknown":
@@ -124,7 +106,7 @@ def finalize_streaming_payload(
     project_type = _clean_text(resolved.get("项目类型"))
     if preserved_project_type_unknown is not None:
         normalized_findings.append(preserved_project_type_unknown)
-    elif not suppress_mapping_findings and project_type not in BUSINESS_PROJECT_TYPES:
+    elif project_type not in BUSINESS_PROJECT_TYPES:
         message = "缺少项目类型，暂不能进入导出" if not project_type else "项目类型未识别，暂不能进入导出"
         normalized_findings.append(
             PostProcessFinding(
@@ -135,7 +117,7 @@ def finalize_streaming_payload(
             )
         )
     missing_fields = _required_mapping_fields(resolved)
-    if missing_fields and not suppress_mapping_findings:
+    if missing_fields:
         normalized_findings.append(
             PostProcessFinding(
                 severity="warn",
@@ -164,14 +146,9 @@ def normalize_record_payload(
     parser_payload: Dict[str, Any] | None,
     postprocess_payload: Dict[str, Any] | None,
     findings: Iterable[PostProcessFinding] | None = None,
-    suppress_mapping_findings: bool = False,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     merged = merge_record_payloads(parser_payload, postprocess_payload)
-    return finalize_streaming_payload(
-        merged,
-        findings=findings,
-        suppress_mapping_findings=suppress_mapping_findings,
-    )
+    return finalize_streaming_payload(merged, findings=findings)
 
 
 def _normalize_company(value: str) -> str:
@@ -714,7 +691,6 @@ def _apply_optional_rule_registry(
         for text in warnings
     ]
     resolved = dict(payload)
-    stop_processing = False
     for binding in bindings:
         try:
             result = binding.rule.apply(record, {"mode": "streaming"})
@@ -738,8 +714,7 @@ def _apply_optional_rule_registry(
                         evidence={"rule_id": binding.rule.rule_id()},
                     )
                 )
-                stop_processing = True
-                break
+                continue
             resolved[patch.field] = patch.new_value
         for finding in result.findings:
             findings.append(
@@ -751,8 +726,6 @@ def _apply_optional_rule_registry(
                 )
             )
         record = _build_canonical_record(resolved, source_file=source_file)
-        if stop_processing or result.stop_processing:
-            break
     return resolved, findings
 
 
@@ -764,24 +737,17 @@ def run_record_postprocess(
     rules_config: Dict[str, Any] | None = None,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     working = copy.deepcopy(dict(payload or {}))
-    rule_payload, rule_findings = _apply_optional_rule_registry(
+    mapped_payload, findings = apply_mapping_entries(
         working,
+        mapping_entries=mapping_entries,
+    )
+    rule_payload, rule_findings = _apply_optional_rule_registry(
+        mapped_payload,
         source_file=source_file,
         rules_config=rules_config,
     )
-    if any(str(item.type or "") in FILTER_FINDING_TYPES for item in rule_findings):
-        return finalize_streaming_payload(
-            rule_payload,
-            findings=rule_findings,
-            suppress_mapping_findings=True,
-        )
-    mapped_payload, mapping_findings = apply_mapping_entries(
-        rule_payload,
-        mapping_entries=mapping_entries,
-    )
-    findings = list(rule_findings)
-    findings.extend(mapping_findings)
-    return finalize_streaming_payload(mapped_payload, findings=findings)
+    findings.extend(rule_findings)
+    return finalize_streaming_payload(rule_payload, findings=findings)
 
 
 def findings_to_json(findings: Iterable[PostProcessFinding]) -> List[Dict[str, Any]]:

@@ -1,5 +1,5 @@
 import { Refine } from "@refinedev/core";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { DesktopProvider } from "../desktop/provider";
 import { createDefaultScope, setSharedRecordsScope } from "../features/records/scope";
 import OverviewPage from "./OverviewPage";
@@ -90,11 +90,8 @@ describe("OverviewPage", () => {
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.primaryActions)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.progressCard)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.overview.runtimeCard)).toBeInTheDocument();
-    expect(screen.getByText("任务活动")).toBeInTheDocument();
 
-    const progressCard = screen.getByTestId(PAGE_TEST_IDS.overview.progressCard);
-    expect(await within(progressCard).findByText("一键执行 · 进行中")).toBeInTheDocument();
-    expect(within(progressCard).queryByText(/^正在保存网页$/)).not.toBeInTheDocument();
+    expect(await screen.findByText("正在保存网页")).toBeInTheDocument();
     expect(screen.getByText("56%")).toBeInTheDocument();
     expect(screen.getByText(/已保存网页 8 条/)).toBeInTheDocument();
     expect(screen.getByText(/系统正在保存已扫描到的页面/)).toBeInTheDocument();
