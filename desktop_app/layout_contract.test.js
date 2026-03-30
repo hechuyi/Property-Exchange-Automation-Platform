@@ -9,8 +9,10 @@ const appShell = fs.readFileSync(path.join(__dirname, "src", "app-shell.tsx"), "
 const navigationPath = path.join(__dirname, "src", "features", "shell", "navigation.ts");
 const navigation = fs.existsSync(navigationPath) ? fs.readFileSync(navigationPath, "utf8") : "";
 const overviewPage = fs.readFileSync(path.join(__dirname, "src", "pages", "OverviewPage.tsx"), "utf8");
+const workbenchPage = fs.readFileSync(path.join(__dirname, "src", "pages", "WorkbenchPage.tsx"), "utf8");
 const recordsPage = fs.readFileSync(path.join(__dirname, "src", "pages", "RecordsPage.tsx"), "utf8");
 const mappingsPage = fs.readFileSync(path.join(__dirname, "src", "pages", "MappingsPage.tsx"), "utf8");
+const pendingMappingsPane = fs.readFileSync(path.join(__dirname, "src", "features", "mappings", "PendingMappingsPane.tsx"), "utf8");
 const useOverview = fs.readFileSync(path.join(__dirname, "src", "features", "overview", "useOverview.ts"), "utf8");
 const renderer = fs.readFileSync(path.join(__dirname, "renderer.js"), "utf8");
 const tasksModule = fs.readFileSync(path.join(__dirname, "renderer", "tasks.mjs"), "utf8");
@@ -39,7 +41,7 @@ test("desktop rail exposes a dedicated tasks panel instead of a global sidebar",
   assert.match(navigation, /navWorkbench/);
   assert.match(navigation, /label: "工作台"/);
   assert.match(app, /from "\.\/features\/shell\/navigation"/);
-  assert.match(app, /workbench:\s*lazy\(\(\)\s*=>\s*import\("\.\/pages\/OverviewPage"\)\)/);
+  assert.match(app, /workbench:\s*lazy\(\(\)\s*=>\s*import\("\.\/pages\/WorkbenchPage"\)\)/);
   assert.match(app, /DESKTOP_PANEL_KEYS\.map\(\(key\) => \(\{ name: key, list: `\/\$\{key\}` \}\)\)/);
   assert.match(appShell, /DESKTOP_PRIMARY_NAVIGATION_ITEMS/);
   assert.match(appShell, /DESKTOP_SECONDARY_NAVIGATION_ITEMS/);
@@ -123,25 +125,25 @@ test("records panel exposes date and keyword filters for direct database inspect
 });
 
 test("saved mapping rules are visible without forcing a scroll-to-bottom toggle flow", () => {
-  assert.match(mappingsPage, /id="mappingEntriesTableWrap"/);
-  assert.match(mappingsPage, /className="records-table-wrap compact-list"/);
+  assert.match(mappingsPage, /data-layout="remediation-workspace"/);
+  assert.match(mappingsPage, /<SavedRulesPane/);
   assert.doesNotMatch(mappingsPage, /收起规则表/);
 });
 
 test("homepage first screen keeps one-click export and manual import in the primary action grid", () => {
-  assert.match(overviewPage, /id="homePrimaryActions"[\s\S]*id="runOneClickBtn"[\s\S]*id="runManualImportBtn"[\s\S]*id="runExportBtn"/);
-  assert.match(overviewPage, /id="statPendingMappingCard"/);
+  assert.match(workbenchPage, /id="homePrimaryActions"[\s\S]*id="runOneClickBtn"[\s\S]*id="runManualImportBtn"[\s\S]*id="runExportBtn"/);
+  assert.match(workbenchPage, /id="statPendingMappingCard"/);
 });
 
 test("mappings panel exposes a batch pending refresh action instead of moving it to homepage", () => {
-  const batchIndex = mappingsPage.indexOf('id="runPendingMappingRefreshBtn"');
-  const overviewIndex = overviewPage.indexOf('id="runPendingMappingRefreshBtn"');
+  const batchIndex = pendingMappingsPane.indexOf('id="runPendingMappingRefreshBtn"');
+  const overviewIndex = workbenchPage.indexOf('id="runPendingMappingRefreshBtn"');
   assert.notEqual(batchIndex, -1);
   assert.equal(overviewIndex, -1);
 });
 
 test("overview exposes a force-stop control wired to backend restart", () => {
-  assert.match(overviewPage, /id="forceStopBtn"/);
+  assert.match(workbenchPage, /id="forceStopBtn"/);
   assert.match(useOverview, /window\.peapDesktop\?\.restartBackend/);
   assert.match(preload, /restartBackend:\s*\(\)\s*=> ipcRenderer\.invoke\("peap:restart-backend"\)/);
   assert.match(main, /ipcMain\.handle\("peap:restart-backend"/);

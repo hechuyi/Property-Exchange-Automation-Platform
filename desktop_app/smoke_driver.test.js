@@ -1,7 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { runDesktopSmoke, runJavaScript } = require("./smoke_driver");
+const { runDesktopSmoke, runJavaScript, __internal } = require("./smoke_driver");
+
+test("embedded smoke selector bridge points primary navigation at workbench", () => {
+  assert.ok(__internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.workbench);
+  assert.ok(__internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.workbench);
+  assert.equal("overview" in __internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav, false);
+  assert.equal("overview" in __internal.EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages, false);
+});
 
 test("runDesktopSmoke orchestrates manual import mapping export and interrupt recovery", async () => {
   const steps = [];
@@ -48,8 +55,8 @@ test("runDesktopSmoke orchestrates manual import mapping export and interrupt re
         mappingSaveCalls += 1;
         return { job_id: `map-${mappingSaveCalls}` };
       },
-      openOverviewPanel: async () => {
-        steps.push("open-overview");
+      openWorkbenchPanel: async () => {
+        steps.push("open-workbench");
       },
       prepareExportScope: async () => {
         steps.push("prepare-export");
@@ -127,8 +134,8 @@ test("runDesktopSmoke prepares export scope on records panel before triggering e
       prepareExportScope: async () => {
         steps.push("prepare-export");
       },
-      openOverviewPanel: async () => {
-        steps.push("open-overview");
+      openWorkbenchPanel: async () => {
+        steps.push("open-workbench");
       },
       triggerExport: async () => {
         steps.push("trigger-export");
@@ -149,7 +156,7 @@ test("runDesktopSmoke prepares export scope on records panel before triggering e
   assert.equal(report.ok, true);
   assert.deepEqual(
     steps.slice(2, 6),
-    ["open-records", "prepare-export", "open-overview", "trigger-export"],
+    ["open-records", "prepare-export", "open-workbench", "trigger-export"],
   );
 });
 
@@ -183,7 +190,7 @@ test("runDesktopSmoke waits for force stop button to become enabled before click
       saveDraftMappings: async () => ({ job_id: "map-1" }),
       openRecordsPanel: async () => {},
       prepareExportScope: async () => {},
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => {
         steps.push("running");
@@ -240,7 +247,7 @@ test("runDesktopSmoke waits for backend recovery before reading interrupted term
       saveDraftMappings: async () => ({ job_id: "map-1" }),
       openRecordsPanel: async () => {},
       prepareExportScope: async () => {},
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => ({ status: "running" }),
       waitForForceStopReady: async () => true,
@@ -294,7 +301,7 @@ test("runDesktopSmoke waits for force stop mutation success before polling termi
       saveDraftMappings: async () => ({ job_id: "map-1" }),
       openRecordsPanel: async () => {},
       prepareExportScope: async () => {},
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => ({ status: "running" }),
       waitForForceStopReady: async () => true,
@@ -343,7 +350,7 @@ test("runDesktopSmoke export failures append fetch and interaction traces explic
       prepareExportScope: async () => {
         throw new Error("recordsStateFilter missing");
       },
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       readFetchTrace: async () => [{ url: "/api/overview", method: "GET", status: 200, ok: true }],
       readInteractionTrace: async () => ({ windowErrors: [{ message: "recordsStateFilter missing" }] }),
@@ -383,7 +390,7 @@ test("runDesktopSmoke preserves original export error when trace reads also fail
       prepareExportScope: async () => {
         throw new Error("recordsStateFilter missing");
       },
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       readFetchTrace: async () => {
         throw new Error("fetch trace unavailable");
@@ -449,7 +456,7 @@ test("runDesktopSmoke interrupt restart fails explicitly when stop evidence is m
       importPendingMappings: async () => {},
       fillPendingMappingDrafts: async () => {},
       saveDraftMappings: async () => ({ job_id: "map-1" }),
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async () => ({ status: "running" }),
       forceStopCurrentJob: async () => {},
@@ -493,7 +500,7 @@ test("runDesktopSmoke interrupt restart fails explicitly when job reaches termin
       importPendingMappings: async () => {},
       fillPendingMappingDrafts: async () => {},
       saveDraftMappings: async () => ({ job_id: "map-1" }),
-      openOverviewPanel: async () => {},
+      openWorkbenchPanel: async () => {},
       triggerExport: async () => ({ job_id: "export-1" }),
       waitForJobRunning: async (jobId) => {
         throw new Error(`job ${jobId} reached terminal status success before running`);

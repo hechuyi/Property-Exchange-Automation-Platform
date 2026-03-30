@@ -7,12 +7,12 @@ const SMOKE_FETCH_TRACE_KEY = "__PEAP_DESKTOP_SMOKE_FETCH_TRACE";
 const SMOKE_INTERACTION_TRACE_KEY = "__PEAP_DESKTOP_SMOKE_INTERACTION_TRACE";
 const EMBEDDED_SMOKE_SELECTOR_BRIDGE = {
   nav: {
-    overview: ['[data-testid="desktop-nav-overview"]'],
+    workbench: ['[data-testid="desktop-nav-workbench"]'],
     records: ['[data-testid="desktop-nav-records"]'],
     mappings: ['[data-testid="desktop-nav-mappings"]'],
   },
   pages: {
-    overview: ['[data-testid="overview-page"]'],
+    workbench: ['[data-testid="overview-page"]'],
     records: ['[data-testid="records-page"]'],
     mappings: ['[data-testid="mappings-page"]'],
   },
@@ -162,7 +162,7 @@ async function orchestrateSmoke({
         if (actions.prepareExportScope) {
           await actions.prepareExportScope();
         }
-        await actions.openOverviewPanel();
+        await actions.openWorkbenchPanel();
         const job = await actions.triggerExport();
         const result = await actions.waitForJobTerminal(job.job_id);
         const artifacts = Array.isArray(result?.summary?.artifacts)
@@ -181,7 +181,7 @@ async function orchestrateSmoke({
 
     await runStep(report, "interrupt_restart", async () => {
       try {
-        await actions.openOverviewPanel();
+        await actions.openWorkbenchPanel();
         const job = await actions.triggerManualImport();
         await actions.waitForJobRunning(job.job_id);
         if (actions.waitForForceStopReady) {
@@ -671,11 +671,11 @@ function buildSmokeActions({
         node.click();
       })()`,
     }),
-    openOverviewPanel: async () => openPanel({
-      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.overview,
-      navMissingMessage: "overview panel button missing",
-      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.overview,
-      pageLabel: "overview",
+    openWorkbenchPanel: async () => openPanel({
+      navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.workbench,
+      navMissingMessage: "workbench panel button missing",
+      pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.workbench,
+      pageLabel: "workbench",
     }),
     openRecordsPanel: async () => openPanel({
       navSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.nav.records,
