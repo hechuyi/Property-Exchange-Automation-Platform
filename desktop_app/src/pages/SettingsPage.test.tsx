@@ -19,6 +19,8 @@ const fetchMock = vi.fn();
 const openPath = vi.fn();
 const showItemInFolder = vi.fn();
 const restartBackend = vi.fn();
+const pickDirectory = vi.fn();
+const pickFile = vi.fn();
 
 describe("SettingsPage", () => {
   beforeEach(() => {
@@ -26,6 +28,8 @@ describe("SettingsPage", () => {
     openPath.mockReset();
     showItemInFolder.mockReset();
     restartBackend.mockReset();
+    pickDirectory.mockReset();
+    pickFile.mockReset();
 
     vi.stubGlobal("fetch", fetchMock);
     Object.defineProperty(window, "matchMedia", {
@@ -45,24 +49,52 @@ describe("SettingsPage", () => {
       getBackendConfig: () => ({ backendUrl: "http://127.0.0.1:42679", apiToken: "token" }),
       openPath,
       showItemInFolder,
+      pickDirectory,
+      pickFile,
       restartBackend,
     };
   });
 
-  it("renders selector contract zones", async () => {
-    fetchMock.mockResolvedValue({
+  it("renders grouped settings sections and picker-driven path rows", async () => {
+    fetchMock.mockImplementation(async () => ({
       ok: true,
-      json: async () => ({}),
-    });
+      json: async () => ({
+        default_exchange: "all",
+        default_project_type: "all",
+        default_concurrency: 1,
+        workspace_root: "/tmp/workspace",
+        archive_root: "/tmp/archive",
+        export_root: "/tmp/export",
+        postprocess_config: "/tmp/postprocess.json",
+        save_json: false,
+        app_home: "/tmp/app_home",
+        streaming_db: "/tmp/app.db",
+        log_dir: "/tmp/logs",
+        cache_dir: "/tmp/cache",
+      }),
+    }));
 
     render(<SettingsPage />);
 
     expect(screen.getByTestId(PAGE_TEST_IDS.settings.page)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.settings.form)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.settings.runtimeActions)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "默认值" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "位置" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "运行环境" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "维护" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "工作目录 选择…" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "后处理配置 选择文件…" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "后处理配置 在系统中显示" })).toBeInTheDocument();
+    expect(screen.getByLabelText("后处理配置")).toHaveAttribute("readonly");
   });
 
-  it("saves settings and supports runtime restart action", async () => {
+  it("saves settings after native picking and supports runtime restart action", async () => {
+    pickDirectory
+      .mockResolvedValueOnce("/picked/workspace")
+      .mockResolvedValueOnce("/picked/archive")
+      .mockResolvedValueOnce("/picked/export");
+    pickFile.mockResolvedValueOnce("/picked/postprocess.json");
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/api/settings/basic") && (!init || !init.method || init.method === "GET")) {
@@ -108,6 +140,10 @@ describe("SettingsPage", () => {
     const saveButton = await screen.findByRole("button", { name: "保存设置" });
     expect(saveButton).toBeDisabled();
 
+    fireEvent.click(screen.getByRole("button", { name: "工作目录 选择…" }));
+    fireEvent.click(screen.getByRole("button", { name: "归档目录 选择…" }));
+    fireEvent.click(screen.getByRole("button", { name: "导出目录 选择…" }));
+    fireEvent.click(screen.getByRole("button", { name: "后处理配置 选择文件…" }));
     const concurrencyInput = await screen.findByLabelText("默认并发");
     fireEvent.change(concurrencyInput, { target: { value: "3" } });
     expect(saveButton).not.toBeDisabled();
@@ -116,11 +152,27 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "http://127.0.0.1:42679/api/settings/basic",
-        expect.objectContaining({ method: "POST" }),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            default_exchange: "all",
+            default_project_type: "all",
+            default_concurrency: 3,
+            workspace_root: "/picked/workspace",
+            archive_root: "/picked/archive",
+            export_root: "/picked/export",
+          }),
+        }),
       );
       expect(fetchMock).toHaveBeenCalledWith(
         "http://127.0.0.1:42679/api/settings/advanced",
-        expect.objectContaining({ method: "POST" }),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            postprocess_config: "/picked/postprocess.json",
+            save_json: false,
+          }),
+        }),
       );
     });
 
@@ -130,7 +182,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("renders runtime details and read-only path fields with open/locate actions", async () => {
+  it("renders runtime details and keeps derived paths read-only with reveal actions", async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/api/settings/basic") && (!init || !init.method || init.method === "GET")) {
@@ -207,27 +259,27 @@ describe("SettingsPage", () => {
     expect(exportInput).toHaveAttribute("readonly");
     expect(databaseInput).toHaveAttribute("readonly");
 
-    fireEvent.click(screen.getByRole("button", { name: "打开工作目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "工作目录 在系统中显示" }));
     await waitFor(() => {
-      expect(openPath).toHaveBeenCalledWith("/tmp/workspace");
+      expect(showItemInFolder).toHaveBeenCalledWith("/tmp/workspace");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "打开归档目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "归档目录 在系统中显示" }));
     await waitFor(() => {
-      expect(openPath).toHaveBeenCalledWith("/tmp/archive");
+      expect(showItemInFolder).toHaveBeenCalledWith("/tmp/archive");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "打开导出目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "导出目录 在系统中显示" }));
     await waitFor(() => {
-      expect(openPath).toHaveBeenCalledWith("/tmp/export");
+      expect(showItemInFolder).toHaveBeenCalledWith("/tmp/export");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "打开后处理配置目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "后处理配置 在系统中显示" }));
     await waitFor(() => {
-      expect(openPath).toHaveBeenCalledWith("/tmp/postprocess.yaml");
+      expect(showItemInFolder).toHaveBeenCalledWith("/tmp/postprocess.yaml");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "定位数据库" }));
+    fireEvent.click(screen.getByRole("button", { name: "数据库 在系统中显示" }));
     await waitFor(() => {
       expect(showItemInFolder).toHaveBeenCalledWith("/tmp/app.db");
     });

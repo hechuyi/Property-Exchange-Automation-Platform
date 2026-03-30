@@ -1351,19 +1351,25 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(updated["postprocess_config"], "rules.json")
         self.assertTrue(updated["save_json"])
 
-    def test_set_basic_settings_keeps_workspace_derived_archive_and_export_paths(self) -> None:
+    def test_set_basic_settings_allows_editable_location_paths(self) -> None:
         updated = self.service.set_basic_settings(
             {
-                "archive_root": "/tmp/ignored_archive",
-                "export_root": "/tmp/ignored_export",
+                "workspace_root": "/tmp/workspace_override",
+                "archive_root": "/tmp/archive_override",
+                "export_root": "/tmp/export_override",
                 "default_exchange": "cbex",
             }
         )
 
-        self.assertEqual(updated["workspace_root"], self.service.app_home)
-        self.assertEqual(updated["archive_root"], self.config.ARCHIVE_ROOT)
-        self.assertEqual(updated["export_root"], self.config.OUTPUT_EXCEL_DIR)
+        self.assertEqual(updated["workspace_root"], "/tmp/workspace_override")
+        self.assertEqual(updated["archive_root"], "/tmp/archive_override")
+        self.assertEqual(updated["export_root"], "/tmp/export_override")
         self.assertEqual(updated["default_exchange"], "cbex")
+
+        health = self.service.health()
+        self.assertEqual(health["workspace_root"], "/tmp/workspace_override")
+        self.assertEqual(health["archive_root"], "/tmp/archive_override")
+        self.assertEqual(health["export_root"], "/tmp/export_override")
 
     def test_advanced_settings_do_not_expose_refresh_toggle(self) -> None:
         defaults = self.service.get_advanced_settings()

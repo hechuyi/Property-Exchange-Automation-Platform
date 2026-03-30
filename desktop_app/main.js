@@ -387,6 +387,20 @@ app.whenReady().then(async () => {
     appendStartupLog("pick_directory_resolved", { source: "dialog", path: selectedPath });
     return selectedPath;
   });
+  ipcMain.handle("peap:pick-file", async (_event, defaultPath) => {
+    const result = await dialog.showOpenDialog({
+      title: "选择文件",
+      defaultPath: defaultPath || undefined,
+      properties: ["openFile"],
+    });
+    if (result.canceled || !result.filePaths.length) {
+      appendStartupLog("pick_file_resolved", { source: "dialog", path: "" });
+      return "";
+    }
+    const selectedPath = String(result.filePaths[0] || "");
+    appendStartupLog("pick_file_resolved", { source: "dialog", path: selectedPath });
+    return selectedPath;
+  });
   ipcMain.handle("peap:restart-backend", async () => restartBackend());
 
   await ensureBackendRunningAndReady();

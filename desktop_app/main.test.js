@@ -319,6 +319,23 @@ test("pick-directory IPC consumes configured smoke directory queue before openin
   }
 });
 
+test("pick-file IPC returns the selected file path", async () => {
+  const harness = loadMainWithMocks({
+    showOpenDialogImpl: async () => ({ canceled: false, filePaths: ["/tmp/postprocess.json"] }),
+  });
+
+  try {
+    harness.whenReadyDeferred.resolve();
+    await flushMicrotasks();
+
+    const pickFile = harness.ipcHandles.find((item) => item.channel === "peap:pick-file");
+    assert.ok(pickFile);
+    assert.equal(await pickFile.handler({}, "/tmp/default.json"), "/tmp/postprocess.json");
+  } finally {
+    harness.restore();
+  }
+});
+
 test("pick-directory IPC returns empty after single-item smoke queue is exhausted and dialog is canceled", async () => {
   const harness = loadMainWithMocks({
     env: {

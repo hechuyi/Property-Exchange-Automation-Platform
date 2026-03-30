@@ -215,6 +215,11 @@ def _parse_positive_int(raw_value: Any, *, field_name: str, default: int) -> int
     return value
 
 
+def _normalize_setting_path(raw_value: Any, *, fallback: str) -> str:
+    text = str(raw_value or "").strip()
+    return text or str(fallback or "").strip()
+
+
 def _summary_count(summary: Dict[str, Any], key: str) -> int:
     return _coerce_int(summary.get(key), default=0)
 
@@ -675,12 +680,21 @@ class AppService:
         value = self.store.get_setting(self._basic_settings_key(), default=defaults)
         merged = dict(defaults)
         merged.update(value)
-        merged["archive_root"] = self.default_archive_root
-        merged["export_root"] = self.default_export_root
-        merged["workspace_root"] = self.app_home
+        try:
+            merged["default_concurrency"] = _parse_positive_int(
+                merged.get("default_concurrency"),
+                field_name="default_concurrency",
+                default=int(self.config.DOWNLOADER_DEFAULTS["concurrency"]),
+            )
+        except UserInputError:
+            merged["default_concurrency"] = int(self.config.DOWNLOADER_DEFAULTS["concurrency"])
+        merged["workspace_root"] = _normalize_setting_path(merged.get("workspace_root"), fallback=self.app_home)
+        merged["archive_root"] = _normalize_setting_path(merged.get("archive_root"), fallback=self.default_archive_root)
+        merged["export_root"] = _normalize_setting_path(merged.get("export_root"), fallback=self.default_export_root)
         return merged
 
     def get_advanced_settings(self) -> Dict[str, Any]:
+        basic = self.get_basic_settings()
         defaults = {
             "app_home": self.app_home,
             "streaming_db": self.db_path,
@@ -688,11 +702,11 @@ class AppService:
             "postprocess_config": self.default_postprocess_config,
             "log_dir": str(self.config.LOG_DIR),
             "cache_dir": str(getattr(self.config, "CACHE_DIR", "")),
-            "raw_auto_root": self.default_archive_root,
+            "raw_auto_root": basic["archive_root"],
             "raw_manual_root": str(getattr(self.config, "HTML_FOLDER", "")),
             "browser_cache_dir": str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", "")),
-            "archive_root": self.default_archive_root,
-            "export_root": self.default_export_root,
+            "archive_root": basic["archive_root"],
+            "export_root": basic["export_root"],
         }
         value = self.store.get_setting(self._advanced_settings_key(), default=defaults)
         merged = dict(defaults)
@@ -703,21 +717,26 @@ class AppService:
             merged["postprocess_config"] = self.default_postprocess_config
         merged["log_dir"] = str(self.config.LOG_DIR)
         merged["cache_dir"] = str(getattr(self.config, "CACHE_DIR", ""))
-        merged["raw_auto_root"] = self.default_archive_root
+        merged["raw_auto_root"] = basic["archive_root"]
         merged["raw_manual_root"] = str(getattr(self.config, "HTML_FOLDER", ""))
         merged["browser_cache_dir"] = str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))
-        merged["archive_root"] = self.default_archive_root
-        merged["export_root"] = self.default_export_root
+        merged["archive_root"] = basic["archive_root"]
+        merged["export_root"] = basic["export_root"]
         return merged
 
     def set_basic_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         value = self.get_basic_settings()
-        for key in ("default_exchange", "default_project_type", "default_concurrency"):
+        for key in ("default_exchange", "default_project_type", "default_concurrency", "workspace_root", "archive_root", "export_root"):
             if key in dict(payload or {}):
                 value[key] = dict(payload or {})[key]
-        value["archive_root"] = self.default_archive_root
-        value["export_root"] = self.default_export_root
-        value["workspace_root"] = self.app_home
+        value["default_concurrency"] = _parse_positive_int(
+            value.get("default_concurrency"),
+            field_name="default_concurrency",
+            default=int(self.config.DOWNLOADER_DEFAULTS["concurrency"]),
+        )
+        value["workspace_root"] = _normalize_setting_path(value.get("workspace_root"), fallback=self.app_home)
+        value["archive_root"] = _normalize_setting_path(value.get("archive_root"), fallback=self.default_archive_root)
+        value["export_root"] = _normalize_setting_path(value.get("export_root"), fallback=self.default_export_root)
         self.store.set_setting(self._basic_settings_key(), value)
         self.store.add_audit_entry("settings_basic_updated", value)
         return value
@@ -732,13 +751,14 @@ class AppService:
         value["streaming_db"] = self.db_path
         if not str(value.get("postprocess_config") or "").strip():
             value["postprocess_config"] = self.default_postprocess_config
+        basic = self.get_basic_settings()
         value["log_dir"] = str(self.config.LOG_DIR)
         value["cache_dir"] = str(getattr(self.config, "CACHE_DIR", ""))
-        value["raw_auto_root"] = self.default_archive_root
+        value["raw_auto_root"] = basic["archive_root"]
         value["raw_manual_root"] = str(getattr(self.config, "HTML_FOLDER", ""))
         value["browser_cache_dir"] = str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))
-        value["archive_root"] = self.default_archive_root
-        value["export_root"] = self.default_export_root
+        value["archive_root"] = basic["archive_root"]
+        value["export_root"] = basic["export_root"]
         self.store.set_setting(self._advanced_settings_key(), value)
         self.store.add_audit_entry("settings_advanced_updated", value)
         return value
@@ -750,7 +770,7 @@ class AppService:
         return {
             "ok": True,
             "db_path": self.db_path,
-            "workspace_root": self.app_home,
+            "workspace_root": self.get_basic_settings()["workspace_root"],
             "archive_root": self.get_basic_settings()["archive_root"],
             "export_root": self.get_basic_settings()["export_root"],
             "app_home": self.app_home,
@@ -766,10 +786,11 @@ class AppService:
         }
 
     def readiness(self) -> Dict[str, Any]:
+        basic = self.get_basic_settings()
         return {
             "ok": True,
             "db_path": self.db_path,
-            "workspace_root": self.app_home,
+            "workspace_root": basic["workspace_root"],
             "app_home": self.app_home,
         }
 
@@ -787,7 +808,7 @@ class AppService:
             "archive_root": basic["archive_root"],
             "export_root": basic["export_root"],
             "db_path": self.db_path,
-            "workspace_root": self.app_home,
+            "workspace_root": basic["workspace_root"],
             "app_home": self.app_home,
             "cache_dir": str(getattr(self.config, "CACHE_DIR", "")),
             "raw_auto_root": basic["archive_root"],

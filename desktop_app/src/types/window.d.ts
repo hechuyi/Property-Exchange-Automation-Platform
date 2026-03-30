@@ -8,6 +8,7 @@ declare global {
       openPath?: (targetPath: string) => Promise<string> | string;
       showItemInFolder?: (targetPath: string) => Promise<string> | string;
       pickDirectory?: (defaultPath?: string) => Promise<string> | string;
+      pickFile?: (defaultPath?: string) => Promise<string> | string;
       restartBackend?: () => Promise<{ ok: true; backendUrl: string }> | { ok: true; backendUrl: string };
     };
   }
