@@ -12,7 +12,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
-from desktop_backend.record_identity import (
+from peap_core.record_identity import (
     FAILED_RECORD_STATES,
     build_identity_anchor,
     build_source_identity_payload,

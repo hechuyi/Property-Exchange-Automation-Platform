@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
-from desktop_backend.record_identity import (
+from peap_core.record_identity import (
     FAILED_RECORD_STATES,
     build_identity_anchor,
     build_source_identity_payload,
@@ -11,7 +12,19 @@ from desktop_backend.record_identity import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 class RecordIdentityTest(unittest.TestCase):
+    def test_desktop_backend_record_identity_is_only_a_compatibility_wrapper(self) -> None:
+        module_text = (REPO_ROOT / "desktop_backend" / "record_identity.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("from peap_core.record_identity import", module_text)
+        self.assertNotIn("import hashlib", module_text)
+        self.assertNotIn("def build_identity_anchor(", module_text)
+
     def test_failed_record_states_include_parse_and_postprocess_failures(self) -> None:
         self.assertIn("parse_failed", FAILED_RECORD_STATES)
         self.assertIn("postprocess_failed", FAILED_RECORD_STATES)

@@ -24,12 +24,13 @@ class EnvironmentToolingTest(unittest.TestCase):
         self.assertNotIn("build", pyproject["dependency-groups"])
         self.assertNotIn("optional-dependencies", pyproject["project"])
 
-    def test_pyproject_exports_desktop_backend_for_shared_runtime_contracts(self) -> None:
+    def test_pyproject_exports_shared_runtime_packages_for_non_parser_contracts(self) -> None:
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         package_includes = pyproject["tool"]["setuptools"]["packages"]["find"]["include"]
         streaming_store = (REPO_ROOT / "peap" / "streaming_store.py").read_text(encoding="utf-8")
 
-        self.assertIn("from desktop_backend.record_identity import", streaming_store)
+        self.assertIn("from peap_core.record_identity import", streaming_store)
+        self.assertIn("peap_core*", package_includes)
         self.assertIn("desktop_backend*", package_includes)
 
     def test_ci_workflow_uses_uv_project_commands(self) -> None:
