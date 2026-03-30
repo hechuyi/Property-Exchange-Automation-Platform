@@ -2,7 +2,7 @@
 
 ## 当前产品主路径
 
-当前唯一对业务人员开放的产品入口是 `desktop_app/`。Electron 壳层通过 `desktop_backend/` 提供本地 API，运行时仍然会调用 `peap/`、`peap_parsers/`、`peap_postprocess/` 这组引擎模块。
+当前唯一对业务人员开放的产品入口是 `desktop_app/`。Electron 壳层通过 `desktop_backend/` 提供本地 API；共享 runtime 契约位于 `peap_core/`，业务引擎位于 `peap/`，解析器与后处理仍分别在 `peap_parsers/`、`peap_postprocess/`。
 
 Python 环境统一由仓库根 `pyproject.toml` 和 `uv.lock` 管理。开发态默认使用仓库根 `.venv/`；如需准备浏览器运行时，执行：
 
@@ -19,6 +19,7 @@ bash scripts/bootstrap_desktop_env.sh
 .
 ├─ desktop_app/                 # Electron 桌面壳层
 ├─ desktop_backend/             # 本地后端与产品协调层
+├─ peap_core/                   # 共享 runtime 契约与基础元数据
 ├─ peap/                        # 下载、流水线、导出等引擎逻辑
 ├─ peap_parsers/                # 各交易所页面解析器
 ├─ peap_postprocess/            # 后处理规则与执行器
@@ -42,6 +43,14 @@ bash scripts/bootstrap_desktop_env.sh
 - 浏览器缓存：`<workspace_root>/cache/ms-playwright/`
 
 更细的存储规则见 `docs/desktop_storage_layout.md`。
+
+## runtime 边界
+
+- `peap_core/record_identity.py` 承载失败对象身份与证据路径选择等共享契约，`peap/` 与 `desktop_backend/` 都从这里取用。
+- `peap_core/source_catalog.py` 是唯一 canonical source metadata 目录，统一提供 source code、显示标签、别名解析与 downloader/backend 共享元数据。
+- `peap/compat_payload.py` 定义显式 downstream compat projection，导出链路不再把任意 raw parser/postprocess 字段直接带入 writer payload。
+- `peap/streaming_store_maintenance.py` 是 legacy store normalization 的显式入口；ordinary read paths 不再偷偷修复记录状态或 listing_date。
+- parser-layer 重构仍未纳入上述 runtime 边界，后续需要单独设计。
 
 ## 文档边界
 

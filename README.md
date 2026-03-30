@@ -6,6 +6,7 @@ This repository now tracks the desktop product mainline rather than the legacy s
 
 - `desktop_app/` — Electron shell and renderer
 - `desktop_backend/` — local backend API for the desktop shell
+- `peap_core/` — shared runtime contracts and canonical source metadata
 - `peap/`, `peap_parsers/`, `peap_postprocess/` — engine modules still used at runtime
 
 The current target is a **pure development mainline**: finish the frontend/backend product path first, keep runtime semantics explicit, and keep a single repo-root development runtime. The latest strict real Electron smoke is recorded in `docs/desktop_electron_smoke_report_2026-03-28.md`, and the current mainline gate definition lives in `docs/release_gate.md`.
@@ -63,12 +64,20 @@ By default the product uses `~/Documents/PEAP/` as its workspace root, unless ov
 
 More storage details are documented in `docs/desktop_storage_layout.md`.
 
+## Runtime Boundary Notes
+
+- shared failed-record identity and source metadata now live in `peap_core/`
+- downstream export compatibility is bounded by `peap/compat_payload.py`, rather than raw payload passthrough
+- legacy listing-date / pending-mapping normalization runs through `peap/streaming_store_maintenance.py`
+- ordinary read paths in `desktop_backend.app_service` are intentionally side-effect free
+- parser-layer redesign remains a separate track and is not part of this runtime-boundary slice
+
 ## Product Boundary
 
 The desktop product is the only supported operator-facing workflow on `main`.
 
 - Supported product entry: `desktop_app/` + `desktop_backend/`
-- Runtime engine modules retained for the desktop path: `peap/`, `peap_parsers/`, `peap_postprocess/`
+- Runtime engine modules retained for the desktop path: `peap_core/`, `peap/`, `peap_parsers/`, `peap_postprocess/`
 - Legacy source-tree CLI wrappers are no longer the main product path
 - Repository scope is limited to the repo-root development runtime and product source tree
 - `docs/superpowers/` contains AI planning and handoff material, not release documentation

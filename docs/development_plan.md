@@ -1,6 +1,6 @@
 # 开发计划
 
-Last updated: 2026-03-28
+Last updated: 2026-03-30
 
 ## 当前状态
 
@@ -16,9 +16,12 @@ Last updated: 2026-03-28
 2. React + TypeScript + Vite renderer 已成为桌面前端正式实现，Electron 主进程、开发态 backend 启动链与 smoke 驱动已对齐到同一套桌面产品链。
 3. 最新真实 Electron smoke 主路径已闭环；此前的 export、force-stop、interrupt restart 等关键阻断已经修复，并保持显式错误暴露。
 4. Python 环境管理、CI 与本地开发入口已经统一到 `uv`。
-5. 已补上最小安装元数据修复：`pyproject.toml` 现在导出 `desktop_backend*`，解决“离开 repo root 的已安装环境里导入 `peap.streaming_store` 失败”的问题。
-6. `README.md`、`docs/release_gate.md`、`docs/desktop_product_runbook_2026-03-26.md`、`docs/project_layout.md` 已按当前桌面主线对齐，明确写出 `uv` / Node 前置、首次联网下载前置、repo-root 开发态耦合，以及 `docs/superpowers/` 不属于 release 文档集合。
-7. 额外发布装配脚本、附带运行时入口与已提交 `dist*` 产物已从主仓移除，主线只保留 repo-root 开发态产品路径。
+5. 已补上安装元数据与共享契约边界：`pyproject.toml` 导出 `desktop_backend*` 与 `peap_core*`，`record_identity` 已下沉到 `peap_core/record_identity.py`，`peap/streaming_store.py` 不再反向依赖 `desktop_backend.record_identity`。
+6. runtime source metadata 已集中到 `peap_core/source_catalog.py`；`ProductProfile`、downloader 展示名、任务进度标签与 backend 交易所归一化现在都消费同一份 catalog。
+7. 下游导出兼容层已改为显式 compat projection：`peap/compat_payload.py` 成为唯一可审计的兼容投影入口，export writer 不再因原始 parser/postprocess payload 中多出字段就被动放行。
+8. legacy store 归一化已从读路径移出：`peap/streaming_store_maintenance.py` 负责显式维护，`overview()`、`list_records()`、`list_pending_mappings()`、`get_job()` 等读取路径保持无副作用；启动与 daily pipeline bootstrap 会主动运行 maintenance。
+9. `README.md`、`docs/release_gate.md`、`docs/desktop_product_runbook_2026-03-26.md`、`docs/project_layout.md` 已按当前桌面主线对齐，明确写出 `uv` / Node 前置、首次联网下载前置、repo-root 开发态耦合，以及 `docs/superpowers/` 不属于 release 文档集合。
+10. 额外发布装配脚本、附带运行时入口与已提交 `dist*` 产物已从主仓移除，主线只保留 repo-root 开发态产品路径。
 
 ## 当前阶段目标
 
@@ -56,13 +59,16 @@ Last updated: 2026-03-28
 
 这不是基础功能阻断，而是 release gate 语义问题。除非明确要把“字面 interrupted 终态”写进门槛，否则不应再为此重开大范围排查。
 
-### 3. 共享契约结构清理
+### 3. parser-layer 重构设计（待单独推进）
 
-当前最小补丁虽然修掉了安装元数据问题，但结构上仍有一处待清理的依赖反向：
+本轮 non-parser runtime boundary normalization 已完成，但 parser-layer 仍然保持原状，后续若要继续推进，应单开设计与实现周期，范围包括：
 
-- `peap/streaming_store.py` 依赖 `desktop_backend.record_identity`
+- `peap/parsing.py` 编排路径整理
+- parser registry / parser guard / parser enricher 注册边界
+- parser variants 与 parse-cache invalidation 重新建模
+- 北京 / 上海 / public-resource parser template routing 设计收敛
 
-这说明共享领域契约仍挂在 `desktop_backend/` 名下。后续应单开小范围重构，把 `record_identity` 下沉到共享层（优先 `peap_core/`），并让 `peap` 与 `desktop_backend` 都只依赖共享模块。该任务必须带回归验证，证明脱离 repo root 后仍可正常导入相关模块。
+这些工作不应再混入当前已经完成的 runtime contract / source metadata / compat export / maintenance 边界内。
 
 ### 4. 主线纯净化（已完成）
 
@@ -87,7 +93,7 @@ Last updated: 2026-03-28
 
 1. 文档与 release gate 一致性收口
 2. interrupt / cancel 发布语义定稿
-3. 共享契约结构清理
+3. parser-layer 重构设计
 4. 新版前后端缺口补齐
 
 如果没有用户新指令，后续开发都应围绕这四项推进，而不是重新扩散任务边界。
