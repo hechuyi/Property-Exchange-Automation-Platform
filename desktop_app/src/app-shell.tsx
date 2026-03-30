@@ -1,17 +1,13 @@
 import type { ReactNode } from "react";
 import { Layout, Menu, Typography } from "antd";
 import type { MenuProps } from "antd";
+import {
+  DESKTOP_PRIMARY_NAVIGATION_ITEMS,
+  DESKTOP_SECONDARY_NAVIGATION_ITEMS,
+} from "./features/shell/navigation";
 import { SHELL_TEST_IDS } from "./testing/selectors";
 
 const { Header, Sider, Content } = Layout;
-
-const MENU_ITEMS: Array<{ key: string; label: string; testId: string }> = [
-  { key: "overview", label: "总览", testId: SHELL_TEST_IDS.navOverview },
-  { key: "tasks", label: "任务", testId: SHELL_TEST_IDS.navTasks },
-  { key: "records", label: "记录", testId: SHELL_TEST_IDS.navRecords },
-  { key: "mappings", label: "映射", testId: SHELL_TEST_IDS.navMappings },
-  { key: "settings", label: "设置", testId: SHELL_TEST_IDS.navSettings },
-];
 
 type AppShellProps = {
   activeKey: string;
@@ -20,10 +16,17 @@ type AppShellProps = {
 };
 
 export function AppShell({ activeKey, onSelect, children }: AppShellProps) {
-  const items: MenuProps["items"] = MENU_ITEMS.map((item) => ({
-    key: item.key,
-    label: <span data-testid={item.testId}>{item.label}</span>,
-  }));
+  const items: MenuProps["items"] = [
+    ...DESKTOP_PRIMARY_NAVIGATION_ITEMS.map((item) => ({
+      key: item.key,
+      label: <span data-testid={item.testId}>{item.label}</span>,
+    })),
+    { type: "divider" },
+    ...DESKTOP_SECONDARY_NAVIGATION_ITEMS.map((item) => ({
+      key: item.key,
+      label: <span data-testid={item.testId}>{item.label}</span>,
+    })),
+  ];
 
   return (
     <Layout data-testid={SHELL_TEST_IDS.app} style={{ minHeight: "100vh" }}>

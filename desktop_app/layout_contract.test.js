@@ -6,6 +6,8 @@ const ts = require("typescript");
 
 const app = fs.readFileSync(path.join(__dirname, "src", "App.tsx"), "utf8");
 const appShell = fs.readFileSync(path.join(__dirname, "src", "app-shell.tsx"), "utf8");
+const navigationPath = path.join(__dirname, "src", "features", "shell", "navigation.ts");
+const navigation = fs.existsSync(navigationPath) ? fs.readFileSync(navigationPath, "utf8") : "";
 const overviewPage = fs.readFileSync(path.join(__dirname, "src", "pages", "OverviewPage.tsx"), "utf8");
 const recordsPage = fs.readFileSync(path.join(__dirname, "src", "pages", "RecordsPage.tsx"), "utf8");
 const mappingsPage = fs.readFileSync(path.join(__dirname, "src", "pages", "MappingsPage.tsx"), "utf8");
@@ -19,6 +21,7 @@ const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
 const preload = fs.readFileSync(path.join(__dirname, "preload.js"), "utf8");
 const mainEntry = fs.readFileSync(path.join(__dirname, "src", "main.tsx"), "utf8");
 const appAst = ts.createSourceFile("App.tsx", app, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const navigationAst = ts.createSourceFile("navigation.ts", navigation, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function collectNodes(root, predicate) {
   const matches = [];
@@ -33,10 +36,16 @@ function collectNodes(root, predicate) {
 }
 
 test("desktop rail exposes a dedicated tasks panel instead of a global sidebar", () => {
-  assert.match(appShell, /navTasks/);
-  assert.match(appShell, /label: "任务"/);
-  assert.match(app, /name: "tasks"/);
-  assert.match(app, /tasks:\s*lazy\(\(\)\s*=>\s*import\("\.\/pages\/TasksPage"\)\)/);
+  assert.match(navigation, /navWorkbench/);
+  assert.match(navigation, /label: "工作台"/);
+  assert.match(app, /from "\.\/features\/shell\/navigation"/);
+  assert.match(app, /workbench:\s*lazy\(\(\)\s*=>\s*import\("\.\/pages\/OverviewPage"\)\)/);
+  assert.match(app, /DESKTOP_PANEL_KEYS\.map\(\(key\) => \(\{ name: key, list: `\/\$\{key\}` \}\)\)/);
+  assert.match(appShell, /DESKTOP_PRIMARY_NAVIGATION_ITEMS/);
+  assert.match(appShell, /DESKTOP_SECONDARY_NAVIGATION_ITEMS/);
+  assert.doesNotMatch(appShell, /navTasks/);
+  assert.doesNotMatch(appShell, /label: "任务"/);
+  assert.doesNotMatch(app, /tasks:\s*lazy\(\(\)\s*=>\s*import\("\.\/pages\/TasksPage"\)\)/);
   assert.doesNotMatch(appShell, /workspace-sidebar/);
 });
 
@@ -44,19 +53,24 @@ test("app panel contract removes source-level test hack and uses finite key set"
   assert.doesNotMatch(app, /TASKS_PANEL_LAYOUT_CONTRACT/);
 
   const panelKeysNode = collectNodes(
-    appAst,
-    (node) => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "PANEL_KEYS",
+    navigationAst,
+    (node) => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DESKTOP_PANEL_KEYS",
   )[0];
-  assert.ok(panelKeysNode, "expected PANEL_KEYS declaration");
-  assert.ok(panelKeysNode.initializer && ts.isAsExpression(panelKeysNode.initializer), "PANEL_KEYS should use `as const`");
+  assert.ok(panelKeysNode, "expected DESKTOP_PANEL_KEYS declaration");
+  assert.ok(panelKeysNode.initializer && ts.isAsExpression(panelKeysNode.initializer), "DESKTOP_PANEL_KEYS should use `as const`");
 
   const panelKeysExpr = panelKeysNode.initializer.expression;
-  assert.ok(ts.isArrayLiteralExpression(panelKeysExpr), "PANEL_KEYS should be an array literal");
+  assert.ok(ts.isArrayLiteralExpression(panelKeysExpr), "DESKTOP_PANEL_KEYS should be an array literal");
   const panelKeys = panelKeysExpr.elements.map((element) => (ts.isStringLiteral(element) ? element.text : ""));
-  assert.deepEqual(panelKeys, ["overview", "tasks", "records", "mappings", "settings"]);
+  assert.deepEqual(panelKeys, ["workbench", "records", "mappings", "settings"]);
 
-  assert.match(app, /useState<PanelKey>\("overview"\)/);
-  assert.doesNotMatch(app, /PAGE_COMPONENTS\[.*\]\s*\|\|\s*PAGE_COMPONENTS\.overview/);
+  const primaryKeysNode = collectNodes(
+    navigationAst,
+    (node) => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DESKTOP_PRIMARY_PANEL_KEYS",
+  )[0];
+  assert.ok(primaryKeysNode, "expected DESKTOP_PRIMARY_PANEL_KEYS declaration");
+  assert.match(app, /useState<DesktopPanelKey>\("workbench"\)/);
+  assert.doesNotMatch(app, /PAGE_COMPONENTS\[.*\]\s*\|\|\s*PAGE_COMPONENTS\.workbench/);
 });
 
 test("lazy page rendering is wrapped by explicit error boundary", () => {

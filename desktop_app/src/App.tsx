@@ -5,29 +5,19 @@ import { AppShell } from "./app-shell";
 import { readBackendConfig } from "./desktop/config";
 import { type BackendConfig } from "./desktop/contracts";
 import { DesktopProvider } from "./desktop/provider";
-
-const PANEL_KEYS = ["overview", "tasks", "records", "mappings", "settings"] as const;
-type PanelKey = (typeof PANEL_KEYS)[number];
+import {
+  DESKTOP_PANEL_KEYS,
+  DESKTOP_PANEL_TITLES,
+  isDesktopPanelKey,
+  type DesktopPanelKey,
+} from "./features/shell/navigation";
 
 const PAGE_COMPONENTS = {
-  overview: lazy(() => import("./pages/OverviewPage")),
-  tasks: lazy(() => import("./pages/TasksPage")),
+  workbench: lazy(() => import("./pages/OverviewPage")),
   records: lazy(() => import("./pages/RecordsPage")),
   mappings: lazy(() => import("./pages/MappingsPage")),
   settings: lazy(() => import("./pages/SettingsPage")),
-} satisfies Record<PanelKey, ReturnType<typeof lazy>>;
-
-const PANEL_TITLES: Record<PanelKey, string> = {
-  overview: "总览页骨架已就绪",
-  tasks: "任务页骨架已就绪",
-  records: "记录页骨架已就绪",
-  mappings: "映射页骨架已就绪",
-  settings: "设置页骨架已就绪",
-};
-
-function isPanelKey(value: string): value is PanelKey {
-  return (PANEL_KEYS as readonly string[]).includes(value);
-}
+} satisfies Record<DesktopPanelKey, ReturnType<typeof lazy>>;
 
 function formatLazyLoadError(error: unknown) {
   const rawMessage = String((error as Error)?.message || error || "页面模块加载失败，请稍后重试。");
@@ -49,7 +39,7 @@ function publishDesktopBootstrapState(state: { ready: boolean; error: string }) 
 }
 
 type LazyPageErrorBoundaryProps = {
-  activeKey: PanelKey;
+  activeKey: DesktopPanelKey;
   panelTitle: string;
   children: ReactNode;
 };
@@ -83,18 +73,12 @@ class LazyPageErrorBoundary extends Component<LazyPageErrorBoundaryProps, LazyPa
 }
 
 export default function App() {
-  const [activeKey, setActiveKey] = useState<PanelKey>("overview");
+  const [activeKey, setActiveKey] = useState<DesktopPanelKey>("workbench");
   const [backendConfig, setBackendConfig] = useState<BackendConfig | null>(null);
   const [bootstrapError, setBootstrapError] = useState("");
   const [panelSelectionError, setPanelSelectionError] = useState("");
   const resources = useMemo(
-    () => [
-      { name: "overview", list: "/overview" },
-      { name: "tasks", list: "/tasks" },
-      { name: "records", list: "/records" },
-      { name: "mappings", list: "/mappings" },
-      { name: "settings", list: "/settings" },
-    ],
+    () => DESKTOP_PANEL_KEYS.map((key) => ({ name: key, list: `/${key}` })),
     [],
   );
 
@@ -124,7 +108,7 @@ export default function App() {
   }, [backendConfig, bootstrapError]);
 
   const handlePanelSelect = (nextKey: string) => {
-    if (!isPanelKey(nextKey)) {
+    if (!isDesktopPanelKey(nextKey)) {
       setPanelSelectionError(`未知面板 key：${nextKey}`);
       return;
     }
@@ -158,12 +142,12 @@ export default function App() {
             {panelSelectionError ? (
               <Result status="warning" title="导航面板标识无效" subTitle={panelSelectionError} />
             ) : (
-              <LazyPageErrorBoundary activeKey={activeKey} panelTitle={PANEL_TITLES[activeKey]}>
+              <LazyPageErrorBoundary activeKey={activeKey} panelTitle={DESKTOP_PANEL_TITLES[activeKey]}>
                 <Suspense
                   fallback={(
                     <Result
                       status="info"
-                      title={PANEL_TITLES[activeKey]}
+                      title={DESKTOP_PANEL_TITLES[activeKey]}
                       subTitle="页面模块加载中。"
                     />
                   )}
