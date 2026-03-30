@@ -137,7 +137,7 @@ async function orchestrateSmoke({
     let mappingPass = 0;
     while (pendingCount > 0 && mappingPass < maxMappingPasses) {
       mappingPass += 1;
-      await runStep(report, `mapping_refresh_${mappingPass}`, async () => {
+      const mappingRefreshJob = await runStep(report, `mapping_refresh_${mappingPass}`, async () => {
         await actions.openMappingsPanel();
         await actions.importPendingMappings();
         await actions.fillPendingMappingDrafts({
@@ -148,6 +148,13 @@ async function orchestrateSmoke({
         return actions.waitForJobTerminal(job.job_id);
       });
       pendingCount = await actions.getPendingMappingsCount();
+      if (
+        mappingRefreshJob
+        && mappingRefreshJob.summary
+        && Number.isFinite(Number(mappingRefreshJob.summary.pending_mapping_count))
+      ) {
+        pendingCount = Math.max(pendingCount, Number(mappingRefreshJob.summary.pending_mapping_count));
+      }
     }
 
     if (pendingCount > 0) {
@@ -638,15 +645,30 @@ function buildSmokeActions({
       pageSelectors: EMBEDDED_SMOKE_SELECTOR_BRIDGE.pages.mappings,
       pageLabel: "mappings",
     }),
-    importPendingMappings: async () => runJavaScript(window, `(() => {
-      const node = document.getElementById("importPendingMappingBtn");
-      if (!node) {
-        throw new Error("importPendingMappingBtn missing");
-      }
-      node.click();
-      return document.querySelectorAll(".mapping-draft-item").length;
-    })()`),
+    importPendingMappings: async () => {
+      await runJavaScript(window, `(() => {
+        const node = document.getElementById("importPendingMappingBtn");
+        if (!node) {
+          throw new Error("importPendingMappingBtn missing");
+        }
+        node.click();
+        return true;
+      })()`);
+      return waitForCondition("pending mapping drafts", async () => {
+        const count = Number(await runJavaScript(window, `(() => {
+          return document.querySelectorAll(".mapping-draft-item").length;
+        })()`));
+        return count > 0
+          ? { done: true, value: count }
+          : { done: false };
+      }, { timeoutMs: 10000, intervalMs: 100, sleepFn });
+    },
     fillPendingMappingDrafts: async ({ groupName, sourceType }) => runJavaScript(window, `(() => {
+      const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      const setInputValue = descriptor && descriptor.set;
+      if (typeof setInputValue !== "function") {
+        throw new Error("input value setter unavailable");
+      }
       const drafts = [...document.querySelectorAll(".mapping-draft-item")];
       drafts.forEach((draft) => {
         const ruleKindNode = draft.querySelector('[data-draft-field="ruleKind"]');
@@ -655,7 +677,8 @@ function buildSmokeActions({
           return;
         }
         const ruleKind = String(ruleKindNode.value || "");
-        targetNode.value = ruleKind.endsWith("_group") ? ${JSON.stringify(groupName)} : ${JSON.stringify(sourceType)};
+        const nextValue = ruleKind.endsWith("_group") ? ${JSON.stringify(groupName)} : ${JSON.stringify(sourceType)};
+        setInputValue.call(targetNode, nextValue);
         targetNode.dispatchEvent(new Event("input", { bubbles: true }));
         targetNode.dispatchEvent(new Event("change", { bubbles: true }));
       });
@@ -820,6 +843,7 @@ module.exports = {
   runDesktopSmoke,
   runJavaScript,
   __internal: {
+    buildSmokeActions,
     EMBEDDED_SMOKE_SELECTOR_BRIDGE,
   },
 };

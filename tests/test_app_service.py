@@ -1100,8 +1100,7 @@ class AppServiceTest(unittest.TestCase):
             create=True,
         ):
             payload = self.service.launch_manual_import({"input_dir": import_root})
-
-        job = self._wait_for_job_status(str(payload["job_id"]))
+            job = self._wait_for_job_status(str(payload["job_id"]))
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["summary"]["failed_count"], 1)
 

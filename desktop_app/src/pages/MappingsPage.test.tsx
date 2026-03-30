@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MappingsPage from "./MappingsPage";
 import { PAGE_TEST_IDS } from "../testing/selectors";
@@ -116,6 +116,74 @@ describe("MappingsPage", () => {
           source_name: "华润",
           target_value: "央企",
           confirm_overwrite: true,
+        }),
+      );
+    });
+  });
+
+  it("accepts native-setter draft input updates before batch save", async () => {
+    listMappings.mockResolvedValue({
+      pending: [
+        {
+          record_id: "rec-script-1",
+          project_code: "P-SCRIPT-001",
+          payload: {
+            项目名称: "脚本项目",
+            转让方: "华润置地",
+            隶属集团: "华润",
+          },
+        },
+      ],
+      entries: [],
+    });
+    previewMapping.mockResolvedValue({
+      conflict: false,
+      mode: "update",
+      source_name: "华润",
+      target_value: "央企",
+      match_field: "group",
+      target_field: "source_type",
+    });
+    saveMapping.mockResolvedValue({
+      job_id: "job-script-1",
+      affected_count: 1,
+    });
+
+    render(<MappingsPage />);
+
+    await waitFor(() => {
+      expect(listMappings).toHaveBeenCalledTimes(1);
+    });
+
+    const importButton = document.getElementById("importPendingMappingBtn") as HTMLButtonElement;
+    expect(importButton).toBeTruthy();
+    await act(async () => {
+      importButton.click();
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('input[data-draft-field="targetValue"]')).toBeTruthy();
+    });
+    const targetInput = document.querySelector('input[data-draft-field="targetValue"]') as HTMLInputElement;
+    const setInputValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    expect(setInputValue).toBeTypeOf("function");
+    await act(async () => {
+      setInputValue?.call(targetInput, "央企");
+      targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+      targetInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const saveButton = document.getElementById("saveDraftMappingsBtn") as HTMLButtonElement;
+    expect(saveButton).toBeTruthy();
+    await act(async () => {
+      saveButton.click();
+    });
+
+    await waitFor(() => {
+      expect(saveMapping).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source_name: "华润",
+          target_value: "央企",
         }),
       );
     });
