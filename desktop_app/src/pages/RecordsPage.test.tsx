@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultScope, getSharedRecordsScope, setSharedRecordsScope } from "../features/records/scope";
 import RecordsPage from "./RecordsPage";
@@ -41,6 +41,8 @@ function buildRecordsPayload(overrides: Record<string, unknown> = {}) {
         status_label: "已录入",
         project_code: "P-001",
         project_name: "测试项目",
+        project_type: "equity_transfer",
+        exchange: "北交所",
         listing_date: "2026-03-01",
         archive_path: "/tmp/archive/P-001.xlsx",
         source_file: "/tmp/source/P-001.xlsx",
@@ -81,6 +83,10 @@ describe("RecordsPage", () => {
     };
   });
 
+  function getRecordsDetailPanel() {
+    return screen.getByRole("heading", { name: "记录详情" }).closest("aside") as HTMLElement;
+  }
+
   it("renders records root selector, filters, summary and table", async () => {
     render(<RecordsPage />);
 
@@ -105,8 +111,14 @@ describe("RecordsPage", () => {
       );
     });
 
-    expect(await screen.findByText("测试项目")).toBeInTheDocument();
-    expect(screen.getAllByText("已录入").length).toBeGreaterThan(0);
+    expect(await within(screen.getByTestId(PAGE_TEST_IDS.records.table)).findByText("测试项目")).toBeInTheDocument();
+    expect(screen.getAllByText("已就绪").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "记录详情" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开文件" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "在文件夹中显示" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "实物资产" })).toHaveValue("physical_asset");
+    expect(screen.getByRole("option", { name: "预披露" })).toHaveValue("pre_disclosure");
+    expect(screen.queryByRole("option", { name: "资产转让" })).not.toBeInTheDocument();
   });
 
   it("submits filter scope via listRecords", async () => {
@@ -119,7 +131,7 @@ describe("RecordsPage", () => {
       target: { value: "pending_mapping" },
     });
     fireEvent.change(document.getElementById("recordsProjectTypeFilter") as HTMLSelectElement, {
-      target: { value: "equity_transfer" },
+      target: { value: "physical_asset" },
     });
     fireEvent.change(document.getElementById("recordsKeywordInput") as HTMLInputElement, {
       target: { value: "国资" },
@@ -140,7 +152,7 @@ describe("RecordsPage", () => {
       expect(listRecords).toHaveBeenCalledWith(
         expect.objectContaining({
           state: "pending_mapping",
-          projectType: "equity_transfer",
+          projectType: "physical_asset",
           keyword: "国资",
           dateFrom: "2026-03-01",
           dateTo: "2026-03-02",
@@ -160,10 +172,12 @@ describe("RecordsPage", () => {
         rows: [
           {
             record_id: "rec-2",
-            state: "pending_mapping",
-            status_label: "待补映射",
+            state: "parse_failed",
+            status_label: "解析失败",
             project_code: "P-002",
             project_name: "第二个项目",
+            project_type: "physical_asset",
+            exchange: "北交所",
             listing_date: "2026-03-03",
             source_file: "/tmp/source/P-002.xlsx",
             updated_at: "2026-03-03 10:00:00",
@@ -180,7 +194,53 @@ describe("RecordsPage", () => {
     await waitFor(() => {
       expect(listRecords).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
     });
-    expect(await screen.findByText("第二个项目")).toBeInTheDocument();
+    expect(await within(screen.getByTestId(PAGE_TEST_IDS.records.table)).findByText("第二个项目")).toBeInTheDocument();
+    expect(within(screen.getByTestId(PAGE_TEST_IDS.records.table)).getByText("需人工处理")).toBeInTheDocument();
+    expect(screen.queryByText("解析失败")).not.toBeInTheDocument();
+  });
+
+  it("uses row selection to drive the detail panel", async () => {
+    listRecords.mockResolvedValueOnce(
+      buildRecordsPayload({
+        rows: [
+          {
+            record_id: "rec-1",
+            state: "ready",
+            status_label: "已录入",
+            project_code: "P-001",
+            project_name: "第一个项目",
+            project_type: "equity_transfer",
+            exchange: "北交所",
+            archive_path: "/tmp/archive/P-001.xlsx",
+            updated_at: "2026-03-01 10:00:00",
+          },
+          {
+            record_id: "rec-2",
+            state: "pending_mapping",
+            status_label: "待补映射",
+            project_code: "P-002",
+            project_name: "第二个项目",
+            project_type: "pre_disclosure",
+            exchange: "上交所",
+            source_file: "/tmp/source/P-002.xlsx",
+            updated_at: "2026-03-02 10:00:00",
+          },
+        ],
+      }),
+    );
+
+    render(<RecordsPage />);
+
+    const detailPanel = getRecordsDetailPanel();
+
+    expect(await within(screen.getByTestId(PAGE_TEST_IDS.records.table)).findByText("第一个项目")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("第一个项目")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("P-001")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("第二个项目").closest("tr") as HTMLTableRowElement);
+
+    expect(within(detailPanel).getByText("P-002")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("预披露")).toBeInTheDocument();
   });
 
   it("runs export as a first-class action using active records scope", async () => {
@@ -313,7 +373,7 @@ describe("RecordsPage", () => {
         ],
       }),
     );
-    expect(await screen.findByText("新 scope 结果")).toBeInTheDocument();
+    expect(await within(screen.getByTestId(PAGE_TEST_IDS.records.table)).findByText("新 scope 结果")).toBeInTheDocument();
 
     first.resolve(
       buildRecordsPayload({
@@ -332,7 +392,7 @@ describe("RecordsPage", () => {
 
     await waitFor(() => {
       expect(screen.queryByText("旧 scope 结果")).not.toBeInTheDocument();
-      expect(screen.getByText("新 scope 结果")).toBeInTheDocument();
+      expect(within(screen.getByTestId(PAGE_TEST_IDS.records.table)).getByText("新 scope 结果")).toBeInTheDocument();
     });
   });
 

@@ -18,7 +18,9 @@ import {
   type ExportViewState,
 } from "../features/records/exportState";
 import { formatRecordsSummary } from "../features/records/summary";
-import { resolveLocateTarget, statusText, type RecordsRow } from "../features/records/table";
+import { RecordDetailPanel } from "../features/records/RecordDetailPanel";
+import { RecordStatusTag } from "../features/records/RecordStatusTag";
+import { resolveLocateTarget, resolveOpenFileTarget, type RecordsRow } from "../features/records/table";
 
 type RecordsPayload = {
   page?: number;
@@ -39,6 +41,10 @@ function toRecordsRows(value: unknown): RecordsRow[] {
   return Array.isArray(value) ? (value as RecordsRow[]) : [];
 }
 
+function recordKey(record: RecordsRow) {
+  return String(record.record_id || `${record.project_code || ""}-${record.updated_at || ""}`);
+}
+
 type RecordsLoadState =
   | { kind: "idle" }
   | { kind: "loading"; requestId: number }
@@ -53,12 +59,17 @@ export default function RecordsPage() {
   const [payload, setPayload] = useState<RecordsPayload>({ rows: [] });
   const [loadState, setLoadState] = useState<RecordsLoadState>({ kind: "idle" });
   const [exportState, setExportState] = useState<ExportViewState>({ kind: "idle" });
+  const [selectedRecordId, setSelectedRecordId] = useState("");
   const requestSequenceRef = useRef(0);
 
   const rows = useMemo(() => toRecordsRows(payload.rows), [payload.rows]);
   const currentPage = Number(payload.page || activeScope.page || 1);
   const pageCount = Number(payload.page_count || payload.summary?.page_count || 0);
   const hasMore = Boolean(payload.has_more);
+  const selectedRow = useMemo(
+    () => rows.find((record) => recordKey(record) === selectedRecordId) || null,
+    [rows, selectedRecordId],
+  );
 
   const loadRecords = useCallback(async (scope: RecordsScope) => {
     const requestId = requestSequenceRef.current + 1;
@@ -92,6 +103,19 @@ export default function RecordsPage() {
   useEffect(() => {
     setDraftScope(activeScope);
   }, [activeScope]);
+
+  useEffect(() => {
+    if (!rows.length) {
+      setSelectedRecordId("");
+      return;
+    }
+    setSelectedRecordId((current) => {
+      if (current && rows.some((record) => recordKey(record) === current)) {
+        return current;
+      }
+      return recordKey(rows[0]);
+    });
+  }, [rows]);
 
   const applyFilters = () => {
     const nextScope = withFirstPage(draftScope);
@@ -129,158 +153,207 @@ export default function RecordsPage() {
 
   return (
     <div data-testid={PAGE_TEST_IDS.records.page}>
-      <section data-testid={PAGE_TEST_IDS.records.filters}>
-        <label htmlFor="recordsStateFilter">状态</label>
-        <select
-          id="recordsStateFilter"
-          value={draftScope.state}
-          onChange={(event) => {
-            setDraftScope((prev) => ({ ...prev, state: event.target.value }));
-          }}
-        >
-          {RECORD_STATE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
+      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "minmax(0, 2fr) minmax(320px, 1fr)", alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 16 }}>
+          <section
+            data-testid={PAGE_TEST_IDS.records.filters}
+            style={{
+              display: "grid",
+              gap: 12,
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+              alignItems: "end",
+              padding: 16,
+              border: "1px solid #d1d5db",
+              borderRadius: 12,
+              background: "#ffffff",
+            }}
+          >
+            <div style={{ display: "grid", gap: 4 }}>
+              <label htmlFor="recordsStateFilter">状态</label>
+              <select
+                id="recordsStateFilter"
+                value={draftScope.state}
+                onChange={(event) => {
+                  setDraftScope((prev) => ({ ...prev, state: event.target.value }));
+                }}
+              >
+                {RECORD_STATE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
 
-        <label htmlFor="recordsProjectTypeFilter">项目类型</label>
-        <select
-          id="recordsProjectTypeFilter"
-          value={draftScope.projectType}
-          onChange={(event) => {
-            setDraftScope((prev) => ({ ...prev, projectType: event.target.value }));
-          }}
-        >
-          {PROJECT_TYPE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
+            <div style={{ display: "grid", gap: 4 }}>
+              <label htmlFor="recordsProjectTypeFilter">项目类型</label>
+              <select
+                id="recordsProjectTypeFilter"
+                value={draftScope.projectType}
+                onChange={(event) => {
+                  setDraftScope((prev) => ({ ...prev, projectType: event.target.value }));
+                }}
+              >
+                {PROJECT_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
 
-        <label htmlFor="recordsKeywordInput">关键词</label>
-        <input
-          id="recordsKeywordInput"
-          value={draftScope.keyword}
-          onChange={(event) => {
-            setDraftScope((prev) => ({ ...prev, keyword: event.target.value }));
-          }}
-        />
+            <div style={{ display: "grid", gap: 4 }}>
+              <label htmlFor="recordsKeywordInput">关键词</label>
+              <input
+                id="recordsKeywordInput"
+                value={draftScope.keyword}
+                onChange={(event) => {
+                  setDraftScope((prev) => ({ ...prev, keyword: event.target.value }));
+                }}
+              />
+            </div>
 
-        <label htmlFor="recordsDateFromInput">开始日期</label>
-        <input
-          id="recordsDateFromInput"
-          type="date"
-          value={draftScope.dateFrom}
-          onChange={(event) => {
-            setDraftScope((prev) => ({ ...prev, dateFrom: event.target.value }));
-          }}
-        />
+            <div style={{ display: "grid", gap: 4 }}>
+              <label htmlFor="recordsDateFromInput">开始日期</label>
+              <input
+                id="recordsDateFromInput"
+                type="date"
+                value={draftScope.dateFrom}
+                onChange={(event) => {
+                  setDraftScope((prev) => ({ ...prev, dateFrom: event.target.value }));
+                }}
+              />
+            </div>
 
-        <label htmlFor="recordsDateToInput">结束日期</label>
-        <input
-          id="recordsDateToInput"
-          type="date"
-          value={draftScope.dateTo}
-          onChange={(event) => {
-            setDraftScope((prev) => ({ ...prev, dateTo: event.target.value }));
-          }}
-        />
+            <div style={{ display: "grid", gap: 4 }}>
+              <label htmlFor="recordsDateToInput">结束日期</label>
+              <input
+                id="recordsDateToInput"
+                type="date"
+                value={draftScope.dateTo}
+                onChange={(event) => {
+                  setDraftScope((prev) => ({ ...prev, dateTo: event.target.value }));
+                }}
+              />
+            </div>
 
-        <label htmlFor="recordsPageSizeSelect">每页</label>
-        <select
-          id="recordsPageSizeSelect"
-          aria-label="每页"
-          value={String(draftScope.pageSize)}
-          onChange={(event) => {
-            setDraftScope((prev) => withFirstPage({ ...prev, pageSize: Number(event.target.value || prev.pageSize) }));
-          }}
-        >
-          {PAGE_SIZE_OPTIONS.map((size) => (
-            <option key={size} value={size}>{size}</option>
-          ))}
-        </select>
+            <div style={{ display: "grid", gap: 4 }}>
+              <label htmlFor="recordsPageSizeSelect">每页</label>
+              <select
+                id="recordsPageSizeSelect"
+                aria-label="每页"
+                value={String(draftScope.pageSize)}
+                onChange={(event) => {
+                  setDraftScope((prev) => withFirstPage({ ...prev, pageSize: Number(event.target.value || prev.pageSize) }));
+                }}
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </div>
 
-        <button type="button" onClick={applyFilters}>查询</button>
-        <button type="button" disabled={exportState.kind === "loading"} onClick={() => { void exportRecords(); }}>
-          导出 Excel
-        </button>
-      </section>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" onClick={applyFilters}>查询</button>
+              <button type="button" disabled={exportState.kind === "loading"} onClick={() => { void exportRecords(); }}>
+                导出 Excel
+              </button>
+            </div>
+          </section>
 
-      <section data-testid={PAGE_TEST_IDS.records.summary}>
-        <p>{formatRecordsSummary(payload) || "暂无记录摘要"}</p>
-        {exportState.kind !== "idle" && exportState.kind !== "failed" ? <p role="status">{exportStateText}</p> : null}
-        {exportState.kind === "failed" ? <p role="alert">{exportStateText}</p> : null}
-      </section>
+          <section
+            data-testid={PAGE_TEST_IDS.records.summary}
+            style={{ padding: 16, border: "1px solid #d1d5db", borderRadius: 12, background: "#ffffff" }}
+          >
+            <p style={{ marginTop: 0 }}>{formatRecordsSummary(payload) || "暂无记录摘要"}</p>
+            {exportState.kind !== "idle" && exportState.kind !== "failed" ? <p role="status">{exportStateText}</p> : null}
+            {exportState.kind === "failed" ? <p role="alert">{exportStateText}</p> : null}
+          </section>
 
-      {loadError ? <p role="alert">记录加载失败：{loadError}</p> : null}
+          {loadError ? <p role="alert">记录加载失败：{loadError}</p> : null}
 
-      <section data-testid={PAGE_TEST_IDS.records.table}>
-        {loading ? <p>加载中…</p> : null}
-        {hasRows ? (
-          <table>
-            <thead>
-              <tr>
-                <th>录入状态</th>
-                <th>项目编号</th>
-                <th>项目名称</th>
-                <th>挂牌日期</th>
-                <th>最近更新</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((record) => {
-                const key = String(record.record_id || `${record.project_code || ""}-${record.updated_at || ""}`);
-                const archivePath = String(record.archive_path || "").trim();
-                const locateTarget = resolveLocateTarget(record);
-                return (
-                  <tr key={key}>
-                    <td>
-                      {statusText(record)}
-                      {record.status_detail ? <div>{record.status_detail}</div> : null}
-                    </td>
-                    <td>{record.project_code || ""}</td>
-                    <td>{record.project_name || ""}</td>
-                    <td>{record.listing_date || ""}</td>
-                    <td>{record.updated_at || ""}</td>
-                    <td>
-                      <button
-                        type="button"
-                        disabled={!archivePath}
-                        onClick={() => {
-                          void window.peapDesktop?.openPath?.(archivePath);
-                        }}
-                      >
-                        打开归档
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!locateTarget}
-                        onClick={() => {
-                          void window.peapDesktop?.showItemInFolder?.(locateTarget);
-                        }}
-                      >
-                        定位文件
-                      </button>
-                    </td>
+          <section
+            data-testid={PAGE_TEST_IDS.records.table}
+            style={{ padding: 16, border: "1px solid #d1d5db", borderRadius: 12, background: "#ffffff", display: "grid", gap: 12 }}
+          >
+            {loading ? <p>加载中…</p> : null}
+            {hasRows ? (
+              <table>
+                <thead>
+                  <tr>
+                    <th>当前状态</th>
+                    <th>项目编号</th>
+                    <th>项目名称</th>
+                    <th>挂牌日期</th>
+                    <th>最近更新</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : (
-          isEmpty ? <p>当前筛选条件下没有记录</p> : null
-        )}
+                </thead>
+                <tbody>
+                  {rows.map((record) => {
+                    const key = recordKey(record);
+                    const selected = key === selectedRecordId;
+                    return (
+                      <tr
+                        key={key}
+                        onClick={() => {
+                          setSelectedRecordId(key);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedRecordId(key);
+                          }
+                        }}
+                        aria-selected={selected}
+                        tabIndex={0}
+                        style={{
+                          cursor: "pointer",
+                          background: selected ? "#eef6ff" : "transparent",
+                          outline: "none",
+                        }}
+                      >
+                        <td><RecordStatusTag row={record} /></td>
+                        <td>{record.project_code || ""}</td>
+                        <td>{record.project_name || ""}</td>
+                        <td>{record.listing_date || ""}</td>
+                        <td>{record.updated_at || ""}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              isEmpty ? <p>当前筛选条件下没有记录</p> : null
+            )}
 
-        <button type="button" onClick={() => changePage(currentPage - 1)} disabled={loading || currentPage <= 1}>
-          上一页
-        </button>
-        <span>
-          第 {currentPage} 页{pageCount > 0 ? ` / ${pageCount} 页` : ""}
-        </span>
-        <button type="button" onClick={() => changePage(currentPage + 1)} disabled={loading || !hasMore}>
-          下一页
-        </button>
-      </section>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <button type="button" onClick={() => changePage(currentPage - 1)} disabled={loading || currentPage <= 1}>
+                上一页
+              </button>
+              <span>
+                第 {currentPage} 页{pageCount > 0 ? ` / ${pageCount} 页` : ""}
+              </span>
+              <button type="button" onClick={() => changePage(currentPage + 1)} disabled={loading || !hasMore}>
+                下一页
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <RecordDetailPanel
+          row={selectedRow}
+          onOpenFile={() => {
+            const target = selectedRow ? resolveOpenFileTarget(selectedRow) : "";
+            if (!target) {
+              return;
+            }
+            return window.peapDesktop?.openPath?.(target);
+          }}
+          onRevealInFolder={() => {
+            const target = selectedRow ? resolveLocateTarget(selectedRow) : "";
+            if (!target) {
+              return;
+            }
+            return window.peapDesktop?.showItemInFolder?.(target);
+          }}
+        />
+      </div>
     </div>
   );
 }

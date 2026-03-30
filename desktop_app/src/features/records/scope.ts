@@ -5,20 +5,20 @@ export type RecordsScope = Required<RecordScope>;
 
 export const RECORD_STATE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "all", label: "全部状态" },
-  { value: "ready", label: "已录入" },
+  { value: "ready", label: "已就绪" },
   { value: "pending_mapping", label: "待补映射" },
   { value: "skipped", label: "已跳过" },
-  { value: "parse_failed", label: "解析失败" },
-  { value: "postprocess_failed", label: "处理失败" },
-  { value: "conflict", label: "归档重名" },
+  { value: "parse_failed", label: "需人工处理（内容解析）" },
+  { value: "postprocess_failed", label: "需人工处理（后处理）" },
+  { value: "conflict", label: "需人工处理（归档重名）" },
 ];
 
 export const PROJECT_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "all", label: "全部类型" },
   { value: "equity_transfer", label: "股权转让" },
-  { value: "asset_transfer", label: "资产转让" },
+  { value: "physical_asset", label: "实物资产" },
   { value: "capital_increase", label: "增资扩股" },
-  { value: "other", label: "其他" },
+  { value: "pre_disclosure", label: "预披露" },
 ];
 
 export const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;

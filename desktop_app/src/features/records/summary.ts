@@ -3,6 +3,10 @@ function countValue(value: unknown) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function sumCounts(stateCounts: Record<string, unknown>, keys: string[]) {
+  return keys.reduce((total, key) => total + countValue(stateCounts[key]), 0);
+}
+
 type RecordsSummaryPayload = {
   total_count?: number;
   page?: number;
@@ -20,17 +24,19 @@ type RecordsSummaryPayload = {
 export function formatRecordsSummary(payload: RecordsSummaryPayload = {}) {
   const summary = payload.summary || {};
   const stateCounts = summary.filtered_state_counts || summary.state_counts || {};
+  const readyCount = sumCounts(stateCounts, ["ready"]);
+  const pendingMappingCount = sumCounts(stateCounts, ["pending_mapping", "mapping_conflict"]);
+  const skippedCount = sumCounts(stateCounts, ["skipped"]);
+  const attentionCount = sumCounts(stateCounts, ["parse_failed", "postprocess_failed", "conflict"]);
 
   return [
     `共 ${countValue(summary.total_count ?? payload.total_count)} 条`,
     `第 ${countValue(payload.page || summary.page || 1)} / ${countValue(payload.page_count || summary.page_count || 0)} 页`,
     `本页 ${countValue(summary.visible_count)} 条`,
-    countValue(stateCounts.ready) > 0 ? `已录入 ${countValue(stateCounts.ready)} 条` : "",
-    countValue(stateCounts.pending_mapping) > 0 ? `待补映射 ${countValue(stateCounts.pending_mapping)} 条` : "",
-    countValue(stateCounts.skipped) > 0 ? `已跳过 ${countValue(stateCounts.skipped)} 条` : "",
-    countValue(stateCounts.parse_failed) > 0 ? `解析失败 ${countValue(stateCounts.parse_failed)} 条` : "",
-    countValue(stateCounts.postprocess_failed) > 0 ? `处理失败 ${countValue(stateCounts.postprocess_failed)} 条` : "",
-    countValue(stateCounts.conflict) > 0 ? `归档重名 ${countValue(stateCounts.conflict)} 条` : "",
+    readyCount > 0 ? `已就绪 ${readyCount} 条` : "",
+    pendingMappingCount > 0 ? `待补映射 ${pendingMappingCount} 条` : "",
+    skippedCount > 0 ? `已跳过 ${skippedCount} 条` : "",
+    attentionCount > 0 ? `需人工处理 ${attentionCount} 条` : "",
   ]
     .filter(Boolean)
     .join(" · ");
