@@ -77,6 +77,52 @@ export function formatMappingConflictSummary(preview: Record<string, any> = {}) 
   ].filter(Boolean).join(" ");
 }
 
+export function formatBatchMappingSaveSummary(result: {
+  savedCount: number;
+  refreshJobs: Record<string, any>[];
+  skippedOverwriteCount: number;
+  failedCount: number;
+  failureMessages: string[];
+}) {
+  const affectedCount = (result.refreshJobs || []).reduce((sum, item) => sum + Number(item.affected_count || 0), 0);
+  const parts = [`已保存 ${result.savedCount} 条规则`];
+  if ((result.refreshJobs || []).length) {
+    parts.push(`启动 ${result.refreshJobs.length} 个映射回刷任务`);
+  }
+  if (affectedCount) {
+    parts.push(`共影响 ${affectedCount} 条记录`);
+  }
+  if (result.skippedOverwriteCount) {
+    parts.push(`跳过 ${result.skippedOverwriteCount} 条未确认覆盖规则`);
+  }
+  if (result.failedCount) {
+    const failureHint = result.failureMessages[0] ? `首个失败：${result.failureMessages[0]}` : "";
+    parts.push(`另有 ${result.failedCount} 条保存失败${failureHint ? `，${failureHint}` : ""}`);
+  }
+  return parts.join("，");
+}
+
+export function formatSingleMappingSaveSummary(payload: Record<string, any>, preview: Record<string, any> | null | undefined, capacityNotice: string) {
+  const actionLabel = preview?.mode === "overwrite"
+    ? "映射规则已覆盖"
+    : preview?.mode === "update"
+      ? "映射规则已更新"
+      : "映射规则已保存";
+  if (payload?.job_id) {
+    return `${actionLabel}，已启动映射回刷任务：${payload.job_id}，影响 ${Number(payload.affected_count || 0)} 条记录${capacityNotice ? `。${capacityNotice}` : ""}`;
+  }
+  return `${actionLabel}，当前没有匹配到需要回刷的记录`;
+}
+
+export function formatPendingReprocessSummary(payload: Record<string, any>, capacityNotice: string) {
+  if (!payload?.job_id) {
+    return "当前没有待补映射需要重处理";
+  }
+  return capacityNotice
+    ? `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录。${capacityNotice}`
+    : `已启动待补映射批量重处理：${payload.job_id}，共 ${Number(payload.affected_count || 0)} 条记录`;
+}
+
 export async function runMappingUpsertFlow({
   draft,
   mappingRuleConfig,

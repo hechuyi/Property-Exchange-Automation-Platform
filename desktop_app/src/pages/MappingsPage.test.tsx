@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MappingsPage from "./MappingsPage";
 import { PAGE_TEST_IDS } from "../testing/selectors";
@@ -45,6 +45,12 @@ describe("MappingsPage", () => {
     expect(screen.getByTestId(PAGE_TEST_IDS.mappings.pendingList)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.mappings.editor)).toBeInTheDocument();
     expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toBeInTheDocument();
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.pendingList)).toHaveAttribute("data-layout-region", "queue");
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.editor)).toHaveAttribute("data-layout-region", "editor");
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.pendingList).closest('[data-layout="remediation-workspace"]')).toBeTruthy();
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.editor).closest('[data-layout="remediation-workspace"]')).toBeTruthy();
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.editor)).toContainElement(screen.getByTestId(PAGE_TEST_IDS.mappings.preview));
+    expect(screen.getByText("已保存规则").closest('[data-layout="remediation-workspace"]')).toBeFalsy();
   });
 
   it("imports pending draft then handles conflict-confirmed save", async () => {
@@ -84,7 +90,11 @@ describe("MappingsPage", () => {
       expect(listMappings).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "导入到草稿" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入到编辑器" }));
+
+    const editor = screen.getByTestId(PAGE_TEST_IDS.mappings.editor);
+    expect(within(editor).getByText("测试项目")).toBeInTheDocument();
+    expect(within(editor).getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("已导入 1 条待补项");
 
     const targetInput = document.querySelector('input[data-draft-field="targetValue"]') as HTMLInputElement;
     expect(targetInput).toBeTruthy();
@@ -230,7 +240,7 @@ describe("MappingsPage", () => {
       expect(listMappings).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "导入到草稿" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入到编辑器" }));
     const targetInput = document.querySelector('input[data-draft-field="targetValue"]') as HTMLInputElement;
     fireEvent.change(targetInput, { target: { value: "央企" } });
 
