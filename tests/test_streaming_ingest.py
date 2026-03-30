@@ -170,6 +170,46 @@ class StreamingIngestRunnerTest(unittest.TestCase):
         pending = self.store.iter_latest_records(states=["pending_mapping"])
         self.assertEqual(len(pending), 1)
 
+    def test_ingest_filter_rule_short_circuits_to_skipped_without_mapping_analysis(self) -> None:
+        def fake_parser(file_path: str):
+            return {
+                "项目编号": "G32025SH1000888",
+                "项目名称": "报废设备处置",
+                "项目类型": "实物资产",
+                "交易所": "shanghai",
+                "挂牌开始日期": "2026-03-21",
+                "转让方": "上海电气集团恒联企业发展有限公司",
+            }
+
+        runner = StreamingIngestRunner(
+            store=self.store,
+            archive_root=self.archive_root,
+            rules_config={
+                "R010_filter_scrap_physical_asset": {
+                    "enabled": True,
+                    "params": {
+                        "active": True,
+                        "physical_asset_markers": ["实物资产"],
+                        "scrap_keywords": ["报废"],
+                    },
+                }
+            },
+            dependencies=StreamingIngestDependencies(
+                parser=fake_parser,
+            ),
+        )
+
+        result = runner.ingest(ItemSavedPayload(source_file=self.html_path, exchange="shanghai"))
+
+        self.assertEqual(result["state"], "skipped")
+        finding_types = {str(item.get("type") or "") for item in result["findings"]}
+        self.assertIn("rule_filtered", finding_types)
+        self.assertIn("scrap_physical_asset_filtered", finding_types)
+        self.assertNotIn("mapping_missing", finding_types)
+        self.assertNotIn("project_type_unknown", finding_types)
+        self.assertEqual(self.store.iter_latest_records(states=["skipped"])[0]["state"], "skipped")
+        self.assertEqual(self.store.iter_latest_records(states=["pending_mapping"]), [])
+
     def test_ingest_record_missing_source_type_still_becomes_pending_mapping(self) -> None:
         def fake_parser(file_path: str):
             return {

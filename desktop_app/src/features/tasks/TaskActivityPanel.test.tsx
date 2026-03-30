@@ -44,6 +44,14 @@ describe("TaskActivityPanel", () => {
     expect(within(panel).getByText(/进行中 · P-1/)).toBeInTheDocument();
     expect(within(panel).getByText(/只显示前 2 条事件/)).toBeInTheDocument();
     expect(within(panel).getByText(/手动导入需人工处理，请在工作台查看任务活动。/)).toBeInTheDocument();
+    expect(within(panel).getByTestId("task-activity-job-scroll")).toHaveStyle({
+      maxHeight: "240px",
+      overflowY: "auto",
+    });
+    expect(within(panel).getByTestId("task-activity-event-scroll")).toHaveStyle({
+      maxHeight: "320px",
+      overflowY: "auto",
+    });
 
     fireEvent.click(screen.getByRole("button", { name: /手动导入解析 · 需人工处理/ }));
     expect(onSelectJob).toHaveBeenCalledWith("job-2");

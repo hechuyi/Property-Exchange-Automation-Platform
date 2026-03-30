@@ -380,13 +380,13 @@ class DownloadOneClickTest(unittest.TestCase):
         self.assertEqual(final_event["error_message"], "tpre: collect-failed: upstream 500")
         self.assertEqual(final_event["errors"], ["tpre: collect-failed: upstream 500"])
 
-    def test_run_download_oneclick_classifies_sse_list_api_404_as_structured_failure(self) -> None:
+    def test_run_download_oneclick_classifies_collect_failure_generically(self) -> None:
         task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
         stage_events: list[dict[str, object]] = []
         raw_error = (
-            "list-ZICHANZHUANRANG-2-page-1-request-failed: "
-            "POST https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew "
-            "failed: HTTP Error 404: Not Found"
+            "list-realright-page-1-request-failed: "
+            "POST https://www.suaee.com/si/prjs/realright/list "
+            "failed: HTTP Error 502: Bad Gateway"
         )
 
         def fake_prepare_download_session(request, *, logger, config_obj):
@@ -422,10 +422,8 @@ class DownloadOneClickTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 1)
         final_event = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"][-1]
         self.assertEqual(final_event["status"], "failed")
-        self.assertEqual(final_event["error_code"], "sse_list_api_not_found")
-        self.assertEqual(final_event["error_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
-        self.assertEqual(final_event["error_details"]["exchange"], "sse")
-        self.assertEqual(final_event["error_details"]["stage"], "prepare_tasks")
+        self.assertEqual(final_event["error_code"], "collect_failed")
+        self.assertEqual(final_event["error_message"], raw_error)
         self.assertEqual(final_event["errors"], [raw_error])
 
     def test_run_download_oneclick_emits_single_terminal_prepare_failure_event(self) -> None:
@@ -472,9 +470,9 @@ class DownloadOneClickTest(unittest.TestCase):
         task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
         stage_events: list[dict[str, object]] = []
         raw_error = (
-            "list-ZICHANZHUANRANG-2-page-1-request-failed: "
-            "POST https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew "
-            "failed: HTTP Error 404: Not Found"
+            "list-realright-page-1-request-failed: "
+            "POST https://www.suaee.com/si/prjs/realright/list "
+            "failed: HTTP Error 502: Bad Gateway"
         )
 
         def fake_prepare_download_session(request, *, logger, config_obj):

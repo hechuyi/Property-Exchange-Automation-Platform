@@ -273,11 +273,10 @@ class StreamingDailyPipelineTest(unittest.TestCase):
                     "phase_code": "prepare_tasks",
                     "status": "failed",
                     "label": "正在扫描网页",
-                    "error_code": "sse_list_api_not_found",
-                    "error_details": {"exchange": "sse", "stage": "prepare_tasks"},
-                    "error_message": "上交所列表接口 queryAllNew 返回 404，当前扫描已中止",
-                    "errors": ["tpre: collect-failed: upstream 500"],
-                    "summary_payload": {"errors": ["tpre: collect-failed: upstream 500"]},
+                    "error_code": "collect_failed",
+                    "error_message": "list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway",
+                    "errors": ["list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway"],
+                    "summary_payload": {"errors": ["list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway"]},
                 }
             )
             return _FakeDownloadOneClickRunResult(
@@ -314,12 +313,18 @@ class StreamingDailyPipelineTest(unittest.TestCase):
         prepare_failed = next(
             event for event in events if event["stage"] == "prepare_tasks" and event["status"] == "failed"
         )
-        self.assertEqual(prepare_failed["error_type"], "sse_list_api_not_found")
-        self.assertEqual(prepare_failed["error_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
+        self.assertEqual(prepare_failed["error_type"], "collect_failed")
+        self.assertEqual(
+            prepare_failed["error_message"],
+            "list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway",
+        )
         job = store.get_job(result.job_id)
-        self.assertEqual(job["summary"]["failure_code"], "sse_list_api_not_found")
+        self.assertEqual(job["summary"]["failure_code"], "collect_failed")
         self.assertEqual(job["summary"]["failure_stage"], "prepare_tasks")
-        self.assertEqual(job["summary"]["failure_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
+        self.assertEqual(
+            job["summary"]["failure_message"],
+            "list-realright-page-1-request-failed: POST https://www.suaee.com/si/prjs/realright/list failed: HTTP Error 502: Bad Gateway",
+        )
 
     def test_streaming_pipeline_defaults_to_today_only(self) -> None:
         args = argparse.Namespace(

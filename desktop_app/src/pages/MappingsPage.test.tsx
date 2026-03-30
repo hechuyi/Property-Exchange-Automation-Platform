@@ -189,6 +189,114 @@ describe("MappingsPage", () => {
     });
   });
 
+  it("keeps distinct batch rules separate and reports both rule count and covered pending-item count", async () => {
+    listMappings.mockResolvedValue({
+      pending: [
+        {
+          record_id: "rec-distinct-1",
+          project_code: "P-DISTINCT-001",
+          payload: {
+            项目名称: "项目一",
+            转让方: "华润置地",
+            隶属集团: "华润",
+          },
+        },
+        {
+          record_id: "rec-distinct-2",
+          project_code: "P-DISTINCT-002",
+          payload: {
+            项目名称: "项目二",
+            转让方: "越秀地产",
+          },
+        },
+      ],
+      entries: [],
+    });
+    previewMapping.mockResolvedValue({
+      conflict: false,
+      mode: "update",
+    });
+    saveMapping
+      .mockResolvedValueOnce({ job_id: "job-distinct-1", affected_count: 2 })
+      .mockResolvedValueOnce({ job_id: "job-distinct-2", affected_count: 1 });
+
+    render(<MappingsPage />);
+
+    await waitFor(() => {
+      expect(listMappings).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "导入全部待补项" }));
+
+    const targetInputs = document.querySelectorAll('input[data-draft-field="targetValue"]');
+    expect(targetInputs).toHaveLength(2);
+    fireEvent.change(targetInputs[0] as HTMLInputElement, { target: { value: "央企" } });
+    fireEvent.change(targetInputs[1] as HTMLInputElement, { target: { value: "地方国企" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存已填写规则" }));
+
+    await waitFor(() => {
+      expect(saveMapping).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("已保存 2 条规则");
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("覆盖 2 条待补项");
+  });
+
+  it("collapses identical batch rules but still reports the full covered pending-item count", async () => {
+    listMappings.mockResolvedValue({
+      pending: [
+        {
+          record_id: "rec-same-1",
+          project_code: "P-SAME-001",
+          payload: {
+            项目名称: "项目甲",
+            转让方: "华润置地",
+            隶属集团: "华润",
+          },
+        },
+        {
+          record_id: "rec-same-2",
+          project_code: "P-SAME-002",
+          payload: {
+            项目名称: "项目乙",
+            转让方: "华润置地",
+            隶属集团: "华润",
+          },
+        },
+      ],
+      entries: [],
+    });
+    previewMapping.mockResolvedValue({
+      conflict: false,
+      mode: "update",
+    });
+    saveMapping.mockResolvedValue({
+      job_id: "job-same-1",
+      affected_count: 4,
+    });
+
+    render(<MappingsPage />);
+
+    await waitFor(() => {
+      expect(listMappings).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "导入全部待补项" }));
+
+    const targetInputs = document.querySelectorAll('input[data-draft-field="targetValue"]');
+    expect(targetInputs).toHaveLength(2);
+    fireEvent.change(targetInputs[0] as HTMLInputElement, { target: { value: "央企" } });
+    fireEvent.change(targetInputs[1] as HTMLInputElement, { target: { value: "央企" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存已填写规则" }));
+
+    await waitFor(() => {
+      expect(saveMapping).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("已保存 1 条规则");
+    expect(screen.getByTestId(PAGE_TEST_IDS.mappings.preview)).toHaveTextContent("覆盖 2 条待补项");
+  });
+
   it("filters saved entries and loads one rule into single editor with explicit lock boundary", async () => {
     listMappings.mockResolvedValue({
       pending: [],

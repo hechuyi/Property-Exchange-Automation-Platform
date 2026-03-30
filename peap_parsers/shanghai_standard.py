@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 """上海联合产权交易所标准页面解析器。"""
 
+import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import WebPageParser
@@ -11,11 +13,16 @@ from .base import WebPageParser
 class ShanghaiStandardParser(WebPageParser):
     """解析上海联交所标准 HTML 页面。"""
 
+    _OFFLINE_ARTIFACT_SCRIPT_ID = "peap-suaee-offline-artifact"
     _PROJECT_CODE_PATTERN = re.compile(r"\b([A-Z0-9]{2}\d{4}SH\d+(?:-\d+)?)\b", re.IGNORECASE)
     _METRIC_PLACEHOLDERS = {"", "-", "--", "—", "暂无"}
 
     def parse(self) -> Dict[str, Any]:
         self._is_capital_project = False
+        # Treat embedded/sidecar artifacts as supplemental offline context.
+        # Legacy rendered DOM may still carry richer fields than older sidecars
+        # or partial current artifacts, so keep parsing the page after seeding.
+        self._parse_offline_artifact()
         self._parse_project_header()
         self._parse_overview_blocks()
         self._parse_tables()
@@ -23,6 +30,102 @@ class ShanghaiStandardParser(WebPageParser):
         self._post_process_group_field()
         self.data["交易所"] = "上交所"
         return self.data
+
+    def _parse_offline_artifact(self) -> bool:
+        artifact = self._extract_offline_artifact()
+        if not artifact:
+            return False
+
+        list_row = artifact.get("list_row") if isinstance(artifact.get("list_row"), dict) else {}
+        detail_response = artifact.get("detail_response")
+        detail_payload = detail_response.get("data") if isinstance(detail_response, dict) else {}
+        if not isinstance(detail_payload, dict):
+            detail_payload = {}
+
+        project_code = str(
+            detail_payload.get("XMBH")
+            or detail_payload.get("xmbh")
+            or list_row.get("XMBH")
+            or list_row.get("xmbh")
+            or ""
+        ).strip().upper()
+        project_name = str(
+            detail_payload.get("XMMC")
+            or detail_payload.get("xmmc")
+            or list_row.get("XMMC")
+            or list_row.get("xmmc")
+            or ""
+        ).strip()
+        transferor = self._offline_transferor(detail_payload)
+        listing_start = self.clean_date(
+            str(
+                detail_payload.get("PLKSRQ")
+                or detail_payload.get("plksrq")
+                or list_row.get("PLKSRQ")
+                or list_row.get("plksrq")
+                or ""
+            ).strip()
+        )
+        listing_end = self.clean_date(
+            str(detail_payload.get("PLJSRQ") or detail_payload.get("pljsrq") or "").strip()
+        )
+
+        if project_code:
+            self.data["项目编号"] = project_code
+        if project_name:
+            self.data["项目名称"] = project_name
+        if transferor:
+            self.data["转让方"] = transferor
+        if listing_start:
+            self.data["挂牌开始日期"] = listing_start
+        if listing_end:
+            self.data["挂牌截止日期"] = listing_end
+        self.data.setdefault("项目类型", "实物资产")
+        return bool(self.data)
+
+    def _extract_offline_artifact(self) -> Dict[str, Any]:
+        script = self.soup.find("script", attrs={"id": self._OFFLINE_ARTIFACT_SCRIPT_ID})
+        if script is not None:
+            raw_text = script.get_text(strip=True)
+            if raw_text:
+                try:
+                    payload = json.loads(raw_text)
+                except Exception:
+                    payload = {}
+                if isinstance(payload, dict):
+                    return payload
+
+        source_file = self.source_file
+        if not source_file:
+            return {}
+        sidecar = Path(source_file).with_suffix(".json")
+        if not sidecar.exists():
+            return {}
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _offline_transferor(detail_payload: Dict[str, Any]) -> str:
+        direct = str(detail_payload.get("ZRFMC") or detail_payload.get("zrfmc") or "").strip()
+        if direct:
+            return direct
+        entries = detail_payload.get("ZRFXX")
+        if not isinstance(entries, list):
+            return ""
+        names = []
+        seen = set()
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("ZRFMC") or item.get("zrfmc") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return " ".join(names)
 
     def _parse_project_header(self) -> None:
         code_block = self.soup.find("div", class_="project_code")

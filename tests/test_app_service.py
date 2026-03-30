@@ -393,6 +393,54 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["status_label"], "待补映射")
         self.assertEqual(payload["rows"][0]["values"]["挂牌次数"], "四次挂牌")
 
+    def test_overview_normalizes_rule_filtered_ready_record_to_skipped(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "filtered.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>filtered</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-filtered",
+                revision_hash="hash-filtered",
+                project_code="G32025SH1000888",
+                project_name="报废设备处置",
+                project_type="实物资产",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "filtered.html"),
+                parser_payload={
+                    "项目编号": "G32025SH1000888",
+                    "项目名称": "报废设备处置",
+                    "项目类型": "实物资产",
+                    "转让方": "上海电气集团恒联企业发展有限公司",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000888",
+                    "项目名称": "报废设备处置",
+                    "转让方": "上海电气集团恒联企业发展有限公司",
+                },
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="rule_filtered",
+                        message="rule filtered record: R010_filter_scrap_physical_asset",
+                        evidence={"rule_id": "R010_filter_scrap_physical_asset"},
+                    )
+                ],
+            )
+        )
+
+        overview = self.service.overview()
+        record = self.service.store.get_record("rec-filtered")
+
+        self.assertEqual(overview["pending_mapping_count"], 0)
+        self.assertEqual(overview["record_state_counts"].get("skipped", 0), 1)
+        self.assertEqual(record["state"], "skipped")
+        self.assertTrue(all(str(item.get("type") or "") != "mapping_missing" for item in record["findings"]))
+        self.assertTrue(all(str(item.get("type") or "") != "project_type_unknown" for item in record["findings"]))
+
     def test_overview_reclassifies_legacy_conflict_record_back_to_ready(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "legacy-conflict.html")
         with open(source_file, "w", encoding="utf-8") as handle:

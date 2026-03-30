@@ -113,21 +113,10 @@ def _classify_collect_error(raw_errors: object) -> dict[str, Any]:
     message = _first_error_message(raw_errors)
     if not message:
         return {}
-    if (
-        "www.suaee.com" in message
-        and "queryAllNew" in message
-        and "HTTP Error 404" in message
-    ):
-        return {
-            "error_code": "sse_list_api_not_found",
-            "error_message": "上交所列表接口 queryAllNew 返回 404，当前扫描已中止",
-            "error_details": {
-                "exchange": "sse",
-                "stage": "prepare_tasks",
-                "upstream_url": "https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew",
-            },
-        }
-    return {"error_message": message}
+    return {
+        "error_code": "collect_failed",
+        "error_message": message,
+    }
 
 
 def _stage_error_message(summary_payload: dict[str, Any] | None) -> str:

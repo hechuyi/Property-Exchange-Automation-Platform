@@ -59,6 +59,7 @@ export default function RecordsPage() {
   const [payload, setPayload] = useState<RecordsPayload>({ rows: [] });
   const [loadState, setLoadState] = useState<RecordsLoadState>({ kind: "idle" });
   const [exportState, setExportState] = useState<ExportViewState>({ kind: "idle" });
+  const [pathActionError, setPathActionError] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const requestSequenceRef = useRef(0);
 
@@ -144,6 +145,31 @@ export default function RecordsPage() {
       setExportState(createExportFailureState((commandError as Error)?.message || String(commandError || "记录导出失败")));
     }
   }, [activeScope, commands]);
+
+  const runPathAction = useCallback(async ({
+    target,
+    actionLabel,
+    action,
+  }: {
+    target: string;
+    actionLabel: string;
+    action?: ((resolvedPath: string) => Promise<string | void> | string | void) | null;
+  }) => {
+    if (!target || !action) {
+      setPathActionError(`${actionLabel}失败：empty path`);
+      return;
+    }
+    setPathActionError("");
+    try {
+      const result = await action(target);
+      const errorText = String(result || "").trim();
+      if (errorText) {
+        setPathActionError(`${actionLabel}失败：${errorText}`);
+      }
+    } catch (error) {
+      setPathActionError(`${actionLabel}失败：${String((error as Error)?.message || error || "unknown error")}`);
+    }
+  }, []);
 
   const exportStateText = describeExportState(exportState);
   const loading = loadState.kind === "loading";
@@ -267,6 +293,7 @@ export default function RecordsPage() {
           </section>
 
           {loadError ? <p role="alert">记录加载失败：{loadError}</p> : null}
+          {pathActionError ? <p role="alert">{pathActionError}</p> : null}
 
           <section
             data-testid={PAGE_TEST_IDS.records.table}
@@ -340,17 +367,19 @@ export default function RecordsPage() {
           row={selectedRow}
           onOpenFile={() => {
             const target = selectedRow ? resolveOpenFileTarget(selectedRow) : "";
-            if (!target) {
-              return;
-            }
-            return window.peapDesktop?.openPath?.(target);
+            return runPathAction({
+              target,
+              actionLabel: "打开文件",
+              action: window.peapDesktop?.openPath,
+            });
           }}
           onRevealInFolder={() => {
             const target = selectedRow ? resolveLocateTarget(selectedRow) : "";
-            if (!target) {
-              return;
-            }
-            return window.peapDesktop?.showItemInFolder?.(target);
+            return runPathAction({
+              target,
+              actionLabel: "在文件夹中显示",
+              action: window.peapDesktop?.showItemInFolder,
+            });
           }}
         />
       </div>

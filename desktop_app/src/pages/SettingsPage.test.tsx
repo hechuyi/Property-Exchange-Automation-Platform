@@ -341,6 +341,58 @@ describe("SettingsPage", () => {
     expect(screen.getByText("设置已保存")).toBeInTheDocument();
   });
 
+  it("surfaces reveal-path failures instead of silently swallowing them", async () => {
+    showItemInFolder.mockResolvedValue("path does not exist");
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/settings/basic") && (!init || !init.method || init.method === "GET")) {
+        return {
+          ok: true,
+          json: async () => ({
+            default_exchange: "all",
+            default_project_type: "all",
+            default_concurrency: 1,
+            workspace_root: "/tmp/workspace",
+            archive_root: "/tmp/archive",
+            export_root: "/tmp/export",
+          }),
+        };
+      }
+      if (url.endsWith("/api/settings/advanced") && (!init || !init.method || init.method === "GET")) {
+        return {
+          ok: true,
+          json: async () => ({
+            postprocess_config: "/tmp/postprocess.yaml",
+            save_json: false,
+            streaming_db: "/tmp/app.db",
+          }),
+        };
+      }
+      if (url.endsWith("/api/runtime/dependencies") && (!init || !init.method || init.method === "GET")) {
+        return {
+          ok: true,
+          json: async () => ({
+            browser: { installed: true },
+            product_readiness: { download_ready: true },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ ok: true }),
+      };
+    });
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "工作目录 在系统中显示" }));
+
+    await waitFor(() => {
+      expect(showItemInFolder).toHaveBeenCalledWith("/tmp/workspace");
+    });
+    expect(await screen.findByText("在系统中显示失败：path does not exist")).toBeInTheDocument();
+  });
+
   it("enforces mutual exclusion between save/check/install runtime actions", async () => {
     let runtimeLoadCount = 0;
     let resolveRuntimeCheck: ((payload: any) => void) | null = null;

@@ -79,6 +79,7 @@ export function formatMappingConflictSummary(preview: Record<string, any> = {}) 
 
 export function formatBatchMappingSaveSummary(result: {
   savedCount: number;
+  coveredPendingCount: number;
   refreshJobs: Record<string, any>[];
   skippedOverwriteCount: number;
   failedCount: number;
@@ -86,6 +87,9 @@ export function formatBatchMappingSaveSummary(result: {
 }) {
   const affectedCount = (result.refreshJobs || []).reduce((sum, item) => sum + Number(item.affected_count || 0), 0);
   const parts = [`已保存 ${result.savedCount} 条规则`];
+  if (result.coveredPendingCount) {
+    parts.push(`覆盖 ${result.coveredPendingCount} 条待补项`);
+  }
   if ((result.refreshJobs || []).length) {
     parts.push(`启动 ${result.refreshJobs.length} 个映射回刷任务`);
   }
@@ -233,12 +237,13 @@ export async function runBatchMappingUpsertFlow({
     } catch (error) {
       failedCount += 1;
       const label = normalizeText(draft?.sourceName || draft?.project_name || draft?.project_code || "未命名规则");
-      failureMessages.push(`${label}：规则保存失败，请到任务页查看明细。`);
+      failureMessages.push(`${label}：规则保存失败，请在工作台查看任务活动。`);
     }
   }
 
   return {
     savedCount,
+    coveredPendingCount: savedRecordIds.size,
     skippedOverwriteCount,
     failedCount,
     refreshJobs,

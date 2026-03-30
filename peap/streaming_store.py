@@ -729,7 +729,7 @@ class StreamingStore:
 
     def normalize_required_mapping_states(self) -> Dict[str, int]:
         from .streaming_models import PostProcessFinding
-        from .streaming_postprocess import normalize_record_payload
+        from .streaming_postprocess import classify_record_state, normalize_record_payload
 
         updated_records = 0
         updated_findings = 0
@@ -776,18 +776,14 @@ class StreamingStore:
                     for item in raw_findings
                     if isinstance(item, dict)
                 ]
+                rule_filtered = any(str(item.type or "") == "rule_filtered" for item in findings)
                 normalized_payload, normalized_findings = normalize_record_payload(
                     parser_payload=parser_payload,
                     postprocess_payload=postprocess_payload,
                     findings=findings,
+                    suppress_mapping_findings=rule_filtered,
                 )
-                finding_types = {str(item.type or "") for item in normalized_findings}
-                if "mapping_conflict" in finding_types:
-                    new_state = "mapping_conflict"
-                elif {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"} & finding_types:
-                    new_state = "pending_mapping"
-                else:
-                    new_state = "ready"
+                new_state = classify_record_state(normalized_findings)
                 new_findings_json = _json_dumps([asdict(item) for item in normalized_findings])
                 new_payload_json = _json_dumps(normalized_payload)
 

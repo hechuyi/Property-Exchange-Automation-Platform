@@ -130,6 +130,21 @@ function consumeSmokePickDirectory() {
   };
 }
 
+function normalizeDesktopPath(targetPath) {
+  return String(targetPath || "").trim();
+}
+
+function validateDesktopPath(targetPath) {
+  const normalizedPath = normalizeDesktopPath(targetPath);
+  if (!normalizedPath) {
+    return { path: "", error: "empty path" };
+  }
+  if (!fs.existsSync(normalizedPath)) {
+    return { path: normalizedPath, error: "path does not exist" };
+  }
+  return { path: normalizedPath, error: "" };
+}
+
 function normalizeBackendStartupError(error) {
   const message = String((error && error.message) || error || "Desktop backend failed during startup");
   if (/did not become ready within \d+ms/i.test(message)) {
@@ -349,17 +364,27 @@ app.whenReady().then(async () => {
     apiToken: BACKEND_API_TOKEN,
   }));
   ipcMain.handle("peap:open-path", async (_event, targetPath) => {
-    if (!targetPath) {
-      return "empty path";
+    const validated = validateDesktopPath(targetPath);
+    if (validated.error) {
+      return validated.error;
     }
-    return shell.openPath(String(targetPath));
+    try {
+      return await shell.openPath(validated.path);
+    } catch (error) {
+      return String((error && error.message) || error || "open path failed");
+    }
   });
   ipcMain.handle("peap:show-item-in-folder", async (_event, targetPath) => {
-    if (!targetPath) {
-      return "empty path";
+    const validated = validateDesktopPath(targetPath);
+    if (validated.error) {
+      return validated.error;
     }
-    shell.showItemInFolder(String(targetPath));
-    return "";
+    try {
+      shell.showItemInFolder(validated.path);
+      return "";
+    } catch (error) {
+      return String((error && error.message) || error || "show item in folder failed");
+    }
   });
   ipcMain.handle("peap:pick-directory", async (_event, defaultPath) => {
     const smokeOverride = consumeSmokePickDirectory();

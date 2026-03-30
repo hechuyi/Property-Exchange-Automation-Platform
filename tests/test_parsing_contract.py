@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -578,6 +579,103 @@ class ParsingContractTest(unittest.TestCase):
             "上海松江交通投资运营集团有限公司(50%) 上海锦江汽车服务有限公司(50%)",
         )
         self.assertIn("多转让方未明确各转让方拟转让比例，请人工复核", parsed["备注"])
+
+    def test_parse_file_shanghai_uses_embedded_offline_artifact_without_legacy_dom(self) -> None:
+        artifact = {
+            "schema_version": 1,
+            "page_url": "https://www.suaee.com/xmzx.html#/zczrDetail?XMID=114211",
+            "list_row": {
+                "XMID": 114211,
+                "XMBH": "TR2025SH1000143-2",
+                "XMMC": "上海测试项目",
+                "PLKSRQ": "2026-03-10",
+            },
+            "detail_response": {
+                "code": 200,
+                "data": {
+                    "XMID": 114211,
+                    "XMBH": "TR2025SH1000143-2",
+                    "XMMC": "上海测试项目",
+                    "PLKSRQ": "2026-03-10",
+                    "PLJSRQ": "2026-03-20",
+                    "ZRFMC": "上海测试转让方",
+                },
+            },
+        }
+        html = f"""
+        <html>
+          <head>
+            <title>上海联合产权交易所</title>
+          </head>
+          <body>
+            <div id="app"></div>
+            <script id="peap-suaee-offline-artifact" type="application/json">{json.dumps(artifact, ensure_ascii=False)}</script>
+          </body>
+        </html>
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = os.path.join(temp_dir, "shanghai-offline-detail.html")
+            with open(fixture_path, "w", encoding="utf-8") as handle:
+                handle.write(html)
+
+            parsed = parse_file(fixture_path)
+
+        self.assertEqual(parsed.exchange, "shanghai")
+        self.assertEqual(parsed.project_code, "TR2025SH1000143-2")
+        self.assertEqual(parsed.project_name, "上海测试项目")
+        self.assertEqual(parsed.data["挂牌开始日期"], "2026/03/10")
+        self.assertEqual(parsed.data["挂牌截止日期"], "2026/03/20")
+        self.assertEqual(parsed.data["转让方"], "上海测试转让方")
+
+    def test_parse_file_shanghai_old_sidecar_does_not_suppress_richer_legacy_dom_fields(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>上海联合产权交易所</title>
+          </head>
+          <body>
+            <div class="project_code">项目编号：TR2025SH1000143-2</div>
+            <div class="project_xmmc">上海测试项目</div>
+            <div class="project_content">
+              <span>挂牌价格：</span>
+              <span>123.45 万元</span>
+            </div>
+            <div class="project_contact">受托机构联系人：张三</div>
+            <table>
+              <tr><td class="table_label">转让方名称</td><td>上海测试转让方</td></tr>
+            </table>
+          </body>
+        </html>
+        """
+        old_sidecar = {
+            "xmid": "114211",
+            "xmbh": "TR2025SH1000143-2",
+            "xmmc": "上海测试项目",
+            "page_url": "https://www.suaee.com/xmzx.html#/zczrDetail?XMID=114211",
+            "list_row": {
+                "XMID": 114211,
+                "XMBH": "TR2025SH1000143-2",
+                "XMMC": "上海测试项目",
+                "PLKSRQ": "2026-03-10",
+            },
+            "disclosure_start_date": "2026-03-10",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = os.path.join(temp_dir, "shanghai-legacy-sidecar.html")
+            with open(fixture_path, "w", encoding="utf-8") as handle:
+                handle.write(html)
+            with open(os.path.splitext(fixture_path)[0] + ".json", "w", encoding="utf-8") as handle:
+                json.dump(old_sidecar, handle, ensure_ascii=False)
+
+            parsed = parse_file(fixture_path)
+
+        self.assertEqual(parsed.exchange, "shanghai")
+        self.assertEqual(parsed.project_code, "TR2025SH1000143-2")
+        self.assertEqual(parsed.project_name, "上海测试项目")
+        self.assertEqual(parsed.data["挂牌开始日期"], "2026/03/10")
+        self.assertEqual(parsed.data["挂牌价格"], 123.45)
+        self.assertEqual(parsed.data["经办人"], "张三")
+        self.assertEqual(parsed.data["转让方"], "上海测试转让方")
 
 
 if __name__ == "__main__":

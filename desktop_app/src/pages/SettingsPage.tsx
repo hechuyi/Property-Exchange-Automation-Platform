@@ -182,12 +182,20 @@ export default function SettingsPage() {
     if (!targetPath || !window.peapDesktop) {
       return;
     }
-    if (locate && window.peapDesktop.showItemInFolder) {
-      await window.peapDesktop.showItemInFolder(targetPath);
-      return;
-    }
-    if (window.peapDesktop.openPath) {
-      await window.peapDesktop.openPath(targetPath);
+    try {
+      const result = locate && window.peapDesktop.showItemInFolder
+        ? await window.peapDesktop.showItemInFolder(targetPath)
+        : window.peapDesktop.openPath
+          ? await window.peapDesktop.openPath(targetPath)
+          : "";
+      const errorText = String(result || "").trim();
+      if (errorText) {
+        setErrorStatus(`${locate ? "在系统中显示" : "打开路径"}失败：${errorText}`);
+        return;
+      }
+      setStatusError("");
+    } catch (error) {
+      setErrorStatus(`${locate ? "在系统中显示" : "打开路径"}失败：${String((error as Error)?.message || error || "unknown error")}`);
     }
   };
 
@@ -358,8 +366,8 @@ export default function SettingsPage() {
         <button type="button" onClick={restartBackend}>重启后端</button>
       </section>
 
-      {statusText ? <p>{statusText}</p> : null}
-      {statusError ? <p>{statusError}</p> : null}
+      {statusText ? <p role="status">{statusText}</p> : null}
+      {statusError ? <p role="alert">{statusError}</p> : null}
     </div>
   );
 }

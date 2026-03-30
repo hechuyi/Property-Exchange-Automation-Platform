@@ -347,6 +347,23 @@ describe("RecordsPage", () => {
     expect(screen.queryByText("当前筛选条件下没有记录")).not.toBeInTheDocument();
   });
 
+  it("surfaces open-file failures instead of silently swallowing them", async () => {
+    const openPath = vi.fn().mockResolvedValue("path does not exist");
+    window.peapDesktop = {
+      getBackendConfig: () => ({ backendUrl: "http://127.0.0.1:42679", apiToken: "secret-token" }),
+      openPath,
+      showItemInFolder: vi.fn(),
+    };
+
+    render(<RecordsPage />);
+
+    expect(await within(screen.getByTestId(PAGE_TEST_IDS.records.table)).findByText("测试项目")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开文件" }));
+
+    expect(await screen.findByText("打开文件失败：path does not exist")).toBeInTheDocument();
+    expect(openPath).toHaveBeenCalledWith("/tmp/archive/P-001.xlsx");
+  });
+
   it("suppresses stale responses when newer records request has returned", async () => {
     const first = createDeferred<Record<string, unknown>>();
     const second = createDeferred<Record<string, unknown>>();
