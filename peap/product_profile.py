@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Dict
 
+from peap_core.source_catalog import source_ids_for_record_family
+
 
 @dataclass(frozen=True)
 class ProductProfile:
@@ -25,12 +27,13 @@ _DEFAULT_POSTPROCESS_FALLBACK_ROOTS = (
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "peap_postprocess")),
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "peap_postprocess")),
 )
+_DESKTOP_LISTING_SOURCE_IDS = source_ids_for_record_family("listing")
 
 _PRODUCT_PROFILES: Dict[str, ProductProfile] = {
     DEFAULT_PRODUCT_PROFILE_ID: ProductProfile(
         profile_id=DEFAULT_PRODUCT_PROFILE_ID,
         record_family="listing",
-        source_ids=("sse", "cbex", "tpre", "cquae"),
+        source_ids=_DESKTOP_LISTING_SOURCE_IDS,
         parser_compat="listing_v1",
         postprocess_profile="postprocess_external",
         export_profile="ready_export",

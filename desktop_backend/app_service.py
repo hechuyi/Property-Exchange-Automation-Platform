@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Dict
 
+from peap_core.source_catalog import canonical_source_code, canonical_source_label
 from peap.output_contract import (
     KIND_CAPITAL,
     KIND_EQUITY,
@@ -79,47 +80,6 @@ PROJECT_TYPE_TO_KIND = {
     "实物资产": KIND_PHYSICAL,
     "增资扩股": KIND_CAPITAL,
     "预披露": KIND_PRE,
-}
-
-EXCHANGE_LABELS = {
-    "beijing": "北交所",
-    "cbex": "北交所",
-    "北京产权交易所": "北交所",
-    "北交所": "北交所",
-    "北交互联": "北交所",
-    "shanghai": "上交所",
-    "sse": "上交所",
-    "上海联合产权交易所": "上交所",
-    "上交所": "上交所",
-    "tianjin": "天交所",
-    "tpre": "天交所",
-    "天津产权交易中心": "天交所",
-    "天交所": "天交所",
-    "chongqing": "重交所",
-    "cquae": "重交所",
-    "重庆联交所": "重交所",
-    "重交所": "重交所",
-}
-
-EXCHANGE_CODES = {
-    "all": "all",
-    "beijing": "cbex",
-    "cbex": "cbex",
-    "北京产权交易所": "cbex",
-    "北交所": "cbex",
-    "北交互联": "cbex",
-    "shanghai": "sse",
-    "sse": "sse",
-    "上海联合产权交易所": "sse",
-    "上交所": "sse",
-    "tianjin": "tpre",
-    "tpre": "tpre",
-    "天津产权交易中心": "tpre",
-    "天交所": "tpre",
-    "chongqing": "cquae",
-    "cquae": "cquae",
-    "重庆联交所": "cquae",
-    "重交所": "cquae",
 }
 
 MAPPING_MATCH_FIELDS = {
@@ -251,30 +211,11 @@ def _state_counts(rows: list[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def _normalize_exchange_label(raw_value: str) -> str:
-    text = str(raw_value or "").strip()
-    lowered = text.lower()
-    if lowered in EXCHANGE_LABELS:
-        return EXCHANGE_LABELS[lowered]
-    if text in EXCHANGE_LABELS:
-        return EXCHANGE_LABELS[text]
-    for key, label in EXCHANGE_LABELS.items():
-        key_text = str(key)
-        if key_text and key_text in lowered:
-            return label
-    return text
+    return canonical_source_label(raw_value)
 
 
 def _normalize_exchange_code(raw_value: Any) -> str:
-    text = str(raw_value or "").strip()
-    if not text:
-        return ""
-    lowered = text.lower()
-    if lowered in EXCHANGE_CODES:
-        return EXCHANGE_CODES[lowered]
-    if text in EXCHANGE_CODES:
-        return EXCHANGE_CODES[text]
-    normalized_label = _normalize_exchange_label(text)
-    return EXCHANGE_CODES.get(normalized_label, text)
+    return canonical_source_code(raw_value)
 
 
 def _resolve_project_type_filter(raw_value: str) -> tuple[str | None, str | None]:

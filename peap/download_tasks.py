@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Type
 
+from peap_core.source_catalog import get_source_descriptor, list_source_descriptors
+
 from .downloaders import (
     CbexCapitalIncreaseDownloader,
     CbexEquityTransferDownloader,
@@ -44,6 +46,13 @@ PROJECT_TYPE_CHOICES = [
     "capital_increase",
     "pre_disclosure",
 ]
+
+PROJECT_TYPE_DISPLAY_NAMES = {
+    "physical_asset": "Physical Asset",
+    "equity_transfer": "Equity Transfer",
+    "capital_increase": "Capital Increase",
+    "pre_disclosure": "Pre Disclosure",
+}
 
 
 @dataclass(frozen=True)
@@ -112,126 +121,48 @@ def _resolve_task_registry_settings(
     return get_default_download_task_registry_settings()
 
 
+_TASK_BINDINGS: tuple[tuple[str, str, Type], ...] = (
+    ("sse", "physical_asset", ShanghaiPhysicalAssetDownloader),
+    ("cbex", "physical_asset", CbexPhysicalAssetDownloader),
+    ("sse", "equity_transfer", ShanghaiEquityTransferDownloader),
+    ("sse", "capital_increase", ShanghaiCapitalIncreaseDownloader),
+    ("sse", "pre_disclosure", ShanghaiPreDisclosureDownloader),
+    ("cbex", "equity_transfer", CbexEquityTransferDownloader),
+    ("cbex", "capital_increase", CbexCapitalIncreaseDownloader),
+    ("cbex", "pre_disclosure", CbexPreDisclosureDownloader),
+    ("tpre", "physical_asset", TianjinPhysicalAssetDownloader),
+    ("tpre", "equity_transfer", TianjinEquityTransferDownloader),
+    ("tpre", "capital_increase", TianjinCapitalIncreaseDownloader),
+    ("tpre", "pre_disclosure", TianjinPreDisclosureDownloader),
+    ("cquae", "physical_asset", ChongqingPhysicalAssetDownloader),
+    ("cquae", "equity_transfer", ChongqingEquityTransferDownloader),
+    ("cquae", "capital_increase", ChongqingCapitalIncreaseDownloader),
+    ("cquae", "pre_disclosure", ChongqingPreDisclosureDownloader),
+)
+
+
+def _task_display_name(exchange_code: str, project_type: str) -> str:
+    source = get_source_descriptor(exchange_code)
+    return f"{source.site_label} - {PROJECT_TYPE_DISPLAY_NAMES[project_type]}"
+
+
 def build_task_registry(
     config_obj: object | None = None,
     *,
     settings: DownloadTaskRegistrySettings | None = None,
 ) -> Dict[str, DownloadTaskSpec]:
     page_size = _resolve_task_registry_settings(settings, config_obj=config_obj).task_page_size
-    return {
-        "sse:physical_asset": DownloadTaskSpec(
-            exchange_code="sse",
-            project_type="physical_asset",
-            display_name="Shanghai (SSE) - Physical Asset",
-            downloader_cls=ShanghaiPhysicalAssetDownloader,
-            default_page_size=page_size["sse:physical_asset"],
-        ),
-        "cbex:physical_asset": DownloadTaskSpec(
-            exchange_code="cbex",
-            project_type="physical_asset",
-            display_name="Beijing (CBEX) - Physical Asset",
-            downloader_cls=CbexPhysicalAssetDownloader,
-            default_page_size=page_size["cbex:physical_asset"],
-        ),
-        "sse:equity_transfer": DownloadTaskSpec(
-            exchange_code="sse",
-            project_type="equity_transfer",
-            display_name="Shanghai (SSE) - Equity Transfer",
-            downloader_cls=ShanghaiEquityTransferDownloader,
-            default_page_size=page_size["sse:equity_transfer"],
-        ),
-        "sse:capital_increase": DownloadTaskSpec(
-            exchange_code="sse",
-            project_type="capital_increase",
-            display_name="Shanghai (SSE) - Capital Increase",
-            downloader_cls=ShanghaiCapitalIncreaseDownloader,
-            default_page_size=page_size["sse:capital_increase"],
-        ),
-        "sse:pre_disclosure": DownloadTaskSpec(
-            exchange_code="sse",
-            project_type="pre_disclosure",
-            display_name="Shanghai (SSE) - Pre Disclosure",
-            downloader_cls=ShanghaiPreDisclosureDownloader,
-            default_page_size=page_size["sse:pre_disclosure"],
-        ),
-        "cbex:equity_transfer": DownloadTaskSpec(
-            exchange_code="cbex",
-            project_type="equity_transfer",
-            display_name="Beijing (CBEX) - Equity Transfer",
-            downloader_cls=CbexEquityTransferDownloader,
-            default_page_size=page_size["cbex:equity_transfer"],
-        ),
-        "cbex:capital_increase": DownloadTaskSpec(
-            exchange_code="cbex",
-            project_type="capital_increase",
-            display_name="Beijing (CBEX) - Capital Increase",
-            downloader_cls=CbexCapitalIncreaseDownloader,
-            default_page_size=page_size["cbex:capital_increase"],
-        ),
-        "cbex:pre_disclosure": DownloadTaskSpec(
-            exchange_code="cbex",
-            project_type="pre_disclosure",
-            display_name="Beijing (CBEX) - Pre Disclosure",
-            downloader_cls=CbexPreDisclosureDownloader,
-            default_page_size=page_size["cbex:pre_disclosure"],
-        ),
-        "tpre:physical_asset": DownloadTaskSpec(
-            exchange_code="tpre",
-            project_type="physical_asset",
-            display_name="Tianjin (TPRE) - Physical Asset",
-            downloader_cls=TianjinPhysicalAssetDownloader,
-            default_page_size=page_size["tpre:physical_asset"],
-        ),
-        "tpre:equity_transfer": DownloadTaskSpec(
-            exchange_code="tpre",
-            project_type="equity_transfer",
-            display_name="Tianjin (TPRE) - Equity Transfer",
-            downloader_cls=TianjinEquityTransferDownloader,
-            default_page_size=page_size["tpre:equity_transfer"],
-        ),
-        "tpre:capital_increase": DownloadTaskSpec(
-            exchange_code="tpre",
-            project_type="capital_increase",
-            display_name="Tianjin (TPRE) - Capital Increase",
-            downloader_cls=TianjinCapitalIncreaseDownloader,
-            default_page_size=page_size["tpre:capital_increase"],
-        ),
-        "tpre:pre_disclosure": DownloadTaskSpec(
-            exchange_code="tpre",
-            project_type="pre_disclosure",
-            display_name="Tianjin (TPRE) - Pre Disclosure",
-            downloader_cls=TianjinPreDisclosureDownloader,
-            default_page_size=page_size["tpre:pre_disclosure"],
-        ),
-        "cquae:physical_asset": DownloadTaskSpec(
-            exchange_code="cquae",
-            project_type="physical_asset",
-            display_name="Chongqing (CQUAE) - Physical Asset",
-            downloader_cls=ChongqingPhysicalAssetDownloader,
-            default_page_size=page_size["cquae:physical_asset"],
-        ),
-        "cquae:equity_transfer": DownloadTaskSpec(
-            exchange_code="cquae",
-            project_type="equity_transfer",
-            display_name="Chongqing (CQUAE) - Equity Transfer",
-            downloader_cls=ChongqingEquityTransferDownloader,
-            default_page_size=page_size["cquae:equity_transfer"],
-        ),
-        "cquae:capital_increase": DownloadTaskSpec(
-            exchange_code="cquae",
-            project_type="capital_increase",
-            display_name="Chongqing (CQUAE) - Capital Increase",
-            downloader_cls=ChongqingCapitalIncreaseDownloader,
-            default_page_size=page_size["cquae:capital_increase"],
-        ),
-        "cquae:pre_disclosure": DownloadTaskSpec(
-            exchange_code="cquae",
-            project_type="pre_disclosure",
-            display_name="Chongqing (CQUAE) - Pre Disclosure",
-            downloader_cls=ChongqingPreDisclosureDownloader,
-            default_page_size=page_size["cquae:pre_disclosure"],
-        ),
-    }
+    registry: Dict[str, DownloadTaskSpec] = {}
+    for exchange_code, project_type, downloader_cls in _TASK_BINDINGS:
+        task_id = f"{exchange_code}:{project_type}"
+        registry[task_id] = DownloadTaskSpec(
+            exchange_code=exchange_code,
+            project_type=project_type,
+            display_name=_task_display_name(exchange_code, project_type),
+            downloader_cls=downloader_cls,
+            default_page_size=page_size[task_id],
+        )
+    return registry
 
 
 def exchange_choices(
@@ -239,9 +170,8 @@ def exchange_choices(
     *,
     settings: DownloadTaskRegistrySettings | None = None,
 ) -> List[str]:
+    _ = _resolve_task_registry_settings(settings, config_obj=config_obj)
     return sorted(
-        {
-            task.exchange_code
-            for task in build_task_registry(config_obj, settings=settings).values()
-        }
+        descriptor.source_id
+        for descriptor in list_source_descriptors(record_family="listing")
     )

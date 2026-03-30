@@ -10,8 +10,10 @@ from peap.download_runner import (
     DownloadRunnerError,
     ensure_runtime_dependencies,
     run_download_session,
+    task_progress_label,
 )
 from peap.download_tasks import build_task_registry
+from peap_core.source_catalog import get_source_descriptor
 
 
 class DownloadRunnerTest(unittest.TestCase):
@@ -152,6 +154,28 @@ class DownloadRunnerTest(unittest.TestCase):
         self.assertIn("playwright install chromium", message)
         self.assertNotIn("pip install playwright", message)
         mock_print.assert_called_once_with(message)
+
+    def test_task_labels_and_display_names_use_shared_source_catalog_metadata(self) -> None:
+        registry = build_task_registry()
+        cbex_spec = registry["cbex:physical_asset"]
+        tpre_spec = registry["tpre:pre_disclosure"]
+
+        self.assertEqual(
+            cbex_spec.display_name,
+            f"{get_source_descriptor('cbex').site_label} - Physical Asset",
+        )
+        self.assertEqual(
+            task_progress_label(cbex_spec),
+            f"{get_source_descriptor('cbex').canonical_label} - 挂牌实物资产",
+        )
+        self.assertEqual(
+            tpre_spec.display_name,
+            f"{get_source_descriptor('tpre').site_label} - Pre Disclosure",
+        )
+        self.assertEqual(
+            task_progress_label(tpre_spec),
+            f"{get_source_descriptor('tpre').canonical_label} - 挂牌预披露",
+        )
 
 
 if __name__ == "__main__":

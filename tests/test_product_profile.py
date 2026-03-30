@@ -10,6 +10,7 @@ from peap.product_profile import (
     get_product_profile,
     list_product_profiles,
 )
+from peap_core.source_catalog import list_source_descriptors
 from peap_postprocess.postprocess_engine.config import load_config
 
 
@@ -22,10 +23,13 @@ class ProductProfileTest(unittest.TestCase):
 
     def test_desktop_listing_profile_has_fixed_kernel_configuration(self) -> None:
         profile = get_product_profile()
+        expected_source_ids = tuple(
+            source.source_id for source in list_source_descriptors(record_family="listing")
+        )
 
         self.assertEqual(profile.profile_id, "desktop_listing")
         self.assertEqual(profile.record_family, "listing")
-        self.assertEqual(profile.source_ids, ("sse", "cbex", "tpre", "cquae"))
+        self.assertEqual(profile.source_ids, expected_source_ids)
         self.assertEqual(profile.parser_compat, "listing_v1")
         self.assertEqual(profile.postprocess_profile, "postprocess_external")
         self.assertEqual(profile.export_profile, "ready_export")

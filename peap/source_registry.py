@@ -1,53 +1,28 @@
-"""Pure source capability registry."""
+"""Compatibility facade over the shared source catalog."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Iterable
+from peap_core.source_catalog import (
+    SourceDescriptor,
+    get_source_descriptor,
+    list_source_descriptors,
+)
 
-from .streaming_models import RecordFamily
-
-
-@dataclass(frozen=True)
-class SourceCapability:
-    source_id: str
-    site_label: str
-    supported_record_families: tuple[RecordFamily, ...]
-    supported_job_types: tuple[str, ...]
-    downloader_key: str
-    adapter_key: str
-    enabled: bool = True
-
-
-_SOURCE_REGISTRY: Dict[str, SourceCapability] = {}
-
-
-def _normalize_source_id(source_id: str) -> str:
-    return str(source_id or "").strip()
+SourceCapability = SourceDescriptor
 
 
 def register_source(capability: SourceCapability) -> None:
-    source_id = _normalize_source_id(capability.source_id)
-    if not source_id:
-        raise ValueError("source_id is empty")
-    _SOURCE_REGISTRY[source_id] = capability
+    raise RuntimeError(
+        "source catalog is immutable at runtime; update peap_core.source_catalog instead"
+    )
 
 
 def get_source(source_id: str) -> SourceCapability:
-    normalized = _normalize_source_id(source_id)
-    try:
-        return _SOURCE_REGISTRY[normalized]
-    except KeyError as exc:
-        raise KeyError(normalized) from exc
+    return get_source_descriptor(source_id)
 
 
 def list_sources(record_family: str | None = None) -> list[SourceCapability]:
-    normalized_family = _normalize_source_id(record_family)
-    results: list[SourceCapability] = []
-    for capability in _SOURCE_REGISTRY.values():
-        if not capability.enabled:
-            continue
-        if normalized_family and normalized_family not in capability.supported_record_families:
-            continue
-        results.append(capability)
-    return results
+    return list_source_descriptors(record_family=record_family)
+
+
+__all__ = ["SourceCapability", "get_source", "list_sources", "register_source"]

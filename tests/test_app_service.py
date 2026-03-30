@@ -4,12 +4,16 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from desktop_backend.app_config import AppConfig
 from desktop_backend.app_service import AppService, AppUserFacingError
 from desktop_backend.product_errors import UserInputError
 from peap.streaming_models import IngestedRecord, ItemProgressEvent, PostProcessFinding
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeRuntimeDependencies:
@@ -283,6 +287,13 @@ class AppServiceTest(unittest.TestCase):
 
         self.assertEqual(payload["job_id"], "job-normalized-exchange")
         self.assertEqual(captured["exchange"], "cbex")
+
+    def test_exchange_normalization_uses_shared_source_catalog_instead_of_private_tables(self) -> None:
+        module_text = (REPO_ROOT / "desktop_backend" / "app_service.py").read_text(encoding="utf-8")
+
+        self.assertIn("from peap_core.source_catalog import", module_text)
+        self.assertNotIn("EXCHANGE_LABELS =", module_text)
+        self.assertNotIn("EXCHANGE_CODES =", module_text)
 
     def test_service_init_syncs_process_playwright_cache_env_from_config(self) -> None:
         with patch.dict(

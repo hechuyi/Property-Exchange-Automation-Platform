@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
+from peap_core.source_catalog import get_source_descriptor
+
 from .download_models import DownloadRunResult, TaskSplitPlan
 from .download_reporting import (
     merge_totals,
@@ -202,19 +204,16 @@ def resolve_tasks(
 
 
 def task_progress_label(spec: DownloadTaskSpec) -> str:
-    exchange_labels = {
-        "sse": "上交所",
-        "cbex": "北交所",
-        "tpre": "天交所",
-        "cquae": "重交所",
-    }
     project_labels = {
         "physical_asset": "挂牌实物资产",
         "equity_transfer": "挂牌股权转让",
         "capital_increase": "挂牌增资扩股",
         "pre_disclosure": "挂牌预披露",
     }
-    exchange_text = exchange_labels.get(spec.exchange_code, spec.exchange_code)
+    try:
+        exchange_text = get_source_descriptor(spec.exchange_code).canonical_label
+    except KeyError:
+        exchange_text = spec.exchange_code
     project_text = project_labels.get(spec.project_type, spec.project_type)
     return f"{exchange_text} - {project_text}"
 
