@@ -1215,6 +1215,88 @@ class StreamingDailyPipelineTest(unittest.TestCase):
 
         self.assertEqual(callback_job_ids, [])
 
+    def test_streaming_pipeline_callback_preserves_snapshot_envelope_metadata(self) -> None:
+        args = argparse.Namespace(
+            start_date="2026-03-20",
+            end_date="2026-03-21",
+            exchange="all",
+            project_type="all",
+            concurrency=2,
+            page_size=None,
+            max_pages=None,
+            with_refresh=False,
+            no_resume=False,
+            save_json=False,
+            postprocess_config=None,
+            verbose=False,
+            streaming_db=None,
+            no_auto_export=True,
+        )
+        captured: dict[str, object] = {}
 
-if __name__ == "__main__":
-    unittest.main()
+        fake_download_runner = types.ModuleType("peap.download_runner")
+        fake_download_runner.DownloadRunRequest = _FakeDownloadRunRequest
+
+        fake_download_oneclick = types.ModuleType("peap.download_oneclick")
+        fake_download_oneclick.DownloadOneClickRequest = _FakeDownloadOneClickRequest
+
+        def _fake_run_download_oneclick(request, *, config_obj, emit_console):
+            html_path = os.path.join(self.temp_dir.name, "item_snapshot.html")
+            with open(html_path, "w", encoding="utf-8") as handle:
+                handle.write("<html></html>")
+            request.download_request.item_saved_callback(
+                {
+                    "source_file": html_path,
+                    "project_code": "ITEM_SNAPSHOT",
+                    "project_name": "item_snapshot",
+                    "page_url": "https://example.test/detail/snapshot",
+                    "snapshot_digest": "sha256:abc123",
+                    "snapshot_id": "snap-001",
+                }
+            )
+            return _FakeDownloadOneClickRunResult(
+                exit_code=0,
+                log_file="download.log",
+                plan_file=request.plan_file,
+                plan_file_exists=False,
+                plan_file_removed=True,
+                start="2026-03-20 00:00:00",
+                end="2026-03-20 00:01:00",
+                duration_sec=60.0,
+                aggregate_summary={"saved": 1, "errors": 0},
+                task_summaries={},
+                errors=[],
+            )
+
+        fake_download_oneclick.run_download_oneclick = _fake_run_download_oneclick
+
+        def _capturing_runner(*args, **kwargs):
+            class _Runner:
+                def ingest(self, item):
+                    captured["extra"] = dict(item.extra)
+                    captured["page_url"] = item.page_url
+                    return {
+                        "state": "ready",
+                        "record_id": "ITEM_SNAPSHOT",
+                        "revision_id": 1,
+                        "project_code": "ITEM_SNAPSHOT",
+                        "archive_path": item.source_file,
+                    }
+            return _Runner()
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "peap.download_runner": fake_download_runner,
+                    "peap.download_oneclick": fake_download_oneclick,
+                },
+            ),
+            patch("peap.streaming_daily_pipeline.StreamingIngestRunner", _capturing_runner),
+        ):
+            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(captured["extra"]["snapshot_digest"], "sha256:abc123")
+        self.assertEqual(captured["extra"]["snapshot_id"], "snap-001")
+        self.assertEqual(captured["page_url"], "https://example.test/detail/snapshot")

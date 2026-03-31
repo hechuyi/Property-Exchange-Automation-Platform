@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS record_revisions (
     revision_hash TEXT NOT NULL,
     parser_payload_json TEXT NOT NULL DEFAULT '{}',
     postprocess_payload_json TEXT NOT NULL DEFAULT '{}',
+    canonical_record_json TEXT NOT NULL DEFAULT '{}',
+    canonical_projection_json TEXT NOT NULL DEFAULT '{}',
     findings_json TEXT NOT NULL DEFAULT '[]',
     state TEXT NOT NULL,
     source_file TEXT NOT NULL DEFAULT '',
@@ -412,6 +414,18 @@ class StreamingStore:
             if column_name in existing_columns:
                 continue
             conn.execute(f"ALTER TABLE records ADD COLUMN {column_name} {column_spec}")
+        revision_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(record_revisions)").fetchall()
+        }
+        revision_migration_columns = [
+            ("canonical_record_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("canonical_projection_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ]
+        for column_name, column_spec in revision_migration_columns:
+            if column_name in revision_columns:
+                continue
+            conn.execute(f"ALTER TABLE record_revisions ADD COLUMN {column_name} {column_spec}")
         self._backfill_failed_record_contracts(conn)
 
     def _backfill_failed_record_contracts(self, conn: sqlite3.Connection) -> None:
@@ -1045,8 +1059,10 @@ class StreamingStore:
                         record_id,
                         business_key,
                         record_family,
-                        "",
-                        "{}",
+                        build_identity_anchor(record_state=record.state, source_identity=record.source_identity)
+                        if record.source_identity
+                        else "",
+                        _json_dumps(record.source_identity),
                         record.project_code,
                         record.project_name,
                         record.project_type,
@@ -1077,14 +1093,17 @@ class StreamingStore:
                     """
                     INSERT INTO record_revisions (
                         record_id, revision_hash, parser_payload_json,
-                        postprocess_payload_json, findings_json, state, source_file, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        postprocess_payload_json, canonical_record_json, canonical_projection_json,
+                        findings_json, state, source_file, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record_id,
                         record.revision_hash,
                         _json_dumps(record.parser_payload),
                         _json_dumps(record.postprocess_payload),
+                        _json_dumps(record.canonical_record),
+                        _json_dumps(record.canonical_projection),
                         _json_dumps(findings_json),
                         record.state,
                         record.source_file,
@@ -1098,6 +1117,8 @@ class StreamingStore:
                     UPDATE record_revisions
                     SET parser_payload_json = ?,
                         postprocess_payload_json = ?,
+                        canonical_record_json = ?,
+                        canonical_projection_json = ?,
                         findings_json = ?,
                         state = ?,
                         source_file = ?
@@ -1106,6 +1127,8 @@ class StreamingStore:
                     (
                         _json_dumps(record.parser_payload),
                         _json_dumps(record.postprocess_payload),
+                        _json_dumps(record.canonical_record),
+                        _json_dumps(record.canonical_projection),
                         _json_dumps(findings_json),
                         record.state,
                         record.source_file,
@@ -1143,8 +1166,10 @@ class StreamingStore:
                     record_id,
                     business_key,
                     record_family,
-                    "",
-                    "{}",
+                    build_identity_anchor(record_state=record.state, source_identity=record.source_identity)
+                    if record.source_identity
+                    else "",
+                    _json_dumps(record.source_identity),
                     record.project_code,
                     record.project_name,
                     record.project_type,
@@ -1760,12 +1785,16 @@ class StreamingStore:
                 records.state,
                 records.source_file,
                 records.archive_path,
+                records.last_error_type,
+                records.last_error_message,
                 records.created_at,
                 records.updated_at,
                 revisions.revision_id,
                 revisions.revision_hash,
                 revisions.parser_payload_json,
                 revisions.postprocess_payload_json,
+                revisions.canonical_record_json,
+                revisions.canonical_projection_json,
                 revisions.findings_json
             FROM records
             JOIN record_revisions AS revisions
@@ -1792,12 +1821,16 @@ class StreamingStore:
                     "state": row["state"],
                     "source_file": row["source_file"],
                     "archive_path": row["archive_path"],
+                    "last_error_type": row["last_error_type"],
+                    "last_error_message": row["last_error_message"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "revision_id": int(row["revision_id"]),
                     "revision_hash": row["revision_hash"],
                     "parser_payload": _json_loads(row["parser_payload_json"], default={}),
                     "postprocess_payload": _json_loads(row["postprocess_payload_json"], default={}),
+                    "canonical_record": _json_loads(row["canonical_record_json"], default={}),
+                    "canonical_projection": _json_loads(row["canonical_projection_json"], default={}),
                     "findings": _json_loads(row["findings_json"], default=[]),
                 }
             )

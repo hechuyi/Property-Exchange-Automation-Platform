@@ -32,7 +32,25 @@ class EnvironmentToolingTest(unittest.TestCase):
         self.assertIn("peap_core*", package_includes)
         self.assertIn("desktop_backend*", package_includes)
 
-    def test_ci_workflow_uses_uv_project_commands(self) -> None:
+    def test_parser_subsystem_contract_modules_stay_runtime_free(self) -> None:
+        for relative_path in (
+            "peap_core/snapshot_contracts.py",
+            "peap_core/page_parse_contracts.py",
+            "peap_core/record_contracts.py",
+        ):
+            contract_file = REPO_ROOT / relative_path
+            self.assertTrue(contract_file.exists(), msg=f"missing contract file: {relative_path}")
+            source = contract_file.read_text(encoding="utf-8")
+            self.assertNotIn("from peap import", source, msg=relative_path)
+            self.assertNotIn("import peap", source, msg=relative_path)
+            self.assertNotIn("from peap_parsers import", source, msg=relative_path)
+            self.assertNotIn("import peap_parsers", source, msg=relative_path)
+            self.assertNotIn("from desktop_backend", source, msg=relative_path)
+            self.assertNotIn("import desktop_backend", source, msg=relative_path)
+            self.assertNotIn("download_runner", source, msg=relative_path)
+            self.assertNotIn("download_tasks", source, msg=relative_path)
+            self.assertNotIn("download_oneclick", source, msg=relative_path)
+
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
         self.assertIn("astral-sh/setup-uv@v7", workflow)

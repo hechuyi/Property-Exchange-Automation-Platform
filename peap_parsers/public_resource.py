@@ -5,17 +5,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from email import policy
-from email.message import Message
-from email.parser import BytesParser
-from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
 from .base import WebPageParser
+from .snapshot_decoder import load_html_parts_from_mhtml, resolve_mhtml_result_html
 
 EXPECTED_TABLE_LABELS = {
     "项目编号",
@@ -26,13 +22,6 @@ EXPECTED_TABLE_LABELS = {
     "成交金额",
     "成交日期",
 }
-
-
-@dataclass(frozen=True)
-class HtmlPart:
-    content_id: str
-    content_location: str
-    text: str
 
 
 def _clean_text(value: object) -> str:
@@ -61,65 +50,6 @@ def _normalize_trade_date(value: object) -> str:
         y, m, d = match.groups()
         return f"{int(y):04d}/{int(m):02d}/{int(d):02d}"
     return text
-
-
-def _normalize_content_id(value: object) -> str:
-    return str(value or "").strip().strip("<>").strip()
-
-
-def _decode_part_payload(part: Message) -> str:
-    payload = part.get_payload(decode=True) or b""
-    encodings = [part.get_content_charset(), "utf-8", "gb18030", "latin-1"]
-    for encoding in encodings:
-        if not encoding:
-            continue
-        try:
-            return payload.decode(encoding)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return payload.decode("utf-8", errors="replace")
-
-
-def _load_html_parts(file_path: Path) -> List[HtmlPart]:
-    with file_path.open("rb") as handle:
-        message = BytesParser(policy=policy.default).parse(handle)
-
-    html_parts: List[HtmlPart] = []
-    for part in message.walk():
-        if part.is_multipart():
-            continue
-        if part.get_content_type() != "text/html":
-            continue
-        html_parts.append(
-            HtmlPart(
-                content_id=_normalize_content_id(part.get("Content-ID")),
-                content_location=_clean_text(part.get("Content-Location")),
-                text=_decode_part_payload(part),
-            )
-        )
-    return html_parts
-
-
-def _resolve_result_html(html_parts: Sequence[HtmlPart]) -> tuple[str, str]:
-    if not html_parts:
-        raise ValueError("missing html parts")
-
-    outer_html = html_parts[0].text
-    part_by_cid = {part.content_id: part for part in html_parts if part.content_id}
-
-    outer_soup = BeautifulSoup(outer_html, "html.parser")
-    iframe = outer_soup.select_one("#div_0502 iframe") or outer_soup.find("iframe")
-    if iframe is not None:
-        src = _clean_text(iframe.get("src"))
-        if src.lower().startswith("cid:"):
-            cid = _normalize_content_id(src[4:])
-            matched = part_by_cid.get(cid)
-            if matched is not None:
-                return outer_html, matched.text
-
-    if len(html_parts) >= 2:
-        return outer_html, html_parts[-1].text
-    raise ValueError("missing result html part")
 
 
 def _extract_source_label(outer_html: str) -> str:
@@ -182,9 +112,8 @@ def _extract_table_rows(inner_html: str) -> Dict[str, str]:
 
 
 def parse_mhtml_file(file_path: str) -> Dict[str, str]:
-    path = Path(file_path)
-    html_parts = _load_html_parts(path)
-    outer_html, inner_html = _resolve_result_html(html_parts)
+    html_parts = load_html_parts_from_mhtml(file_path)
+    outer_html, inner_html = resolve_mhtml_result_html(html_parts)
 
     source_label = _extract_source_label(outer_html)
     inner_soup = BeautifulSoup(inner_html, "html.parser")

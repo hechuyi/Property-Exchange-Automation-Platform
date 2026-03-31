@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from peap.constants import (
     KEY_PROJECT_CODE,
@@ -250,6 +251,77 @@ class ParseCacheContractTest(unittest.TestCase):
         self.assertEqual(cached.project_name, "旧缓存项目")
         self.assertEqual(cached.standard_record.project_type, TYPE_EQUITY_TRANSFER)
 
+    def test_parse_cache_misses_when_run_signature_version_changes(self) -> None:
+        html_file = os.path.join(self.temp_dir.name, "versioned.html")
+        with open(html_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
 
-if __name__ == "__main__":
-    unittest.main()
+        parsed = build_parsed_project(
+            file_path=html_file,
+            exchange="shenzhen",
+            encoding="utf-8",
+            data={
+                KEY_PROJECT_CODE: "P005",
+                "项目名称": "版本化缓存项目",
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+            },
+        )
+
+        writer = ParseCacheStore(
+            db_path=os.path.join(self.temp_dir.name, "parse_cache.sqlite3"),
+            run_signature="full|decoder=v1|classifier=v1|family=v1|variant=v1|assembler=v1|normalizer=v1|policy=v1",
+            commit_interval=1,
+        )
+        self.addCleanup(writer.close)
+        writer.put(parsed, compat_profile=COMPAT_PROFILE_FULL)
+        writer.flush()
+
+        reader = ParseCacheStore(
+            db_path=os.path.join(self.temp_dir.name, "parse_cache.sqlite3"),
+            run_signature="full|decoder=v2|classifier=v1|family=v1|variant=v1|assembler=v1|normalizer=v1|policy=v1",
+            commit_interval=1,
+        )
+        self.addCleanup(reader.close)
+
+
+    def test_parser_pipeline_run_signature_includes_subsystem_versions(self) -> None:
+        html_root = os.path.join(self.temp_dir.name, "pipeline-html")
+        os.makedirs(html_root, exist_ok=True)
+        captured: dict[str, str] = {}
+
+        class _FakeCacheStore:
+            def __init__(self, *, db_path: str, run_signature: str, logger=None, commit_interval: int = 50):
+                captured["run_signature"] = run_signature
+
+            @property
+            def stats(self):
+                return type("_Stats", (), {"hits": 0, "misses": 0, "writes": 0})()
+
+            def flush(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        from peap.pipeline import ParserPipeline
+
+        with patch("peap.pipeline.ParseCacheStore", _FakeCacheStore), patch(
+            "peap.pipeline.build_parser_signature",
+            return_value="legacy-parser-signature",
+        ):
+            summary = ParserPipeline(
+                html_root=html_root,
+                dry_run=True,
+                parse_cache_enabled=True,
+                parse_cache_db=os.path.join(self.temp_dir.name, "parse_cache.sqlite3"),
+            ).run()
+
+        self.assertEqual(summary.processed, 0)
+        self.assertIn("decoder=", captured["run_signature"])
+        self.assertIn("classifier=", captured["run_signature"])
+        self.assertIn("family=", captured["run_signature"])
+        self.assertIn("variant=", captured["run_signature"])
+        self.assertIn("assembler=", captured["run_signature"])
+        self.assertIn("normalizer=", captured["run_signature"])
+        self.assertIn("policy=", captured["run_signature"])

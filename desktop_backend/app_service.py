@@ -9,7 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from peap.output_contract import (
     KIND_CAPITAL,
@@ -1637,12 +1637,19 @@ class AppService:
             return 0.0
         return max(delay_ms, 0) / 1000.0
 
-    def _run_manual_import_job(self, *, job_id: str, files: list[str]) -> None:
+    def _run_manual_import_job(
+        self,
+        *,
+        job_id: str,
+        files: list[str],
+        ingest_file: Callable[[str], Dict[str, Any]] | None = None,
+    ) -> None:
         imported = 0
         pending = 0
         skipped = 0
         failed = 0
         accepted_completed = 0
+        ingest = ingest_file or self._ingest_manual_import_file
         for index, file_path in enumerate(files, start=1):
             self.store.append_event(
                 ItemProgressEvent(
@@ -1662,7 +1669,7 @@ class AppService:
                 smoke_delay_seconds = self._manual_import_smoke_delay_seconds(file_path)
                 if smoke_delay_seconds > 0:
                     time.sleep(smoke_delay_seconds)
-                result = self._ingest_manual_import_file(file_path)
+                result = ingest(file_path)
                 state = str(result.get("state") or "")
             except Exception as exc:  # noqa: BLE001
                 failed += 1
@@ -1760,9 +1767,11 @@ class AppService:
                 )
             )
             if files:
+                ingest_file = self._ingest_manual_import_file
+
                 def _run_manual_import_wrapper() -> None:
                     try:
-                        self._run_manual_import_job(job_id=job_id, files=files)
+                        self._run_manual_import_job(job_id=job_id, files=files, ingest_file=ingest_file)
                     finally:
                         self._release_mutating_job("manual_import")
 
@@ -1861,13 +1870,19 @@ class AppService:
         result = runner.ingest(
             ItemSavedPayload(
                 source_file=preferred_source,
-                page_url=str(record["parser_payload"].get("page_url") or ""),
+                page_url=str(
+                    record["parser_payload"].get("page_url")
+                    or record.get("source_identity_json", {}).get("source_url")
+                    or ""
+                ),
                 project_code=str(record["project_code"]),
                 project_name=str(record["project_name"]),
                 exchange=str(record["exchange"]),
                 listing_date=str(record["listing_date"]),
                 extra={
                     "project_type_fallback": str(record.get("project_type") or ""),
+                    "snapshot_id": str(record.get("source_identity_json", {}).get("snapshot_id") or ""),
+                    "snapshot_digest": str(record.get("source_identity_json", {}).get("snapshot_digest") or ""),
                 },
             )
         )

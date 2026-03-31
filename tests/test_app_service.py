@@ -1254,6 +1254,45 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["summary"]["failed_count"], 1)
 
+    def test_launch_manual_import_captures_ingest_function_for_background_thread(self) -> None:
+        import_root = os.path.join(self.temp_dir.name, "manual_import_capture")
+        os.makedirs(import_root, exist_ok=True)
+        source_file = os.path.join(import_root, "broken.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        scheduled: dict[str, object] = {}
+
+        def fake_start_background_thread(*, name: str, target) -> None:
+            scheduled["name"] = name
+            scheduled["target"] = target
+
+        with patch.object(
+            self.service,
+            "_ingest_manual_import_file",
+            return_value={"state": "parse_failed", "record_id": "rec-failed", "project_code": "CODE-FAILED"},
+            create=True,
+        ), patch.object(
+            self.service,
+            "_start_background_thread",
+            side_effect=fake_start_background_thread,
+        ):
+            payload = self.service.launch_manual_import({"input_dir": import_root})
+
+        self.service._ingest_manual_import_file = lambda _file_path: {
+            "state": "ready",
+            "record_id": "rec-ready",
+            "project_code": "CODE-READY",
+        }
+
+        target = scheduled.get("target")
+        self.assertIsNotNone(target)
+        target()
+
+        job = self.service.get_job(str(payload["job_id"]))
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["summary"]["failed_count"], 1)
+
     def test_manual_import_failed_event_exposes_error_message(self) -> None:
         import_root = os.path.join(self.temp_dir.name, "manual_import_failed_message")
         os.makedirs(import_root, exist_ok=True)
@@ -1435,7 +1474,44 @@ class AppServiceTest(unittest.TestCase):
         self.assertNotIn("project_type", captured["extra"])
         self.assertEqual(captured["extra"]["project_type_fallback"], "股权转让")
 
-    def test_reprocess_failed_record_uses_original_evidence_path(self) -> None:
+    def test_reprocess_record_preserves_snapshot_metadata_in_replay_context(self) -> None:
+        self._insert_ready_record(record_id="rec-reprocess-snapshot", project_code="G32026BJ1000099")
+        with self.service.store._connect() as conn:
+            conn.execute(
+                """
+                UPDATE records
+                SET source_identity_json = ?
+                WHERE record_id = ?
+                """,
+                (
+                    '{"original_source_file":"%s","source_url":"https://example.test/detail/replay-snapshot","candidate_tokens":["project_code:G32026BJ1000099","page_url:https://example.test/detail/replay-snapshot"],"snapshot_id":"snap-replay-001","snapshot_digest":"sha256:replay001"}' % os.path.join(self.temp_dir.name, "rec-reprocess-snapshot.html"),
+                    "rec-reprocess-snapshot",
+                ),
+            )
+        captured: dict[str, object] = {}
+
+        class FakeRunner:
+            def __init__(self, *, store, archive_root, rules_config=None, dependencies=None) -> None:
+                pass
+
+            def ingest(self, item):
+                captured["page_url"] = item.page_url
+                captured["extra"] = dict(item.extra)
+                return {
+                    "state": "ready",
+                    "record_id": "rec-reprocess-snapshot",
+                    "project_code": "G32026BJ1000099",
+                    "archive_path": item.source_file,
+                }
+
+        with patch("desktop_backend.app_service.StreamingIngestRunner", FakeRunner):
+            result = self.service.reprocess_record("rec-reprocess-snapshot")
+
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(captured["page_url"], "https://example.test/detail/replay-snapshot")
+        self.assertEqual(captured["extra"]["snapshot_id"], "snap-replay-001")
+        self.assertEqual(captured["extra"]["snapshot_digest"], "sha256:replay001")
+
         original_file = os.path.join(self.temp_dir.name, "original-failed-evidence.html")
         with open(original_file, "w", encoding="utf-8") as handle:
             handle.write("<html><body>original evidence</body></html>")

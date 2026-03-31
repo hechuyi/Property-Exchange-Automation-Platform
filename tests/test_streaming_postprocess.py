@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from peap.streaming_postprocess import analyze_mapping_candidates, apply_mapping_entries
+from peap.streaming_postprocess import analyze_mapping_candidates, apply_mapping_entries, apply_policy_engine_to_payload
 
 
 class StreamingPostprocessMappingTest(unittest.TestCase):
@@ -173,6 +173,28 @@ class StreamingPostprocessMappingTest(unittest.TestCase):
         self.assertEqual(resolved["类型"], "央企")
         self.assertFalse(any(item.type == "mapping_conflict" for item in findings))
 
+    def test_apply_policy_engine_to_payload_keeps_streaming_wrapper_shape(self) -> None:
+        payload = {
+            "项目编号": "G32026SH1000007",
+            "转让方": "上海测试公司",
+        }
+        entries = [
+            {
+                "company_name": "上海测试公司",
+                "group_name": "上海测试集团",
+                "source_type": "",
+                "metadata": {"match_field": "transferor", "target_field": "group_name"},
+            },
+            {
+                "company_name": "上海测试集团",
+                "group_name": "",
+                "source_type": "市属",
+                "metadata": {"match_field": "group", "target_field": "source_type"},
+            },
+        ]
 
-if __name__ == "__main__":
-    unittest.main()
+        resolved, findings = apply_policy_engine_to_payload(payload, mapping_entries=entries)
+
+        self.assertEqual(resolved["隶属集团"], "上海测试集团")
+        self.assertEqual(resolved["类型"], "市属")
+        self.assertTrue(any(item.type == "mapping_applied" for item in findings))

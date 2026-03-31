@@ -69,6 +69,101 @@ class StreamingStoreTest(unittest.TestCase):
         exported = self.store.get_exported_revision_map("default")
         self.assertEqual(exported[rows[0]["record_id"]]["revision_hash"], "hash-2")
 
+    def test_upsert_record_persists_success_source_identity_and_canonical_revision(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "success-source.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>success</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-success-canonical",
+                revision_hash="hash-success-canonical",
+                project_code="G32026SH1000888",
+                project_name="测试项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "success-source.html"),
+                parser_payload={
+                    "项目编号": "G32026SH1000888",
+                    "项目名称": "解析层项目名",
+                    "项目类型": "股权转让",
+                    "转让方": "解析层卖方",
+                },
+                postprocess_payload={
+                    "项目编号": "G32026SH1000888",
+                    "项目名称": "后处理项目名",
+                    "项目类型": "股权转让",
+                    "转让方": "后处理卖方",
+                    "类型": "国资",
+                },
+                findings=[
+                    PostProcessFinding(
+                        severity="info",
+                        type="mapping_applied",
+                        message="mapping applied",
+                        evidence={"field": "source_type"},
+                    )
+                ],
+                source_identity={
+                    "record_family": "listing",
+                    "original_source_file": source_file,
+                    "source_url": "https://example.test/detail/store-canonical",
+                    "project_code": "G32026SH1000888",
+                    "project_name": "测试项目",
+                    "exchange": "shanghai",
+                    "listing_date": "2026-03-21",
+                    "candidate_tokens": [
+                        "project_code:G32026SH1000888",
+                        "project_id:STORE001",
+                        "page_url:https://example.test/detail/store-canonical",
+                    ],
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "source_identity": {
+                        "source_url": "https://example.test/detail/store-canonical",
+                    },
+                    "business_identity": {"project_code": "G32026SH1000888"},
+                    "canonical_fields": {
+                        "project_code": "G32026SH1000888",
+                        "project_name": "规范化项目名",
+                        "project_type": "股权转让",
+                        "seller": "规范化卖方",
+                        "source_type": "国资",
+                    },
+                    "policy_state": {"mapping_status": "applied"},
+                },
+                canonical_projection={
+                    "项目编号": "G32026SH1000888",
+                    "项目名称": "规范化项目名",
+                    "项目类型": "股权转让",
+                    "转让方": "规范化卖方",
+                    "类型": "国资",
+                },
+            )
+        )
+
+        record = self.store.get_record("rec-success-canonical")
+
+        self.assertEqual(record["source_identity_json"]["original_source_file"], source_file)
+        self.assertEqual(record["source_identity_json"]["source_url"], "https://example.test/detail/store-canonical")
+        self.assertEqual(
+            record["source_identity_json"]["candidate_tokens"],
+            [
+                "project_code:G32026SH1000888",
+                "project_id:STORE001",
+                "page_url:https://example.test/detail/store-canonical",
+            ],
+        )
+        self.assertEqual(record["canonical_record"]["canonical_fields"]["project_name"], "规范化项目名")
+        self.assertEqual(record["canonical_record"]["canonical_fields"]["seller"], "规范化卖方")
+        self.assertEqual(record["canonical_projection"]["项目名称"], "规范化项目名")
+        self.assertEqual(record["canonical_projection"]["转让方"], "规范化卖方")
+        self.assertTrue(any(str(item.get("type") or "") == "mapping_applied" for item in record["findings"]))
+
     def test_upsert_record_refreshes_state_and_findings_when_revision_hash_is_unchanged(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "same-payload.html")
         with open(source_file, "w", encoding="utf-8") as handle:

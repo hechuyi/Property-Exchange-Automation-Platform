@@ -92,6 +92,9 @@ class IngestedRecord:
     postprocess_payload: Dict[str, Any]
     findings: List[PostProcessFinding] = field(default_factory=list)
     record_family: RecordFamily = "listing"
+    source_identity: Dict[str, Any] = field(default_factory=dict)
+    canonical_record: Dict[str, Any] = field(default_factory=dict)
+    canonical_projection: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

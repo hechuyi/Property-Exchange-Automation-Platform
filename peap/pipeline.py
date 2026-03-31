@@ -29,6 +29,7 @@ from .output_mapping import map_standard_to_excel_payload
 from .parse_cache import (
     ParseCacheStore,
     build_parser_signature,
+    build_runtime_version_signature,
 )
 from .parsing import (
     COMPAT_PROFILE_FULL,
@@ -247,7 +248,8 @@ class ParserPipeline:
         if self.parse_cache_enabled and self.parse_cache_db:
             try:
                 parser_signature = build_parser_signature()
-                run_signature = f"{self.compat_profile}|{parser_signature}|no-mapping"
+                runtime_signature = build_runtime_version_signature()
+                run_signature = f"{self.compat_profile}|{runtime_signature}|{parser_signature}|no-mapping"
                 parse_cache_store = ParseCacheStore(
                     db_path=self.parse_cache_db,
                     run_signature=run_signature,

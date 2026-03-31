@@ -15,6 +15,13 @@ from typing import Optional
 from .parsing import ParsedProject
 
 CACHE_SCHEMA_VERSION = "v2"
+DECODER_VERSION = "snapshot_decoder/v1"
+CLASSIFIER_VERSION = "source_classifier/v1"
+PARSER_FAMILY_VERSION = "parser_family_runtime/v1"
+PARSER_VARIANT_VERSION = "parser_variant_runtime/v1"
+ASSEMBLER_VERSION = "record_assembler/v1"
+NORMALIZER_VERSION = "record_normalizer/v1"
+POLICY_VERSION = "policy_engine/v1"
 
 
 def _sha256_text(value: str) -> str:
@@ -44,8 +51,19 @@ def build_parser_signature() -> str:
     return _sha256_text("\n".join(rows))
 
 
-@dataclass(frozen=True)
-class CacheStats:
+def build_runtime_version_signature() -> str:
+    parts = [
+        f"decoder={DECODER_VERSION}",
+        f"classifier={CLASSIFIER_VERSION}",
+        f"family={PARSER_FAMILY_VERSION}",
+        f"variant={PARSER_VARIANT_VERSION}",
+        f"assembler={ASSEMBLER_VERSION}",
+        f"normalizer={NORMALIZER_VERSION}",
+        f"policy={POLICY_VERSION}",
+    ]
+    return "|".join(parts)
+
+
     hits: int = 0
     misses: int = 0
     writes: int = 0

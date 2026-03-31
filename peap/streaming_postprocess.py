@@ -728,6 +728,17 @@ def _apply_optional_rule_registry(
     return resolved, findings
 
 
+
+
+def apply_policy_engine_to_payload(
+    payload: Dict[str, Any],
+    *,
+    mapping_entries: Iterable[Dict[str, Any]] | None = None,
+) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
+    resolved, findings = apply_mapping_entries(payload, mapping_entries=mapping_entries)
+    return resolved, findings
+
+
 def run_record_postprocess(
     payload: Dict[str, Any],
     *,
@@ -736,7 +747,7 @@ def run_record_postprocess(
     rules_config: Dict[str, Any] | None = None,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     working = copy.deepcopy(dict(payload or {}))
-    mapped_payload, findings = apply_mapping_entries(
+    mapped_payload, findings = apply_policy_engine_to_payload(
         working,
         mapping_entries=mapping_entries,
     )

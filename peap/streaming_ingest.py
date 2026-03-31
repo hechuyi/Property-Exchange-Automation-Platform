@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List
 
+from peap_core.record_identity import build_source_identity_payload
+
 from .io_utils import read_text_with_fallback
 from .streaming_models import IngestedRecord, ItemSavedPayload, PostProcessFinding, RecordState
 from .streaming_postprocess import (
@@ -17,6 +19,7 @@ from .streaming_postprocess import (
     normalize_record_payload,
     run_record_postprocess,
 )
+from .record_projection import project_canonical_record_to_compat_payload
 from .streaming_store import StreamingStore
 from .submission_layout import resolve_submission_snapshot_target
 
@@ -59,12 +62,81 @@ def _is_skip_parse(exc: Exception) -> bool:
     return exc.__class__.__name__ == "SkipParse"
 
 
+def _classify_failure(exc: Exception) -> tuple[str, str]:
+    message = str(exc or "").strip()
+    if ":" in message:
+        code, _, _ = message.partition(":")
+        normalized = code.strip()
+        if normalized:
+            return normalized, message
+    return "parse_failed", message
+
+
+def _resolve_candidate_tokens(*, project_code: str, project_id: str, page_url: str) -> list[str]:
+    tokens: list[str] = []
+    if project_code:
+        tokens.append(f"project_code:{project_code.upper()}")
+    if project_id:
+        tokens.append(f"project_id:{project_id.upper()}")
+    if page_url:
+        tokens.append(f"page_url:{page_url}")
+    return tokens
+
+
+def _build_canonical_record_payload(
+    *,
+    record_id: str,
+    project_code: str,
+    project_name: str,
+    project_type: str,
+    exchange: str,
+    listing_date: str,
+    source_identity: Dict[str, Any],
+    parser_payload: Dict[str, Any],
+    postprocess_payload: Dict[str, Any],
+    findings: Iterable[PostProcessFinding],
+) -> Dict[str, Any]:
+    seller = str(postprocess_payload.get("转让方") or parser_payload.get("转让方") or "").strip()
+    source_type = str(postprocess_payload.get("类型") or parser_payload.get("类型") or "").strip()
+    group_name = str(postprocess_payload.get("隶属集团") or parser_payload.get("隶属集团") or "").strip()
+    diagnostic_payload = [
+        {
+            "severity": str(item.severity),
+            "type": str(item.type),
+            "message": str(item.message),
+            "evidence": dict(item.evidence or {}),
+        }
+        for item in findings
+    ]
+    return {
+        "record_id": record_id,
+        "record_family": str(source_identity.get("record_family") or "listing"),
+        "source_identity": dict(source_identity),
+        "business_identity": {"project_code": project_code},
+        "canonical_fields": {
+            "project_code": project_code,
+            "project_name": project_name,
+            "project_type": project_type,
+            "exchange": exchange,
+            "start_date": listing_date,
+            "seller": seller,
+            "source_type": source_type,
+            "group_name": group_name,
+        },
+        "field_provenance": {},
+        "diagnostics": diagnostic_payload,
+        "normalizer_version": "streaming_ingest/v1",
+        "policy_state": {
+            "findings": [str(item.type) for item in findings],
+        },
+    }
+
+
 def _compute_revision_hash(payload: Dict[str, Any]) -> str:
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _next_available_file(base_path: str) -> tuple[str, bool]:
     if not os.path.exists(base_path):
         return base_path, False
     root, ext = os.path.splitext(base_path)
@@ -270,23 +342,23 @@ class StreamingIngestRunner:
                     "archive_path": "",
                     "project_code": item.project_code,
                 }
+            error_type, error_message = _classify_failure(exc)
             result = self.store.upsert_failed_record(
                 project_code=item.project_code,
                 source_file=source_file,
                 state="parse_failed",
-                error_type="parse_failed",
-                error_message=str(exc),
+                error_type=error_type,
+                error_message=error_message,
                 payload=payload,
             )
             return {
                 "state": "parse_failed",
                 "record_id": result["record_id"],
                 "revision_id": result["revision_id"],
-                "error_type": "parse_failed",
-                "error_message": str(exc),
+                "error_type": error_type,
+                "error_message": error_message,
                 "archive_path": "",
             }
-
         project_code = str(parser_payload.get("项目编号") or item.project_code or "").strip()
         project_name = str(parser_payload.get("项目名称") or item.project_name or "").strip()
         exchange = str(parser_payload.get("交易所") or item.exchange or "").strip()
@@ -377,6 +449,36 @@ class StreamingIngestRunner:
                 )
             ]
 
+        candidate_tokens = _resolve_candidate_tokens(
+            project_code=project_code,
+            project_id=project_id,
+            page_url=page_url,
+        )
+        source_identity = build_source_identity_payload(
+            record_family="listing",
+            source_file=source_file,
+            source_url=page_url,
+            project_code=project_code,
+            project_name=project_name,
+            exchange=exchange,
+            listing_date=listing_date,
+            candidate_tokens=candidate_tokens,
+        )
+        canonical_record = _build_canonical_record_payload(
+            record_id=uuid.uuid4().hex,
+            project_code=project_code,
+            project_name=project_name,
+            project_type=project_type,
+            exchange=exchange,
+            listing_date=listing_date,
+            source_identity=source_identity,
+            parser_payload=parser_payload,
+            postprocess_payload=postprocess_payload,
+            findings=findings,
+        )
+        canonical_projection = dict(postprocess_payload.get("canonical_projection") or {})
+        if not canonical_projection:
+            canonical_projection = project_canonical_record_to_compat_payload(canonical_record)
         record = IngestedRecord(
             record_id=uuid.uuid4().hex,
             revision_hash=_compute_revision_hash(postprocess_payload),
@@ -391,6 +493,9 @@ class StreamingIngestRunner:
             parser_payload=parser_payload,
             postprocess_payload=postprocess_payload,
             findings=list(findings),
+            source_identity=source_identity,
+            canonical_record=canonical_record,
+            canonical_projection=canonical_projection,
         )
         stored = self.store.upsert_record(record)
         if state == "pending_mapping":

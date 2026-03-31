@@ -117,18 +117,18 @@ class ParsingContractTest(unittest.TestCase):
 
         with (
             patch(
-                "peap.parsing.read_text_with_fallback",
+                "peap.parser_subsystem.read_text_with_fallback",
                 return_value=SimpleNamespace(content=html, encoding="utf-8"),
             ),
-            patch("peap.parsing.detect_exchange", return_value="beijing"),
-            patch("peap.parsing.PARSER_MAP", {"beijing": FakeParser}),
+            patch("peap.parser_subsystem.detect_exchange", return_value="beijing"),
+            patch("peap.parser_subsystem.PARSER_MAP", {"beijing": FakeParser}),
             patch(
-                "peap.parsing.detect_category_from_path",
+                "peap.parser_subsystem.detect_category_from_path",
                 return_value=(STATUS_LISTED, TYPE_UNKNOWN),
             ),
-            patch("peap.parsing.apply_pre_disclosure_fallback"),
-            patch("peap.parsing.apply_finance_fallback"),
-            patch("peap.parsing.apply_group_fallback"),
+            patch("peap.parser_subsystem.apply_pre_disclosure_fallback"),
+            patch("peap.parser_subsystem.apply_finance_fallback"),
+            patch("peap.parser_subsystem.apply_group_fallback"),
         ):
             parsed = parse_file(file_path)
 
@@ -164,18 +164,18 @@ class ParsingContractTest(unittest.TestCase):
 
         with (
             patch(
-                "peap.parsing.read_text_with_fallback",
+                "peap.parser_subsystem.read_text_with_fallback",
                 return_value=SimpleNamespace(content=html, encoding="utf-8"),
             ),
-            patch("peap.parsing.detect_exchange", return_value="beijing"),
-            patch("peap.parsing.PARSER_MAP", {"beijing": FakeParser}),
+            patch("peap.parser_subsystem.detect_exchange", return_value="beijing"),
+            patch("peap.parser_subsystem.PARSER_MAP", {"beijing": FakeParser}),
             patch(
-                "peap.parsing.detect_category_from_path",
+                "peap.parser_subsystem.detect_category_from_path",
                 return_value=(STATUS_LISTED, TYPE_UNKNOWN),
             ),
-            patch("peap.parsing.apply_pre_disclosure_fallback"),
-            patch("peap.parsing.apply_finance_fallback"),
-            patch("peap.parsing.apply_group_fallback"),
+            patch("peap.parser_subsystem.apply_pre_disclosure_fallback"),
+            patch("peap.parser_subsystem.apply_finance_fallback"),
+            patch("peap.parser_subsystem.apply_group_fallback"),
         ):
             with self.assertRaises(ParseError) as context:
                 parse_file(file_path)
@@ -248,18 +248,18 @@ class ParsingContractTest(unittest.TestCase):
 
             with (
                 patch(
-                    "peap.parsing.read_text_with_fallback",
+                    "peap.parser_subsystem.read_text_with_fallback",
                     return_value=SimpleNamespace(content=html, encoding="utf-8"),
                 ),
-                patch("peap.parsing.detect_exchange", return_value="beijing"),
-                patch("peap.parsing.PARSER_MAP", {"beijing": FakeParser}),
+                patch("peap.parser_subsystem.detect_exchange", return_value="beijing"),
+                patch("peap.parser_subsystem.PARSER_MAP", {"beijing": FakeParser}),
                 patch(
-                    "peap.parsing.detect_category_from_path",
+                    "peap.parser_subsystem.detect_category_from_path",
                     return_value=(STATUS_LISTED, TYPE_UNKNOWN),
                 ),
-                patch("peap.parsing.apply_pre_disclosure_fallback"),
-                patch("peap.parsing.apply_finance_fallback"),
-                patch("peap.parsing.apply_group_fallback"),
+                patch("peap.parser_subsystem.apply_pre_disclosure_fallback"),
+                patch("peap.parser_subsystem.apply_finance_fallback"),
+                patch("peap.parser_subsystem.apply_group_fallback"),
             ):
                 summary = pipeline.run()
 
@@ -300,18 +300,18 @@ class ParsingContractTest(unittest.TestCase):
 
         with (
             patch(
-                "peap.parsing.read_text_with_fallback",
+                "peap.parser_subsystem.read_text_with_fallback",
                 return_value=SimpleNamespace(content="<html></html>", encoding="utf-8"),
             ),
-            patch("peap.parsing.detect_exchange", return_value="shenzhen"),
-            patch("peap.parsing.PARSER_MAP", {"shenzhen": FakeParser}),
+            patch("peap.parser_subsystem.detect_exchange", return_value="shenzhen"),
+            patch("peap.parser_subsystem.PARSER_MAP", {"shenzhen": FakeParser}),
             patch(
-                "peap.parsing.detect_category_from_path",
+                "peap.parser_subsystem.detect_category_from_path",
                 return_value=(STATUS_LISTED, TYPE_UNKNOWN),
             ),
-            patch("peap.parsing.apply_pre_disclosure_fallback"),
-            patch("peap.parsing.apply_finance_fallback"),
-            patch("peap.parsing.apply_group_fallback"),
+            patch("peap.parser_subsystem.apply_pre_disclosure_fallback"),
+            patch("peap.parser_subsystem.apply_finance_fallback"),
+            patch("peap.parser_subsystem.apply_group_fallback"),
         ):
             parsed = parse_file(file_path)
 
@@ -331,41 +331,118 @@ class ParsingContractTest(unittest.TestCase):
         self.assertEqual(parsed.project_type, TYPE_UNKNOWN)
         self.assertFalse(parsed.is_pre_disclosure)
 
-    def test_parse_file_accepts_explicit_parser_output_contract(self) -> None:
+    def test_parse_file_delegates_to_parser_subsystem_facade(self) -> None:
         file_path = "C:\\temp\\detail.html"
+        subsystem_result = SimpleNamespace(
+            exchange="shenzhen",
+            encoding="utf-8",
+            data={
+                KEY_PROJECT_CODE: "P200",
+                "项目名称": "子系统项目",
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_UNKNOWN,
+            },
+            standard_payload={
+                "project_code": "P200",
+                "project_name": "子系统项目",
+            },
+        )
 
-        class FakeParser(WebPageParser):
-            def parse(self) -> ParserOutput:
-                return self.build_parser_output(
-                    compat_payload={
-                        KEY_PROJECT_CODE: "P010",
-                        "项目名称": "兼容名称",
-                    },
-                    standard_payload={
-                        "project_name": "结构化名称",
-                        "seller": "结构化转让方",
-                    },
-                )
+        with patch(
+            "peap.parsing.run_parser_subsystem",
+            return_value=subsystem_result,
+        ) as run_subsystem:
+            parsed = parse_file(file_path)
 
-        with (
-            patch(
-                "peap.parsing.read_text_with_fallback",
-                return_value=SimpleNamespace(content="<html></html>", encoding="utf-8"),
-            ),
-            patch("peap.parsing.detect_exchange", return_value="shenzhen"),
-            patch("peap.parsing.PARSER_MAP", {"shenzhen": FakeParser}),
-            patch(
-                "peap.parsing.detect_category_from_path",
-                return_value=(STATUS_LISTED, TYPE_EQUITY_TRANSFER),
-            ),
-            patch("peap.parsing.apply_pre_disclosure_fallback"),
-            patch("peap.parsing.apply_finance_fallback"),
-            patch("peap.parsing.apply_group_fallback"),
-        ):
+        run_subsystem.assert_called_once_with(file_path, compat_profile="full")
+        self.assertEqual(parsed.file_path, file_path)
+        self.assertEqual(parsed.exchange, "shenzhen")
+        self.assertEqual(parsed.encoding, "utf-8")
+        self.assertEqual(parsed.project_code, "P200")
+        self.assertEqual(parsed.project_name, "子系统项目")
+
+    def test_parse_file_forwards_non_default_compat_profile_to_subsystem(self) -> None:
+        file_path = r"C:\temp\detail.html"
+        subsystem_result = SimpleNamespace(
+            exchange="shenzhen",
+            encoding="utf-8",
+            data={
+                KEY_PROJECT_CODE: "P202",
+                "项目名称": "PPE 项目",
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_UNKNOWN,
+            },
+            standard_payload={
+                "project_code": "P202",
+                "project_name": "PPE 项目",
+            },
+        )
+
+        with patch(
+            "peap.parsing.run_parser_subsystem",
+            return_value=subsystem_result,
+        ) as run_subsystem:
+            parsed = parse_file(file_path, compat_profile="ppe_ready")
+
+        run_subsystem.assert_called_once_with(file_path, compat_profile="ppe_ready")
+        self.assertEqual(parsed.project_code, "P202")
+        self.assertEqual(parsed.project_name, "PPE 项目")
+
+    def test_parse_file_projects_compat_payload_from_standard_record_not_raw_parser_data(self) -> None:
+        file_path = r"C:\temp\detail.html"
+        subsystem_result = SimpleNamespace(
+            exchange="shenzhen",
+            encoding="utf-8",
+            data={
+                KEY_PROJECT_CODE: "P201",
+                "项目名称": "原始兼容名称",
+                "神秘字段": "should-not-leak",
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+            },
+            standard_payload={
+                "project_code": "P201",
+                "project_name": "结构化名称",
+                "seller": "结构化转让方",
+                "status": STATUS_LISTED,
+                "project_type": TYPE_EQUITY_TRANSFER,
+            },
+        )
+
+        with patch("peap.parsing.run_parser_subsystem", return_value=subsystem_result):
             parsed = parse_file(file_path)
 
         compat_payload = parsed.to_compat_payload(include_raw=True)
+        self.assertEqual(parsed.data["项目名称"], "原始兼容名称")
+        self.assertEqual(parsed.standard_record.project_name, "结构化名称")
+        self.assertEqual(compat_payload["项目名称"], "结构化名称")
+        self.assertEqual(compat_payload["转让方"], "结构化转让方")
+        self.assertNotIn("神秘字段", compat_payload)
 
+    def test_parse_file_accepts_explicit_parser_output_contract(self) -> None:
+        file_path = r"C:\temp\detail.html"
+        subsystem_result = SimpleNamespace(
+            exchange="shenzhen",
+            encoding="utf-8",
+            data={
+                KEY_PROJECT_CODE: "P010",
+                "项目名称": "兼容名称",
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+            },
+            standard_payload={
+                "project_code": "P010",
+                "project_name": "结构化名称",
+                "seller": "结构化转让方",
+                "status": STATUS_LISTED,
+                "project_type": TYPE_EQUITY_TRANSFER,
+            },
+        )
+
+        with patch("peap.parsing.run_parser_subsystem", return_value=subsystem_result):
+            parsed = parse_file(file_path)
+
+        compat_payload = parsed.to_compat_payload(include_raw=True)
         self.assertEqual(parsed.data["项目名称"], "兼容名称")
         self.assertEqual(parsed.standard_record.project_code, "P010")
         self.assertEqual(parsed.standard_record.project_name, "结构化名称")
@@ -429,6 +506,56 @@ class ParsingContractTest(unittest.TestCase):
         self.assertIsNotNone(FakeDelegatedParser.captured_context)
         self.assertEqual(FakeDelegatedParser.captured_context.source_file, file_path)
         self.assertEqual(parsed["source_file"], file_path)
+
+    def test_beijing_family_runtime_selector_marks_special_variant(self) -> None:
+        from peap_core import DecodedDocument
+        from peap_parsers.beijing import BeijingSpecialParser, select_beijing_variant_binding
+
+        document = DecodedDocument(
+            snapshot_id="snap-beijing-special",
+            document_kind="html",
+            primary_text="北交互联",
+            dom='''
+            <html>
+              <body>
+                <textarea id="jsonobj">{"object": {"detail": {"projectcode": "CP2026BJ0001"}}}</textarea>
+              </body>
+            </html>
+            ''',
+            metadata={"source_url": "https://example.invalid/beijing/1"},
+            decoder_version="snapshot_decoder/v1",
+        )
+
+        binding = select_beijing_variant_binding(document)
+
+        self.assertEqual(binding.variant_id, "special")
+        self.assertIs(binding.parser_cls, BeijingSpecialParser)
+
+    def test_shanghai_family_runtime_selector_marks_special_variant(self) -> None:
+        from peap_core import DecodedDocument
+        from peap_parsers.shanghai import ShanghaiSpecialParser, select_shanghai_variant_binding
+
+        document = DecodedDocument(
+            snapshot_id="snap-shanghai-special",
+            document_kind="html",
+            primary_text="综合招商 CP2026SH0001",
+            dom='''
+            <html>
+              <head><title>上海联合产权交易所</title></head>
+              <body>
+                <div class="project_code">CP2026SH0001</div>
+                <div>综合招商</div>
+              </body>
+            </html>
+            ''',
+            metadata={"source_url": "https://example.invalid/shanghai/1"},
+            decoder_version="snapshot_decoder/v1",
+        )
+
+        binding = select_shanghai_variant_binding(document)
+
+        self.assertEqual(binding.variant_id, "special")
+        self.assertIs(binding.parser_cls, ShanghaiSpecialParser)
 
     def test_beijing_standard_parser_returns_parser_output_contract(self) -> None:
         parser = BeijingStandardParser("<html></html>")

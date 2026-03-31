@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List
 
 from .compat_payload import build_compat_payload
 from .output_contract import clone_field_candidates, detect_output_kind, get_output_columns_for_kind
-from .standard_model import build_standard_project
+from .standard_model import build_standard_project, hydrate_standard_project
 from .streaming_models import ExportArtifact, ExportRequest, ExportRunResult
 from .streaming_postprocess import derive_listing_times_from_project_code, merge_record_payloads
 from .streaming_store import StreamingStore
@@ -111,7 +111,28 @@ def ordered_export_headers(rows: Iterable[Dict[str, Any]]) -> List[str]:
     return ordered
 
 
+def _canonical_projection_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    canonical_projection = record.get("canonical_projection") or {}
+    if canonical_projection:
+        return dict(canonical_projection)
+
+    canonical_record = record.get("canonical_record") or {}
+    canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
+    if isinstance(canonical_fields, dict) and canonical_fields:
+        standard = hydrate_standard_project(canonical_fields)
+        return build_compat_payload(standard)
+    return {}
+
+
 def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+    canonical_projection = _canonical_projection_from_record(record)
+    if canonical_projection:
+        if canonical_projection.get("挂牌次数") in (None, ""):
+            derived_listing_times = derive_listing_times_from_project_code(str(canonical_projection.get("项目编号") or ""))
+            if derived_listing_times:
+                canonical_projection["挂牌次数"] = derived_listing_times
+        return canonical_projection
+
     merged_payload = merge_record_payloads(
         record.get("parser_payload") or {},
         record.get("postprocess_payload") or {},
