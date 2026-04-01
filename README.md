@@ -6,7 +6,7 @@ This repository now tracks the desktop product mainline rather than the legacy s
 
 - `desktop_app/` — Electron shell and renderer
 - `desktop_backend/` — local backend API for the desktop shell
-- `peap_core/` — shared runtime contracts, snapshot/record identity contracts, and canonical source metadata
+- `peap_core/` — shared runtime contracts and canonical source metadata
 - `peap/`, `peap_parsers/`, `peap_postprocess/` — engine modules still used at runtime
 
 The current target is a **pure development mainline**: finish the frontend/backend product path first, keep runtime semantics explicit, and keep a single repo-root development runtime. The latest strict real Electron smoke is recorded in `docs/desktop_electron_smoke_report_2026-03-28.md`, and the current mainline gate definition lives in `docs/release_gate.md`.
@@ -66,14 +66,11 @@ More storage details are documented in `docs/desktop_storage_layout.md`.
 
 ## Runtime Boundary Notes
 
-- shared failed-record identity, successful-record source identity, and snapshot metadata contracts now live in `peap_core/`
-- the parser subsystem is explicitly layered as snapshot capture → decode/classify → page parse → assemble → normalize → policy → sink projection
+- shared failed-record identity and source metadata now live in `peap_core/`
 - downstream export compatibility is bounded by `peap/compat_payload.py`, rather than raw payload passthrough
-- `peap/streaming_ingest.py`, `peap/streaming_store.py`, and `peap/streaming_export.py` now persist and read canonical record/projection data alongside legacy compat payloads
-- replay/reprocess paths reuse stored snapshot metadata (`source_url`, snapshot ids/digests when present) instead of rebuilding context from raw parser payload only
-- parse cache invalidation is runtime-version aware rather than only a narrow parser file signature
 - legacy listing-date / pending-mapping normalization runs through `peap/streaming_store_maintenance.py`
 - ordinary read paths in `desktop_backend.app_service` are intentionally side-effect free
+- parser-layer redesign remains a separate track and is not part of this runtime-boundary slice
 
 ## Product Boundary
 
@@ -92,4 +89,3 @@ The desktop product is the only supported operator-facing workflow on `main`.
 - `docs/desktop_product_runbook_2026-03-26.md`
 - `docs/project_layout.md`
 - `docs/development_plan.md`
-- `docs/superpowers/specs/2026-03-30-full-parser-subsystem-rearchitecture-design.md`

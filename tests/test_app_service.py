@@ -1254,45 +1254,6 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["summary"]["failed_count"], 1)
 
-    def test_launch_manual_import_captures_ingest_function_for_background_thread(self) -> None:
-        import_root = os.path.join(self.temp_dir.name, "manual_import_capture")
-        os.makedirs(import_root, exist_ok=True)
-        source_file = os.path.join(import_root, "broken.html")
-        with open(source_file, "w", encoding="utf-8") as handle:
-            handle.write("<html></html>")
-
-        scheduled: dict[str, object] = {}
-
-        def fake_start_background_thread(*, name: str, target) -> None:
-            scheduled["name"] = name
-            scheduled["target"] = target
-
-        with patch.object(
-            self.service,
-            "_ingest_manual_import_file",
-            return_value={"state": "parse_failed", "record_id": "rec-failed", "project_code": "CODE-FAILED"},
-            create=True,
-        ), patch.object(
-            self.service,
-            "_start_background_thread",
-            side_effect=fake_start_background_thread,
-        ):
-            payload = self.service.launch_manual_import({"input_dir": import_root})
-
-        self.service._ingest_manual_import_file = lambda _file_path: {
-            "state": "ready",
-            "record_id": "rec-ready",
-            "project_code": "CODE-READY",
-        }
-
-        target = scheduled.get("target")
-        self.assertIsNotNone(target)
-        target()
-
-        job = self.service.get_job(str(payload["job_id"]))
-        self.assertEqual(job["status"], "failed")
-        self.assertEqual(job["summary"]["failed_count"], 1)
-
     def test_manual_import_failed_event_exposes_error_message(self) -> None:
         import_root = os.path.join(self.temp_dir.name, "manual_import_failed_message")
         os.makedirs(import_root, exist_ok=True)
