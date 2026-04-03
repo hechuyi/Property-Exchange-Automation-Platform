@@ -412,7 +412,7 @@ class ParsingContractTest(unittest.TestCase):
         with patch("peap.parsing.run_parser_subsystem", return_value=subsystem_result):
             parsed = parse_file(file_path)
 
-        compat_payload = parsed.to_compat_payload(include_raw=True)
+        compat_payload = parsed.standard_record.to_legacy_payload(include_raw=True)
         self.assertEqual(parsed.data["项目名称"], "原始兼容名称")
         self.assertEqual(parsed.standard_record.project_name, "结构化名称")
         self.assertEqual(compat_payload["项目名称"], "结构化名称")
@@ -442,7 +442,7 @@ class ParsingContractTest(unittest.TestCase):
         with patch("peap.parsing.run_parser_subsystem", return_value=subsystem_result):
             parsed = parse_file(file_path)
 
-        compat_payload = parsed.to_compat_payload(include_raw=True)
+        compat_payload = parsed.standard_record.to_legacy_payload(include_raw=True)
         self.assertEqual(parsed.data["项目名称"], "兼容名称")
         self.assertEqual(parsed.standard_record.project_code, "P010")
         self.assertEqual(parsed.standard_record.project_name, "结构化名称")
@@ -661,7 +661,7 @@ class ParsingContractTest(unittest.TestCase):
 
         self.assertEqual({diff["field"] for diff in diffs}, {"类型", KEY_LISTING_TIMES})
         self.assertTrue(all(diff["project_code"] == "P001" for diff in diffs))
-        self.assertEqual(primary.to_compat_payload(include_raw=True)["挂牌价格"], "108.00")
+        self.assertEqual(primary.standard_record.to_legacy_payload(include_raw=True)["挂牌价格"], "108.00")
         self.assertEqual(mapped["项目编号"], "P001")
         self.assertEqual(mapped["挂牌价格"], "108.00")
         self.assertEqual(mapped["挂牌次数"], 2)

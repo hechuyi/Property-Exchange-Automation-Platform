@@ -10,7 +10,6 @@ import uuid
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
-from .compat_payload import build_compat_payload
 from .export_projection import project_canonical_record_to_export_payload
 from .output_contract import clone_field_candidates, detect_output_kind, get_output_columns_for_kind
 from .standard_model import build_standard_project, hydrate_standard_project
@@ -117,24 +116,22 @@ def _canonical_projection_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
     Uses export_projection module to produce a canonical export payload.
     """
-    # Prefer canonical_projection if it exists and is complete
-    canonical_projection = record.get("canonical_projection") or {}
-
     # Get canonical_record for filling in missing fields
     canonical_record = record.get("canonical_record") or {}
-    canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
 
-    # Build a combined canonical record for export projection
-    # canonical_projection takes precedence, then canonical_fields fills gaps
-    combined_canonical = dict(canonical_fields)
-    for key, value in canonical_projection.items():
-        if value not in (None, ""):
-            combined_canonical[key] = value
+    if canonical_record:
+        # Use export_projection module - returns (payload, findings)
+        payload, _ = project_canonical_record_to_export_payload(
+            canonical_record,
+            fail_on_missing=False,
+        )
+        return payload
 
-    if combined_canonical:
-        # Use standard_model to convert canonical to compat
-        standard = hydrate_standard_project(combined_canonical)
-        return build_compat_payload(standard)
+    # Fall back to canonical_projection if no canonical_record
+    canonical_projection = record.get("canonical_projection") or {}
+    if canonical_projection:
+        return dict(canonical_projection)
+
     return {}
 
 

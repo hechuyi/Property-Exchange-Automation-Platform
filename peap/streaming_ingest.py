@@ -47,7 +47,7 @@ def _default_parse_file(file_path: str) -> Dict[str, Any]:
     from peap.parsing import parse_file
 
     parsed = parse_file(file_path)
-    payload = parsed.to_compat_payload(include_raw=True)
+    payload = parsed.standard_record.to_legacy_payload(include_raw=True)
     payload["项目编号"] = parsed.project_code
     payload["项目名称"] = parsed.project_name
     payload["项目类型"] = parsed.project_type

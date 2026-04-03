@@ -128,7 +128,7 @@ class ParseCacheContractTest(unittest.TestCase):
         self.assertEqual(cached.data["项目名称"], "兼容名称")
         self.assertEqual(cached.standard_record.project_name, "结构化名称")
         self.assertEqual(cached.project_name, "结构化名称")
-        self.assertEqual(cached.to_compat_payload(include_raw=True)["项目名称"], "结构化名称")
+        self.assertEqual(cached.standard_record.to_legacy_payload(include_raw=True)["项目名称"], "结构化名称")
 
     def test_parse_cache_merges_partial_structured_payload_with_compat_payload(self) -> None:
         html_file = os.path.join(self.temp_dir.name, "partial-structured.html")

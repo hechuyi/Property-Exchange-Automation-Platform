@@ -22,7 +22,7 @@ def _normalize(value: Any) -> str:
 
 def _as_compare_mapping(data: Mapping[str, Any] | ParsedProject) -> Mapping[str, Any]:
     if isinstance(data, ParsedProject):
-        return data.to_compat_payload(include_raw=True)
+        return data.standard_record.to_legacy_payload(include_raw=True)
     return data
 
 

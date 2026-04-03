@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .compat_payload import COMPAT_PAYLOAD_KEYS
+from .standard_model import LEGACY_PAYLOAD_KEYS
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_PROJECT_TYPE, KEY_STATUS
 from .excel_handler import (
     build_excel_schema_settings,
@@ -125,7 +125,7 @@ def _validate_mapping_writer_contract(
         kind: set(field_names)
         for kind, field_names in get_raw_fallback_contract().items()
     }
-    compat_keys = set(COMPAT_PAYLOAD_KEYS)
+    compat_keys = set(LEGACY_PAYLOAD_KEYS)
 
     required_internal_keys = {KEY_STATUS, KEY_PROJECT_TYPE, KEY_IS_PRE_DISCLOSURE}
     missing_internal_keys = sorted(required_internal_keys - set(schema["internal_keys"]))

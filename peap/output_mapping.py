@@ -2,7 +2,6 @@
 
 from typing import Any, Dict, FrozenSet, List
 
-from .compat_payload import build_compat_payload
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_PROJECT_TYPE, KEY_STATUS
 from .output_contract import (
     KIND_CAPITAL,
@@ -150,26 +149,11 @@ def _resolve_standard_project(project: StandardProject | ParsedProject) -> Stand
     return project
 
 
-def _resolve_compat_payload(
-    project: StandardProject | ParsedProject,
-    *,
-    include_raw_compat: bool,
-) -> Dict[str, Any]:
-    standard = _resolve_standard_project(project)
-    if isinstance(project, ParsedProject):
-        raw_payload = project.data if include_raw_compat else None
-    else:
-        raw_payload = project.raw if include_raw_compat else None
-    return build_compat_payload(standard, raw_payload=raw_payload)
-
-
 def map_standard_to_excel_payload(
     project: StandardProject | ParsedProject,
     target_file: str,
-    *,
-    include_raw_compat: bool = True,
 ) -> Dict[str, Any]:
-    """Convert a parsed or standard project record to the legacy excel payload."""
+    """Convert a parsed or standard project record to the excel output payload."""
     kind = detect_output_kind(target_file)
     field_map = OUTPUT_FIELD_MAP[kind]
     standard = _resolve_standard_project(project)
@@ -185,6 +169,4 @@ def map_standard_to_excel_payload(
     for output_field, standard_field in ROUTING_FIELD_MAP.items():
         mapped[output_field] = getattr(standard, standard_field)
 
-    compatible = _resolve_compat_payload(project, include_raw_compat=include_raw_compat)
-    compatible.update(mapped)
-    return compatible
+    return mapped

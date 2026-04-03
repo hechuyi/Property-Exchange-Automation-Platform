@@ -42,10 +42,6 @@ class ParsedProject:
     data: Dict[str, Any]
     standard_record: StandardProject
 
-    def to_compat_payload(self, *, include_raw: bool = True) -> Dict[str, Any]:
-        """Expose the legacy-compatible payload without leaking parser-specific internals downstream."""
-        return self.standard_record.to_legacy_payload(include_raw=include_raw)
-
     def to_cache_payload(self) -> Dict[str, Any]:
         return {
             PARSED_PROJECT_CACHE_COMPAT_PAYLOAD_KEY: dict(self.data),

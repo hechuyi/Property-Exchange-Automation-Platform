@@ -3,7 +3,6 @@
 from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Mapping, Optional
 
-from .compat_payload import COMPAT_PAYLOAD_KEYS, build_compat_payload
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_LISTING_TIMES, KEY_PROJECT_TYPE, KEY_STATUS
 
 FIELD_ALIASES = {
@@ -96,14 +95,58 @@ class StandardProject:
         return {field_name: getattr(self, field_name) for field_name in STANDARD_PROJECT_FIELD_NAMES}
 
     def to_legacy_payload(self, *, include_raw: bool = False) -> Dict[str, Any]:
-        return build_compat_payload(self, raw_payload=self.raw if include_raw else None)
+        """Project standard fields to legacy compat (Chinese) field names."""
+        # Direct field projection - no external compat_payload dependency
+        compat_mapping = {
+            "project_code": "项目编号",
+            "project_name": "项目名称",
+            "project_type": "项目类型",
+            "status": "状态",
+            "exchange": "交易所",
+            "source_type": "类型",
+            "seller": "转让方",
+            "deal_method": "交易方式",
+            "buyer_name": "受让方名称",
+            "group_name": "隶属集团",
+            "industry": "所属行业",
+            "region": "所在地区",
+            "contact": "经办人",
+            "agency": "受托机构",
+            "price": "挂牌价格",
+            "valuation": "转让标的评估值",
+            "start_date": "挂牌开始日期",
+            "end_date": "挂牌截止日期",
+            "profit": "近一年净利润",
+            "asset_total": "总资产",
+            "share_ratio": "持股比例",
+            "listing_times": "挂牌次数",
+            "is_pre_disclosure": "是否预披露",
+            "remark": "备注",
+        }
+        payload = {}
+        for standard_field, compat_field in compat_mapping.items():
+            value = getattr(self, standard_field, None)
+            if value is not None and value != "":
+                payload[compat_field] = value
+        return payload
 
 
 STANDARD_PROJECT_FIELD_NAMES = frozenset(
     field.name for field in fields(StandardProject) if field.name != "raw"
 )
 STANDARD_ROUTING_FIELDS = frozenset({"project_type", "status", "is_pre_disclosure"})
-LEGACY_PAYLOAD_KEYS = COMPAT_PAYLOAD_KEYS
+
+# Legacy compat keys - defined directly to avoid compat_payload dependency
+# These are the Chinese field names used in legacy output
+LEGACY_PAYLOAD_KEYS = frozenset({
+    "项目编号", "项目名称", "项目类型", "状态", "交易所", "类型", "转让方",
+    "交易方式", "受让方名称", "隶属集团", "所属行业", "所在地区", "经办人",
+    "受托机构", "挂牌价格", "融资方", "融资金额", "融资金额（万）",
+    "转让标的评估值", "成交金额", "挂牌开始日期", "挂牌截止日期",
+    "预披露开始日期", "预披露截止日期", "披露开始日期", "披露截止日期",
+    "成交日期", "近一年净利润", "近一年净利润（万）", "总资产", "总资产（万）",
+    "持股比例", "挂牌次数", "是否预披露", "备注",
+})
 
 
 def hydrate_standard_project(
