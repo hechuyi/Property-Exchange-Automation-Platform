@@ -839,5 +839,84 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertEqual(self.store.count_pending_mappings(), 0)
 
 
+class StreamingStoreStateMachineRegressionTest(unittest.TestCase):
+    """Regression tests for streaming store state machine contracts."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = StreamingStore(f"{self.temp_dir.name}/streaming_state_machine.sqlite3")
+
+    def test_mapping_conflict_is_persisted_review_work_not_exception_work(self) -> None:
+        """Regression: mapping_conflict must be classified as persisted review work.
+
+        Currently mapping_conflict may be counted as exception work instead of
+        persisted review work. This test verifies the correct classification.
+        """
+        source_file = os.path.join(self.temp_dir.name, "conflict.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>conflict</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-conflict-test",
+                revision_hash="hash-conflict",
+                project_code="G32025CQ1000202-3",
+                project_name="冲突测试项目",
+                project_type="股权转让",
+                exchange="chongqing",
+                listing_date="2026-03-26",
+                state="mapping_conflict",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={
+                    "项目编号": "G32025CQ1000202-3",
+                    "项目名称": "冲突测试项目",
+                    "项目类型": "股权转让",
+                    "隶属集团": "中国铁路工程集团有限公司",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025CQ1000202-3",
+                    "项目名称": "冲突测试项目",
+                    "项目类型": "股权转让",
+                },
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="mapping_conflict",
+                        message="conflicting group candidates",
+                        evidence={"options": ["中国铁路工程集团有限公司", "中铁"]},
+                    )
+                ],
+            )
+        )
+
+        # mapping_conflict records must be included in ready set for deduplication
+        # but NOT counted as exceptions
+        latest = self.store.iter_latest_records(states=["mapping_conflict"])
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0]["state"], "mapping_conflict")
+
+        # mapping_conflict must NOT be counted as pending_mapping exception
+        pending = self.store.count_pending_mappings()
+        # The regression is that mapping_conflict might be incorrectly counted here
+        # It should be review work, not pending mapping work
+        self.assertEqual(pending, 0, "mapping_conflict should not be counted as pending_mapping")
+
+    def test_record_states_are_properly_typed_enums(self) -> None:
+        """Regression: Record states must be proper typed enums, not strings."""
+        from peap.streaming_models import RecordState
+
+        # Verify RecordState enum exists and has expected values
+        self.assertTrue(hasattr(RecordState, "READY"))
+        self.assertTrue(hasattr(RecordState, "PENDING_MAPPING"))
+        self.assertTrue(hasattr(RecordState, "MAPPING_CONFLICT"))
+        self.assertTrue(hasattr(RecordState, "PARSED_FAILED"))
+
+        # State values should be string enums, not arbitrary strings
+        self.assertIsInstance(RecordState.READY.value, str)
+        self.assertIsInstance(RecordState.PENDING_MAPPING.value, str)
+
+
 if __name__ == "__main__":
     unittest.main()

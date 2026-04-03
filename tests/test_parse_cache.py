@@ -325,3 +325,98 @@ class ParseCacheContractTest(unittest.TestCase):
         self.assertIn("assembler=", captured["run_signature"])
         self.assertIn("normalizer=", captured["run_signature"])
         self.assertIn("policy=", captured["run_signature"])
+
+
+class ParseCacheRegressionTest(unittest.TestCase):
+    """Regression tests for parse cache contract violations."""
+
+    def test_parse_cache_store_stats_returns_proper_cache_stats_type(self) -> None:
+        """Regression: ParseCacheStore.stats must return a proper CacheStats type.
+
+        Currently CacheStats is not properly defined as a dataclass - the @dataclass
+        decorator is missing, causing the type annotation to be broken.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = ParseCacheStore(
+                db_path=os.path.join(tmp_dir, "parse_cache_stats.sqlite3"),
+                run_signature="test-signature-stats",
+                commit_interval=1,
+            )
+            self.addCleanup(store.close)
+
+            stats = store.stats
+
+            # stats must be a proper CacheStats instance
+            self.assertIsInstance(stats, CacheStats)
+
+            # Must have the required fields as proper attributes
+            self.assertTrue(hasattr(stats, "hits"))
+            self.assertTrue(hasattr(stats, "misses"))
+            self.assertTrue(hasattr(stats, "writes"))
+
+            # Values must be integers
+            self.assertIsInstance(stats.hits, int)
+            self.assertIsInstance(stats.misses, int)
+            self.assertIsInstance(stats.writes, int)
+
+    def test_build_parser_signature_includes_parser_subsystem_file(self) -> None:
+        """Regression: build_parser_signature must include peap/parser_subsystem.py.
+
+        Currently parser_subsystem.py is not in the signature calculation,
+        so changes to that file don't invalidate the cache.
+        """
+        import glob
+
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "peap"))
+        subsystem_path = os.path.join(root_dir, "parser_subsystem.py")
+
+        # If the file exists, it MUST be included in the signature
+        if os.path.isfile(subsystem_path):
+            # Check what files are currently being tracked
+            target_files = [
+                os.path.join(root_dir, "peap", "parsing.py"),
+                os.path.join(root_dir, "peap", "finance_fallback.py"),
+                os.path.join(root_dir, "peap", "group_fallback.py"),
+                os.path.join(root_dir, "peap", "pre_disclosure_fallback.py"),
+                os.path.join(root_dir, "peap", "pathing.py"),
+                os.path.join(root_dir, "peap", "output_mapping.py"),
+                os.path.join(root_dir, "peap", "targeting.py"),
+                os.path.join(root_dir, "peap", "standard_model.py"),
+                os.path.join(root_dir, "peap", "excel_handler.py"),
+            ]
+            target_files.extend(glob.glob(os.path.join(root_dir, "parsers", "*.py")))
+            target_files = sorted({os.path.abspath(path) for path in target_files if os.path.isfile(path)})
+
+            # parser_subsystem.py is NOT in the list - this is the regression
+            self.assertIn(
+                subsystem_path,
+                target_files,
+                "build_parser_signature must include peap/parser_subsystem.py. "
+                "Changes to parser_subsystem.py will not invalidate the parse cache."
+            )
+
+    def test_build_parser_signature_includes_peap_parsers_directory(self) -> None:
+        """Regression: build_parser_signature must include peap_parsers/* files.
+
+        Currently it uses 'parsers/*.py' instead of 'peap_parsers/*.py'.
+        """
+        import glob
+
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        peap_parsers_dir = os.path.join(root_dir, "peap_parsers")
+        parsers_dir = os.path.join(root_dir, "parsers")
+
+        if os.path.isdir(peap_parsers_dir):
+            peap_parsers_files = glob.glob(os.path.join(peap_parsers_dir, "*.py"))
+
+            # Check what glob pattern is being used
+            current_pattern = os.path.join(root_dir, "parsers", "*.py")
+            current_files = glob.glob(current_pattern)
+
+            # If peap_parsers exists but parsers doesn't have the right files, regression exists
+            self.assertNotEqual(
+                len(peap_parsers_files),
+                0,
+                f"build_parser_signature does not include peap_parsers/*.py. "
+                f"Found {len(peap_parsers_files)} files in peap_parsers/ that are not being tracked."
+            )
