@@ -27,7 +27,7 @@ class SseTaskContract:
 # Live-validated contract: SSE physical assets (SWZC / ZICHANZHUANRANG)
 SSE_PHYSICAL_ASSET_CONTRACT = SseTaskContract(
     project_type="physical_asset",
-    list_requests=(SseListRequest(endpoint="/prjs/realright/list", xmlx=None),),
+    list_requests=(SseListRequest(endpoint="/si/prjs/realright/list", xmlx=None),),
     detail_route_kind="realright",
     date_field_candidates=("PLKSRQ", "plksrq", "XMID", "xmid"),
 )
@@ -35,7 +35,7 @@ SSE_PHYSICAL_ASSET_CONTRACT = SseTaskContract(
 # Live-validated contract: SSE equity transfer (CQZR / CHANQUAN XMLX=2)
 SSE_EQUITY_TRANSFER_CONTRACT = SseTaskContract(
     project_type="equity_transfer",
-    list_requests=(SseListRequest(endpoint="/prjs/equity/list", xmlx="2"),),
+    list_requests=(SseListRequest(endpoint="/si/prjs/equity/list", xmlx="2"),),
     detail_route_kind="equity",
     date_field_candidates=("PLKSRQ", "PLJSRQ", "XMID", "XMBH", "XMMC"),
 )
@@ -43,7 +43,7 @@ SSE_EQUITY_TRANSFER_CONTRACT = SseTaskContract(
 # Live-validated contract: SSE capital increase (QYZZ / ZENGZI XMLX=2)
 SSE_CAPITAL_INCREASE_CONTRACT = SseTaskContract(
     project_type="capital_increase",
-    list_requests=(SseListRequest(endpoint="/prjs/capitalincrease/list", xmlx="2"),),
+    list_requests=(SseListRequest(endpoint="/si/prjs/capitalincrease/list", xmlx="2"),),
     detail_route_kind="capital",
     date_field_candidates=("PLKSRQ", "PLJSRQ", "XMID", "XMBH", "XMMC"),
 )
@@ -52,8 +52,8 @@ SSE_CAPITAL_INCREASE_CONTRACT = SseTaskContract(
 SSE_PRE_DISCLOSURE_CONTRACT = SseTaskContract(
     project_type="pre_disclosure",
     list_requests=(
-        SseListRequest(endpoint="/prjs/equity/list", xmlx="1"),
-        SseListRequest(endpoint="/prjs/capitalincrease/list", xmlx="1"),
+        SseListRequest(endpoint="/si/prjs/equity/list", xmlx="1"),
+        SseListRequest(endpoint="/si/prjs/capitalincrease/list", xmlx="1"),
     ),
     detail_route_kind="equity",  # both use equity-style detail route
     date_field_candidates=("PLKSRQ", "PLJSRQ", "XMID", "XMBH", "XMMC"),

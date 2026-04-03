@@ -33,6 +33,7 @@ from ..constants import (
 from ..download_errors import execute_failed_error, invalid_candidate_error, list_failed_error, save_failed_error
 from ..submission_layout import resolve_submission_snapshot_target
 from .common import DownloadSummary, in_date_range, parse_bound, parse_loose_date, project_type_key
+from .sse_contracts import get_sse_task_contract, SseListRequest
 
 LIST_API_URL = "https://www.suaee.com/si/prjs/realright/list"
 DETAIL_PAGE_URL = "https://www.suaee.com/xmzx.html#/zczrDetail"
@@ -401,7 +402,10 @@ class ShanghaiPhysicalAssetDownloader:
                         row.get("plksrq") or row.get("PLKSRQ") or row.get("gpksrq") or row.get("GPKSRQ")
                     )
                     if start or end:
-                        if list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
+                        if list_disclosure_start is None:
+                            summary.skipped_by_list_date += 1
+                            continue
+                        if not in_date_range(list_disclosure_start, start, end):
                             summary.skipped_by_list_date += 1
                             continue
 
@@ -508,7 +512,10 @@ class ShanghaiPhysicalAssetDownloader:
             if list_disclosure_start and "list_disclosure_start" not in row:
                 row = {**row, "list_disclosure_start": list_disclosure_start.isoformat()}
             if start or end:
-                if list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
                     summary.skipped_by_list_date += 1
                     continue
 
@@ -559,12 +566,28 @@ class ShanghaiPhysicalAssetDownloader:
                 summary.candidate_dates.append(list_disclosure_start.isoformat())
 
     def _query_list_page(self, *, page_index: int, list_project_type: str, gplx: str) -> Dict[str, Any]:
-        if list_project_type != "ZICHANZHUANRANG":
-            raise NotImplementedError("Only live-validated SSE physical assets are in scope for this fix")
+        contract = get_sse_task_contract(project_type_key(self.output_type))
+        # Find the matching list request by endpoint pattern
+        list_req: SseListRequest | None = None
+        for req in contract.list_requests:
+            # The list_project_type maps to a specific endpoint:
+            # ZICHANZHUANRANG -> realright, CHANQUAN -> equity, ZENGZI -> capitalincrease
+            if list_project_type == "ZICHANZHUANRANG" and "realright" in req.endpoint:
+                list_req = req
+                break
+            elif list_project_type == "CHANQUAN" and "equity" in req.endpoint:
+                list_req = req
+                break
+            elif list_project_type == "ZENGZI" and "capitalincrease" in req.endpoint:
+                list_req = req
+                break
+        if list_req is None:
+            self.logger.warning("No SSE contract for list_project_type=%s gplx=%s; returning empty", list_project_type, gplx)
+            return {"code": 200, "data": [], "extra": 0}
 
-        payload = {
-            "pageNo": int(page_index),
-            "pageSize": self.page_size,
+        payload: Dict[str, Any] = {
+            list_req.page_no_field: int(page_index),
+            list_req.page_size_field: self.page_size,
             "SZDQ": "",
             "SORT": "",
             "SZCS": "",
@@ -575,29 +598,48 @@ class ShanghaiPhysicalAssetDownloader:
             "KEY": "",
             "SFGZ": "",
         }
-        return self._post_json(LIST_API_URL, payload)
+        if list_req.xmlx is not None:
+            payload["XMLX"] = list_req.xmlx
+        return self._post_json(f"https://www.suaee.com{list_req.endpoint}", payload)
 
     def _normalize_list_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
             **row,
-            "xmid": str(row.get("xmid") or row.get("XMID") or "").strip(),
+            "xmid": str(row.get("xmid") or row.get("XMID") or row.get("ID") or "").strip(),
             "xmbh": str(row.get("xmbh") or row.get("XMBH") or "").strip(),
             "xmmc": str(row.get("xmmc") or row.get("XMMC") or "").strip(),
             "plksrq": row.get("plksrq") or row.get("PLKSRQ"),
             "pljsrq": row.get("pljsrq") or row.get("PLJSRQ"),
+            "xmlx": str(row.get("xmlx") or row.get("XMLX") or "").strip(),
+            "fclass": str(row.get("fclass") or row.get("FCLASS") or "").strip(),
         }
 
     def _resolve_page_url(self, *, row: Dict[str, Any], xmid: str) -> str:
+        # FCLASS-based routing from live SSE frontend bundle
+        # SW -> zczrDetail, 1C -> qyzzDetail, default -> Detail
+        fclass = row.get("fclass") or row.get("FCLASS") or ""
         xmurl = str(row.get("xmurl") or "").strip()
         if xmurl:
             if xmurl.startswith(("http://", "https://")):
                 return xmurl
             return urllib.parse.urljoin("https://www.suaee.com/", xmurl)
 
-        route = self._guess_detail_route(row=row)
+        base = "https://www.suaee.com/xmzx.html#"
+        xmid_quoted = urllib.parse.quote(xmid)
+        if fclass == "SW":
+            return f"{base}/zczrDetail?XMID={xmid_quoted}"
+        if fclass == "1C":
+            xmlx = row.get("xmlx") or row.get("XMLX") or ""
+            return f"{base}/qyzzDetail?XMID={xmid_quoted}&PLZT={xmlx}"
+        # Fallback for empty FCLASS: use default_detail_route
+        # jymhzichan -> zczrDetail, jymhchanquan -> qyzzDetail, jymhzengzi -> qyzzDetail
+        route = self._default_detail_route
         if route == "jymhzichan":
-            return f"{DETAIL_PAGE_URL}?XMID={urllib.parse.quote(xmid)}"
-        return f"https://www.suaee.com/suaeeHome/#/projectdetail/{route}?xmid={urllib.parse.quote(xmid)}"
+            return f"{base}/zczrDetail?XMID={xmid_quoted}"
+        if route in ("jymhchanquan", "jymhzengzi", "jymhchanquanyu", "jymhzengziyu"):
+            xmlx = row.get("xmlx") or row.get("XMLX") or ""
+            return f"{base}/qyzzDetail?XMID={xmid_quoted}&PLZT={xmlx}"
+        return f"{base}/Detail?XMID={xmid_quoted}"
 
     def _guess_detail_route(self, *, row: Dict[str, Any]) -> str:
         list_project_type = str(row.get("projectType") or "").upper()
