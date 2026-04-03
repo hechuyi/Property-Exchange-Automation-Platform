@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from bs4 import BeautifulSoup
@@ -30,10 +30,12 @@ from ..constants import (
     TYPE_PHYSICAL_ASSET,
     TYPE_PRE_DISCLOSURE,
 )
+from ..download_errors import execute_failed_error, invalid_candidate_error, list_failed_error, save_failed_error
 from ..submission_layout import resolve_submission_snapshot_target
+from .common import DownloadSummary, in_date_range, parse_bound, parse_loose_date, project_type_key
 
-LIST_API_URL = "https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew"
-DETAIL_PAGE_URL = "https://www.suaee.com/suaeeHome/#/projectdetail/jymhzichan"
+LIST_API_URL = "https://www.suaee.com/si/prjs/realright/list"
+DETAIL_PAGE_URL = "https://www.suaee.com/xmzx.html#/zczrDetail"
 
 REQUEST_HEADERS = {
     "Content-Type": "application/json;charset=UTF-8",
@@ -56,94 +58,12 @@ TAG_ASSET_ATTRS = (
 
 
 @dataclass
-class DownloadSummary:
-    pages_requested: int = 0
-    listed_items: int = 0
-    detail_fetched: int = 0
-    saved: int = 0
-    skipped_by_list_date: int = 0
-    skipped_by_detail_date: int = 0
-    skipped_by_resume: int = 0
-    skipped_by_duplicate: int = 0
-    skipped_by_missing_xmid: int = 0
-    detail_candidates: int = 0
-    detail_failed: int = 0
-    list_unaccounted: int = 0
-    detail_unaccounted: int = 0
-    candidate_dates: List[str] = field(default_factory=list)
-    candidate_entries: List[Dict[str, Any]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-
-@dataclass
 class _DownloadCandidate:
     xmid: str
     project_code: str
     page_url: str
     html_path: str
     row: Dict[str, Any]
-
-
-def _parse_date(value: Any) -> Optional[dt.date]:
-    if value in (None, ""):
-        return None
-
-    if isinstance(value, (int, float)):
-        ts = float(value)
-        if ts > 10_000_000_000:
-            ts /= 1000.0
-        try:
-            return dt.datetime.utcfromtimestamp(ts).date()
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    raw = str(value).strip()
-    if not raw:
-        return None
-
-    if raw.isdigit():
-        return _parse_date(int(raw))
-
-    raw = re.sub(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?", r"\1-\2-\3", raw)
-    raw = raw.replace("/", "-").replace(".", "-")
-    if "T" in raw:
-        raw = raw.split("T", 1)[0]
-    if " " in raw:
-        raw = raw.split(" ", 1)[0]
-
-    match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", raw)
-    if not match:
-        return None
-
-    try:
-        year, month, day = (int(part) for part in match.groups())
-        return dt.date(year, month, day)
-    except ValueError:
-        return None
-
-
-def _parse_bound(raw: Optional[str], name: str) -> Optional[dt.date]:
-    if raw in (None, ""):
-        return None
-    parsed = _parse_date(raw)
-    if parsed is None:
-        raise ValueError(f"invalid {name}: {raw!r} (expected YYYY-MM-DD)")
-    return parsed
-
-
-def _in_range(value: Optional[dt.date], start: Optional[dt.date], end: Optional[dt.date]) -> bool:
-    if value is None:
-        return False
-    if start and value < start:
-        return False
-    if end and value > end:
-        return False
-    return True
-
-
-def _safe_filename(name: str) -> str:
-    cleaned = re.sub(r"[\\/:*?\"<>|]+", "_", str(name or "").strip())
-    return cleaned or "unknown"
 
 
 def _is_skip_asset_url(value: str) -> bool:
@@ -202,6 +122,10 @@ def _is_cert_verify_error(exc: BaseException) -> bool:
 class ShanghaiPhysicalAssetDownloader:
     """Download Shanghai physical asset projects and save full rendered pages."""
 
+    manifest_list_endpoint = LIST_API_URL
+    manifest_detail_route = "jymhzichan"
+    manifest_date_field_candidates = ("plksrq", "gpksrq")
+
     def __init__(
         self,
         *,
@@ -217,7 +141,6 @@ class ShanghaiPhysicalAssetDownloader:
         default_detail_route: str = "jymhzichan",
         ssl_verify: bool = True,
         ssl_ca_bundle: Optional[str] = None,
-        ssl_fallback_insecure: bool = True,
         logger: Optional[logging.Logger] = None,
         item_saved_callback=None,
     ):
@@ -243,11 +166,8 @@ class ShanghaiPhysicalAssetDownloader:
         self.ssl_verify = bool(ssl_verify)
         raw_ca_bundle = str(ssl_ca_bundle or "").strip()
         self.ssl_ca_bundle = raw_ca_bundle or None
-        self.ssl_fallback_insecure = bool(ssl_fallback_insecure)
-        self._ssl_fallback_warned = False
-        self._ssl_context_insecure = ssl._create_unverified_context()
         self._ssl_context_verified = self._build_verified_ssl_context() if self.ssl_verify else None
-        self._ssl_context = self._ssl_context_verified if self.ssl_verify else self._ssl_context_insecure
+        self._ssl_context = self._ssl_context_verified
         if not self.ssl_verify:
             self.logger.warning(
                 "SSE SSL verification is disabled. Traffic to suaee.com will not verify certificates."
@@ -261,8 +181,8 @@ class ShanghaiPhysicalAssetDownloader:
         list_only: bool = False,
         prefetched_candidates: Optional[List[Dict[str, Any]]] = None,
     ) -> DownloadSummary:
-        start = _parse_bound(start_date, "start-date")
-        end = _parse_bound(end_date, "end-date")
+        start = parse_bound(start_date, "start-date")
+        end = parse_bound(end_date, "end-date")
         if start and end and start > end:
             raise ValueError(f"start-date {start_date!r} is after end-date {end_date!r}")
 
@@ -353,7 +273,7 @@ class ShanghaiPhysicalAssetDownloader:
             summary.detail_failed,
             summary.list_unaccounted,
             summary.detail_unaccounted,
-            len(summary.errors),
+            len(summary.typed_errors),
         )
         return summary
 
@@ -375,17 +295,30 @@ class ShanghaiPhysicalAssetDownloader:
                     gplx=gplx,
                 )
             except Exception as exc:  # noqa: BLE001
-                summary.errors.append(
-                    f"list-{list_project_type}-{gplx}-page-1-request-failed: {exc}"
+                summary.typed_errors.append(
+                    list_failed_error(
+                        source_id="sse",
+                        task_id=f"sse:{project_type_key(self.output_type)}",
+                        raw_reason=f"list-{list_project_type}-{gplx}-page-1-request-failed: {exc}",
+                    )
                 )
                 continue
-            if int(first_page.get("code", -1)) != 0:
-                summary.errors.append(
-                    f"list-{list_project_type}-{gplx}-api-failed: {first_page.get('message')}"
+            if int(first_page.get("code", -1)) not in {0, 200}:
+                summary.typed_errors.append(
+                    list_failed_error(
+                        source_id="sse",
+                        task_id=f"sse:{project_type_key(self.output_type)}",
+                        raw_reason=f"list-{list_project_type}-{gplx}-api-failed: {first_page.get('message')}",
+                    )
                 )
                 continue
 
-            page_count = int(first_page.get("data", {}).get("pageCount") or 0)
+            raw_total = first_page.get("extra")
+            if isinstance(raw_total, (int, float, str, bytes, bytearray)):
+                total_records = int(raw_total)
+            else:
+                total_records = int(first_page.get("data", {}).get("pageCount") or 0)
+            page_count = max(1, (total_records + self.page_size - 1) // self.page_size) if total_records else 1
             if page_count <= 0:
                 self.logger.info(
                     "No list data for projectType=%s gplx=%s.",
@@ -408,34 +341,55 @@ class ShanghaiPhysicalAssetDownloader:
                         )
                     except Exception as exc:  # noqa: BLE001
                         summary.pages_requested += 1
-                        summary.errors.append(
-                            f"list-{list_project_type}-{gplx}-page-{page_index}-request-failed: {exc}"
+                        summary.typed_errors.append(
+                            list_failed_error(
+                                source_id="sse",
+                                task_id=f"sse:{project_type_key(self.output_type)}",
+                                raw_reason=f"list-{list_project_type}-{gplx}-page-{page_index}-request-failed: {exc}",
+                            )
                         )
                         continue
                 summary.pages_requested += 1
-                if int(payload.get("code", -1)) != 0:
-                    summary.errors.append(
-                        f"list-{list_project_type}-{gplx}-page-{page_index}-failed: {payload.get('message')}"
+                if int(payload.get("code", -1)) not in {0, 200}:
+                    summary.typed_errors.append(
+                        list_failed_error(
+                            source_id="sse",
+                            task_id=f"sse:{project_type_key(self.output_type)}",
+                            raw_reason=f"list-{list_project_type}-{gplx}-page-{page_index}-failed: {payload.get('message')}",
+                        )
                     )
                     continue
 
-                rows = payload.get("data", {}).get("data") or []
+                rows_raw = payload.get("data")
+                if isinstance(rows_raw, list):
+                    rows = rows_raw
+                else:
+                    rows = payload.get("data", {}).get("data") or []
                 if not isinstance(rows, list):
-                    summary.errors.append(
-                        f"list-{list_project_type}-{gplx}-page-{page_index}-invalid-data"
+                    summary.typed_errors.append(
+                        invalid_candidate_error(
+                            source_id="sse",
+                            task_id=f"sse:{project_type_key(self.output_type)}",
+                            raw_reason=f"list-{list_project_type}-{gplx}-page-{page_index}-invalid-data",
+                        )
                     )
                     continue
 
                 for row in rows:
                     if not isinstance(row, dict):
                         continue
+                    row = self._normalize_list_row(row)
                     summary.listed_items += 1
 
-                    xmid = str(row.get("xmid") or "").strip()
+                    xmid = str(row.get("xmid") or row.get("XMID") or "").strip()
                     if not xmid:
                         summary.skipped_by_missing_xmid += 1
-                        summary.errors.append(
-                            f"list-{list_project_type}-{gplx}-page-{page_index}-missing-xmid"
+                        summary.typed_errors.append(
+                            invalid_candidate_error(
+                                source_id="sse",
+                                task_id=f"sse:{project_type_key(self.output_type)}",
+                                raw_reason=f"list-{list_project_type}-{gplx}-page-{page_index}-missing-xmid",
+                            )
                         )
                         continue
                     if xmid in seen_xmid:
@@ -443,14 +397,16 @@ class ShanghaiPhysicalAssetDownloader:
                         continue
                     seen_xmid.add(xmid)
 
-                    list_disclosure_start = _parse_date(row.get("plksrq") or row.get("gpksrq"))
+                    list_disclosure_start = parse_loose_date(
+                        row.get("plksrq") or row.get("PLKSRQ") or row.get("gpksrq") or row.get("GPKSRQ")
+                    )
                     if start or end:
-                        if list_disclosure_start and not _in_range(list_disclosure_start, start, end):
+                        if list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
                             summary.skipped_by_list_date += 1
                             continue
 
-                    project_code = str(row.get("xmbh") or xmid).strip()
-                    project_name = str(row.get("xmmc") or "").strip()
+                    project_code = str(row.get("xmbh") or row.get("XMBH") or xmid).strip()
+                    project_name = str(row.get("xmmc") or row.get("XMMC") or "").strip()
                     html_path, _ = resolve_submission_snapshot_target(
                         archive_root=output_dir,
                         project_code=project_code.upper(),
@@ -517,7 +473,13 @@ class ShanghaiPhysicalAssetDownloader:
         seen_xmid: Set[str] = set()
         for index, raw in enumerate(prefetched_candidates, start=1):
             if not isinstance(raw, dict):
-                summary.errors.append(f"prefetched-entry-{index}-invalid-format")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="sse",
+                        task_id=f"sse:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-invalid-format",
+                    )
+                )
                 continue
             summary.listed_items += 1
             entry = dict(raw)
@@ -525,7 +487,13 @@ class ShanghaiPhysicalAssetDownloader:
             xmid = str(entry.get("xmid") or "").strip()
             if not xmid:
                 summary.skipped_by_missing_xmid += 1
-                summary.errors.append(f"prefetched-entry-{index}-missing-xmid")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="sse",
+                        task_id=f"sse:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-missing-xmid",
+                    )
+                )
                 continue
             if xmid in seen_xmid:
                 summary.skipped_by_duplicate += 1
@@ -534,20 +502,26 @@ class ShanghaiPhysicalAssetDownloader:
 
             row_raw = entry.get("row")
             row = row_raw if isinstance(row_raw, dict) else {}
-            list_disclosure_start = _parse_date(
+            list_disclosure_start = parse_loose_date(
                 entry.get("list_disclosure_start") or row.get("plksrq") or row.get("gpksrq")
             )
             if list_disclosure_start and "list_disclosure_start" not in row:
                 row = {**row, "list_disclosure_start": list_disclosure_start.isoformat()}
             if start or end:
-                if list_disclosure_start and not _in_range(list_disclosure_start, start, end):
+                if list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
                     summary.skipped_by_list_date += 1
                     continue
 
             project_code = str(entry.get("project_code") or row.get("xmbh") or xmid).strip().upper()
             page_url = str(entry.get("page_url") or self._resolve_page_url(row=row, xmid=xmid)).strip()
             if not page_url:
-                summary.errors.append(f"prefetched-entry-{index}-missing-page-url: xmid={xmid}")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="sse",
+                        task_id=f"sse:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-missing-page-url: xmid={xmid}",
+                    )
+                )
                 continue
 
             project_name = str(entry.get("project_name") or row.get("xmmc") or "").strip()
@@ -585,13 +559,33 @@ class ShanghaiPhysicalAssetDownloader:
                 summary.candidate_dates.append(list_disclosure_start.isoformat())
 
     def _query_list_page(self, *, page_index: int, list_project_type: str, gplx: str) -> Dict[str, Any]:
+        if list_project_type != "ZICHANZHUANRANG":
+            raise NotImplementedError("Only live-validated SSE physical assets are in scope for this fix")
+
         payload = {
-            "projectType": str(list_project_type),
-            "gplx": str(gplx),
-            "isGw": True,
-            "pageQuery": {"pageIndex": int(page_index), "pageSize": self.page_size},
+            "pageNo": int(page_index),
+            "pageSize": self.page_size,
+            "SZDQ": "",
+            "SORT": "",
+            "SZCS": "",
+            "SZQX": "",
+            "ZCLB": "",
+            "ZRDJXX": "",
+            "ZRDJSX": "",
+            "KEY": "",
+            "SFGZ": "",
         }
         return self._post_json(LIST_API_URL, payload)
+
+    def _normalize_list_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            **row,
+            "xmid": str(row.get("xmid") or row.get("XMID") or "").strip(),
+            "xmbh": str(row.get("xmbh") or row.get("XMBH") or "").strip(),
+            "xmmc": str(row.get("xmmc") or row.get("XMMC") or "").strip(),
+            "plksrq": row.get("plksrq") or row.get("PLKSRQ"),
+            "pljsrq": row.get("pljsrq") or row.get("PLJSRQ"),
+        }
 
     def _resolve_page_url(self, *, row: Dict[str, Any], xmid: str) -> str:
         xmurl = str(row.get("xmurl") or "").strip()
@@ -601,6 +595,8 @@ class ShanghaiPhysicalAssetDownloader:
             return urllib.parse.urljoin("https://www.suaee.com/", xmurl)
 
         route = self._guess_detail_route(row=row)
+        if route == "jymhzichan":
+            return f"{DETAIL_PAGE_URL}?XMID={urllib.parse.quote(xmid)}"
         return f"https://www.suaee.com/suaeeHome/#/projectdetail/{route}?xmid={urllib.parse.quote(xmid)}"
 
     def _guess_detail_route(self, *, row: Dict[str, Any]) -> str:
@@ -639,22 +635,6 @@ class ShanghaiPhysicalAssetDownloader:
                 context=self._ssl_context,
             )
         except Exception as exc:  # noqa: BLE001
-            if (
-                self.ssl_verify
-                and self.ssl_fallback_insecure
-                and _is_cert_verify_error(exc)
-            ):
-                if not self._ssl_fallback_warned:
-                    self._ssl_fallback_warned = True
-                    self.logger.warning(
-                        "SSE SSL certificate verification failed, falling back to insecure TLS "
-                        "(verify=False). Set --no-sse-ssl-fallback-insecure to disable this fallback."
-                    )
-                return urllib.request.urlopen(
-                    request,
-                    timeout=self.timeout,
-                    context=self._ssl_context_insecure,
-                )
             raise
 
     def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -755,7 +735,13 @@ class ShanghaiPhysicalAssetDownloader:
                     )
                     await asyncio.sleep(1.2 * attempt)
                 else:
-                    summary.errors.append(f"xmid={candidate.xmid} page-timeout: {exc}")
+                    summary.typed_errors.append(
+                        execute_failed_error(
+                            source_id="sse",
+                            task_id=f"sse:{project_type_key(self.output_type)}",
+                            raw_reason=f"xmid={candidate.xmid} page-timeout: {exc}",
+                        )
+                    )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt <= self._detail_retries:
@@ -768,7 +754,13 @@ class ShanghaiPhysicalAssetDownloader:
                     )
                     await asyncio.sleep(1.2 * attempt)
                 else:
-                    summary.errors.append(f"xmid={candidate.xmid} page-fetch-failed: {exc}")
+                    summary.typed_errors.append(
+                        execute_failed_error(
+                            source_id="sse",
+                            task_id=f"sse:{project_type_key(self.output_type)}",
+                            raw_reason=f"xmid={candidate.xmid} page-fetch-failed: {exc}",
+                        )
+                    )
             finally:
                 await page.close()
 
@@ -779,14 +771,14 @@ class ShanghaiPhysicalAssetDownloader:
             return
 
         disclosure_start = self._extract_disclosure_start_date(rendered_html)
-        list_start = _parse_date(
+        list_start = parse_loose_date(
             candidate.row.get("list_disclosure_start")
             or candidate.row.get("plksrq")
             or candidate.row.get("gpksrq")
         )
         if start or end:
             check_date = list_start if list_start is not None else disclosure_start
-            if check_date is not None and not _in_range(check_date, start, end):
+            if check_date is not None and not in_date_range(check_date, start, end):
                 summary.skipped_by_detail_date += 1
                 return
 
@@ -799,7 +791,13 @@ class ShanghaiPhysicalAssetDownloader:
             )
         except Exception as exc:  # noqa: BLE001
             summary.detail_failed += 1
-            summary.errors.append(f"xmid={candidate.xmid} save-failed: {exc}")
+            summary.typed_errors.append(
+                save_failed_error(
+                    source_id="sse",
+                    task_id=f"sse:{project_type_key(self.output_type)}",
+                    raw_reason=str(exc),
+                )
+            )
             return
 
         if self.save_json:
@@ -825,16 +823,15 @@ class ShanghaiPhysicalAssetDownloader:
     ) -> str:
         await page.goto(page_url, wait_until="domcontentloaded", timeout=self._render_timeout_ms)
         await page.wait_for_selector(
-            "div.project_code, div.project_xmmc, div.project_content",
+            "body",
             timeout=self._render_timeout_ms,
         )
         if expected_project_code:
             await page.wait_for_function(
                 """
                 (expectedCode) => {
-                    const codeNode = document.querySelector('div.project_code');
-                    const codeText = (codeNode ? codeNode.innerText : document.body.innerText || '').toUpperCase();
-                    return codeText.includes(String(expectedCode || '').toUpperCase());
+                    const text = (document.body?.innerText || "").toUpperCase();
+                    return text.includes("\\u9879\\u76ee\\u7f16\\u53f7") || text.includes(String(expectedCode || "").toUpperCase());
                 }
                 """,
                 arg=expected_project_code,
@@ -870,7 +867,7 @@ class ShanghaiPhysicalAssetDownloader:
             total,
             summary.saved,
             summary.skipped_by_detail_date,
-            len(summary.errors),
+            len(summary.typed_errors),
             speed,
             eta_text,
         )
@@ -881,7 +878,7 @@ class ShanghaiPhysicalAssetDownloader:
         for pattern in DISCLOSURE_START_PATTERNS:
             match = re.search(pattern, text)
             if match:
-                parsed = _parse_date(match.group(1))
+                parsed = parse_loose_date(match.group(1))
                 if parsed is not None:
                     return parsed
         return None
@@ -986,7 +983,7 @@ class ShanghaiPhysicalAssetDownloader:
                     "project_code": candidate.project_code,
                     "project_name": str(candidate.row.get("xmmc") or ""),
                     "listing_date": disclosure_start.isoformat() if disclosure_start else "",
-                    "exchange": "shanghai",
+                    "source_id": "sse",
                     "project_type": self.output_type,
                     "row": candidate.row,
                 }
