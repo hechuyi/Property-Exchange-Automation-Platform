@@ -19,7 +19,7 @@ from .streaming_postprocess import (
     normalize_record_payload,
     run_record_postprocess,
 )
-from .record_projection import project_canonical_record_to_compat_payload
+from .export_projection import project_canonical_record_to_compat_payload
 from .streaming_store import StreamingStore
 from .submission_layout import resolve_submission_snapshot_target
 
@@ -99,6 +99,8 @@ def _build_canonical_record_payload(
     seller = str(postprocess_payload.get("转让方") or parser_payload.get("转让方") or "").strip()
     source_type = str(postprocess_payload.get("类型") or parser_payload.get("类型") or "").strip()
     group_name = str(postprocess_payload.get("隶属集团") or parser_payload.get("隶属集团") or "").strip()
+    status = str(postprocess_payload.get("项目状态") or parser_payload.get("项目状态") or "").strip()
+    price = postprocess_payload.get("挂牌价格") or parser_payload.get("挂牌价格")
     diagnostic_payload = [
         {
             "severity": str(item.severity),
@@ -117,8 +119,10 @@ def _build_canonical_record_payload(
             "project_code": project_code,
             "project_name": project_name,
             "project_type": project_type,
+            "status": status,
             "exchange": exchange,
             "start_date": listing_date,
+            "price": price,
             "seller": seller,
             "source_type": source_type,
             "group_name": group_name,

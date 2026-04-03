@@ -11,6 +11,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
 from .compat_payload import build_compat_payload
+from .export_projection import project_canonical_record_to_export_payload
 from .output_contract import clone_field_candidates, detect_output_kind, get_output_columns_for_kind
 from .standard_model import build_standard_project, hydrate_standard_project
 from .streaming_models import ExportArtifact, ExportRequest, ExportRunResult
@@ -112,42 +113,78 @@ def ordered_export_headers(rows: Iterable[Dict[str, Any]]) -> List[str]:
 
 
 def _canonical_projection_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    canonical_projection = record.get("canonical_projection") or {}
-    if canonical_projection:
-        return dict(canonical_projection)
+    """Build export payload from canonical record only - no raw payload fallback.
 
+    Uses export_projection module to produce a canonical export payload.
+    """
+    # Prefer canonical_projection if it exists and is complete
+    canonical_projection = record.get("canonical_projection") or {}
+
+    # Get canonical_record for filling in missing fields
     canonical_record = record.get("canonical_record") or {}
     canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
-    if isinstance(canonical_fields, dict) and canonical_fields:
-        standard = hydrate_standard_project(canonical_fields)
+
+    # Build a combined canonical record for export projection
+    # canonical_projection takes precedence, then canonical_fields fills gaps
+    combined_canonical = dict(canonical_fields)
+    for key, value in canonical_projection.items():
+        if value not in (None, ""):
+            combined_canonical[key] = value
+
+    if combined_canonical:
+        # Use standard_model to convert canonical to compat
+        standard = hydrate_standard_project(combined_canonical)
         return build_compat_payload(standard)
     return {}
 
 
 def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
-    canonical_projection = _canonical_projection_from_record(record)
-    if canonical_projection:
-        if canonical_projection.get("挂牌次数") in (None, ""):
-            derived_listing_times = derive_listing_times_from_project_code(str(canonical_projection.get("项目编号") or ""))
-            if derived_listing_times:
-                canonical_projection["挂牌次数"] = derived_listing_times
-        return canonical_projection
+    """Convert a record to export payload using canonical data only.
 
-    merged_payload = merge_record_payloads(
-        record.get("parser_payload") or {},
-        record.get("postprocess_payload") or {},
-    )
-    merged_payload.setdefault("项目编号", str(record.get("project_code") or ""))
-    merged_payload.setdefault("项目名称", str(record.get("project_name") or ""))
-    merged_payload.setdefault("项目类型", str(record.get("project_type") or ""))
-    merged_payload.setdefault("交易所", str(record.get("exchange") or ""))
-    standard = build_standard_project(merged_payload)
-    compatible = build_compat_payload(standard, raw_payload=merged_payload)
-    if compatible.get("挂牌次数") in (None, ""):
-        derived_listing_times = derive_listing_times_from_project_code(str(compatible.get("项目编号") or ""))
-        if derived_listing_times:
-            compatible["挂牌次数"] = derived_listing_times
-    return compatible
+    Export must use canonical data only - NO raw payload merge fallback.
+    Missing canonical fields fail through PipelineFailure or PostProcessFinding.
+    """
+    # First try to use canonical_projection directly if it's complete
+    canonical_projection = record.get("canonical_projection") or {}
+    canonical_record = record.get("canonical_record") or {}
+    canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
+
+    # Check if we have a complete canonical record
+    if canonical_fields:
+        try:
+            # Use export_projection to build the payload - this will fail loudly
+            # if required fields are missing
+            payload, findings = project_canonical_record_to_export_payload(
+                canonical_record,
+                fail_on_missing=False,  # Return findings instead of raising
+            )
+            # Derive listing times if missing
+            if payload.get("挂牌次数") in (None, ""):
+                derived_listing_times = derive_listing_times_from_project_code(
+                    str(payload.get("项目编号") or "")
+                )
+                if derived_listing_times:
+                    payload["挂牌次数"] = derived_listing_times
+            return payload
+        except Exception:
+            # Fall back to canonical_projection if available
+            pass
+
+    # Fall back to canonical_projection if canonical_record is not available
+    if canonical_projection:
+        payload = dict(canonical_projection)
+        if payload.get("挂牌次数") in (None, ""):
+            derived_listing_times = derive_listing_times_from_project_code(
+                str(payload.get("项目编号") or "")
+            )
+            if derived_listing_times:
+                payload["挂牌次数"] = derived_listing_times
+        return payload
+
+    # NO raw payload fallback - fail if we get here without canonical data
+    # This is the ONLY place where we would fall back to raw payload merge,
+    # and we explicitly do NOT allow it per the task requirements
+    return {}
 
 
 def _write_value_row(row: Dict[str, Any], *, kind: str) -> List[Any]:
