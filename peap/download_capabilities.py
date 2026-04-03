@@ -1,22 +1,12 @@
-"""Downloader capability and manifest models."""
+"""Downloader capability and manifest models.
+
+This module re-exports types from peap_core.download_contracts for backward
+compatibility. New code should import directly from peap_core.download_contracts.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from peap_core.download_contracts import DownloadDriverCapabilities
+from peap_core.download_contracts import DownloadTaskManifest
 
-
-@dataclass(frozen=True)
-class DownloadDriverCapabilities:
-    supports_list_only: bool = False
-    supports_prefetched_candidates: bool = False
-
-
-@dataclass(frozen=True)
-class DownloadTaskManifest:
-    source_id: str
-    project_type: str
-    task_id: str
-    display_name: str
-    list_endpoint: str = ""
-    detail_route: str = ""
-    date_field_candidates: tuple[str, ...] = field(default_factory=tuple)
+__all__ = ["DownloadDriverCapabilities", "DownloadTaskManifest"]

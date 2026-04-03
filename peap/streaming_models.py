@@ -5,33 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
+from peap_core.pipeline_state_contracts import JobStage as JobStageEnum
+from peap_core.pipeline_state_contracts import JobStatus
+from peap_core.pipeline_state_contracts import RecordState
+
 RecordFamily = Literal["listing", "deal"]
 
 JobType = Literal["one_click", "download_ingest", "export_excel", "manual_import", "mapping_refresh"]
-ItemStage = Literal[
-    "downloaded",
-    "queued_for_parse",
-    "prepare_tasks",
-    "save_pages",
-    "manual_import_scan",
-    "reprocessing",
-    "refresh_history",
-    "exporting",
-    "parsed",
-    "postprocessed",
-    "persisted",
-    "skipped",
-    "failed",
-]
-RecordState = Literal[
-    "ready",
-    "pending_mapping",
-    "mapping_conflict",
-    "skipped",
-    "parse_failed",
-    "postprocess_failed",
-    "conflict",
-]
+ItemStage = JobStageEnum  # ItemStage is an alias for backward compatibility
 Severity = Literal["info", "warn", "error"]
 
 
