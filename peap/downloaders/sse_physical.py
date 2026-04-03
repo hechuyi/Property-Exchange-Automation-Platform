@@ -776,9 +776,13 @@ class ShanghaiPhysicalAssetDownloader:
             or candidate.row.get("plksrq")
             or candidate.row.get("gpksrq")
         )
+        final_date = disclosure_start if disclosure_start is not None else list_start
         if start or end:
-            check_date = list_start if list_start is not None else disclosure_start
-            if check_date is not None and not in_date_range(check_date, start, end):
+            if final_date is None:
+                summary.date_missing_skipped += 1
+                summary.skipped_by_detail_date += 1
+                return
+            if not in_date_range(final_date, start, end):
                 summary.skipped_by_detail_date += 1
                 return
 
