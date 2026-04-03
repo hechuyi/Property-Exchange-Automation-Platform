@@ -32,6 +32,7 @@ def build_parser_signature() -> str:
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     target_files = [
         os.path.join(root_dir, "peap", "parsing.py"),
+        os.path.join(root_dir, "peap", "parser_subsystem.py"),
         os.path.join(root_dir, "peap", "finance_fallback.py"),
         os.path.join(root_dir, "peap", "group_fallback.py"),
         os.path.join(root_dir, "peap", "pre_disclosure_fallback.py"),
@@ -41,7 +42,7 @@ def build_parser_signature() -> str:
         os.path.join(root_dir, "peap", "standard_model.py"),
         os.path.join(root_dir, "peap", "excel_handler.py"),
     ]
-    target_files.extend(glob.glob(os.path.join(root_dir, "parsers", "*.py")))
+    target_files.extend(glob.glob(os.path.join(root_dir, "peap_parsers", "*.py")))
     target_files = sorted({os.path.abspath(path) for path in target_files if os.path.isfile(path)})
     rows = [f"schema={CACHE_SCHEMA_VERSION}"]
     for path in target_files:
@@ -64,6 +65,8 @@ def build_runtime_version_signature() -> str:
     return "|".join(parts)
 
 
+@dataclass
+class CacheStats:
     hits: int = 0
     misses: int = 0
     writes: int = 0

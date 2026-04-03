@@ -6,6 +6,8 @@
 包含各交易所的网页解析器实现
 """
 
+from peap_core import DecodedDocument
+
 from .base import ParserContext, ParserOutput, ParserVariantBinding, WebPageParser
 from .beijing import BeijingParser, select_beijing_variant_binding
 from .beijing_special import BeijingSpecialParser
@@ -25,6 +27,7 @@ from .tianjin import TianjinParser
 from .utils import detect_exchange
 
 __all__ = [
+    'DecodedDocument',
     'ParserContext',
     'ParserOutput',
     'ParserVariantBinding',

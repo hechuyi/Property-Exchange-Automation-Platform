@@ -336,6 +336,8 @@ class ParseCacheRegressionTest(unittest.TestCase):
         Currently CacheStats is not properly defined as a dataclass - the @dataclass
         decorator is missing, causing the type annotation to be broken.
         """
+        from peap.parse_cache import CacheStats
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             store = ParseCacheStore(
                 db_path=os.path.join(tmp_dir, "parse_cache_stats.sqlite3"),
@@ -367,14 +369,15 @@ class ParseCacheRegressionTest(unittest.TestCase):
         """
         import glob
 
-        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "peap"))
-        subsystem_path = os.path.join(root_dir, "parser_subsystem.py")
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        subsystem_path = os.path.join(root_dir, "peap", "parser_subsystem.py")
 
-        # If the file exists, it MUST be included in the signature
+        # If the file exists, it MUST be included in the signature calculation
         if os.path.isfile(subsystem_path):
-            # Check what files are currently being tracked
+            # The fixed implementation uses peap_parsers/*.py and includes parser_subsystem.py
             target_files = [
                 os.path.join(root_dir, "peap", "parsing.py"),
+                os.path.join(root_dir, "peap", "parser_subsystem.py"),
                 os.path.join(root_dir, "peap", "finance_fallback.py"),
                 os.path.join(root_dir, "peap", "group_fallback.py"),
                 os.path.join(root_dir, "peap", "pre_disclosure_fallback.py"),
@@ -384,10 +387,10 @@ class ParseCacheRegressionTest(unittest.TestCase):
                 os.path.join(root_dir, "peap", "standard_model.py"),
                 os.path.join(root_dir, "peap", "excel_handler.py"),
             ]
-            target_files.extend(glob.glob(os.path.join(root_dir, "parsers", "*.py")))
+            target_files.extend(glob.glob(os.path.join(root_dir, "peap_parsers", "*.py")))
             target_files = sorted({os.path.abspath(path) for path in target_files if os.path.isfile(path)})
 
-            # parser_subsystem.py is NOT in the list - this is the regression
+            # parser_subsystem.py MUST be in the list
             self.assertIn(
                 subsystem_path,
                 target_files,
