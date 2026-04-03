@@ -112,5 +112,18 @@ class CliConfigInjectionTest(unittest.TestCase):
             77,
         )
 
+def test_tpre_physical_asset_stays_5000w_plus() -> None:
+    from peap.downloaders.tpre import TianjinPhysicalAssetDownloader
+    downloader = TianjinPhysicalAssetDownloader(html_root="/tmp/test")
+    assert downloader.list_queries[0].extra_params["priceBegin"] == 5000
+
+
+def test_cquae_physical_asset_stays_5000w_plus() -> None:
+    from peap.downloaders.cquae import ChongqingPhysicalAssetDownloader
+    downloader = ChongqingPhysicalAssetDownloader(html_root="/tmp/test")
+    urls = [source.list_url for source in downloader.list_sources]
+    assert any("price=5000" in url for url in urls)
+
+
 if __name__ == "__main__":
     unittest.main()
