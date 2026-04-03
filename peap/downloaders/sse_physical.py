@@ -817,6 +817,7 @@ class ShanghaiPhysicalAssetDownloader:
             await self._run_blocking(self._write_json, json_path=json_path, payload=sidecar)
         self._notify_item_saved(candidate=candidate, disclosure_start=disclosure_start or list_start)
         summary.saved += 1
+        summary.downloaded_this_run.add(os.path.relpath(candidate.html_path, self.html_root))
 
     async def _fetch_rendered_html(
         self,

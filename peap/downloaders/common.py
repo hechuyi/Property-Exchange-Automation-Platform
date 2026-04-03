@@ -35,6 +35,7 @@ class DownloadSummary:
     candidate_dates: list[str] = field(default_factory=list)
     candidate_entries: list[dict[str, Any]] = field(default_factory=list)
     typed_errors: list[DownloadError] = field(default_factory=list)
+    downloaded_this_run: set[str] = field(default_factory=set)
 
 
 

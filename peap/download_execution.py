@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .download_errors import DownloadError, execute_failed_error
+
 from .download_chunk_state import get_chunk_state, save_chunk_state, update_chunk_state
-from .download_models import ChunkStateContext, DateChunk
-from .download_reporting import accumulate, print_summary
+from .download_models import (
+    ChunkStateContext,
+    DateChunk,
+    DownloadMaterializeResult,
+    SplitPlanResolvedBasis,
+    TaskTypedErrorList,
+)
+from .download_reporting import accumulate, new_totals, print_summary
 from .download_split_planning import assign_entries_to_chunks
 from .download_tasks import DownloadTaskSpec
 
@@ -19,17 +27,22 @@ def execute_split_task(
     output_root: str,
     chunks: list[DateChunk],
     candidate_entries: list[dict[str, object]],
-    task_totals: dict[str, int],
-    task_errors: list[str],
-    any_failure: bool,
+    resolved_basis: SplitPlanResolvedBasis,
+    task_totals: dict[str, int] | None = None,
+    any_failure: bool = False,
     build_downloader: Callable[..., object],
     run_downloader_with_prefetched: Callable[..., Any],
     task_chunk_state: dict[str, object] | None,
     chunk_state_ctx: ChunkStateContext | None,
-) -> bool:
+) -> DownloadMaterializeResult:
+    task_totals = task_totals if task_totals is not None else new_totals()
+    task_typed_errors = TaskTypedErrorList()
+    task_downloaded_this_run: set[str] = set()
     chunk_prefetched = assign_entries_to_chunks(
         chunks=chunks,
         candidate_entries=candidate_entries,
+        date_fields=resolved_basis.date_fields,
+        unresolved_candidate_policy=resolved_basis.unresolved_candidate_policy,
     )
     use_prefetched = any(len(x) > 0 for x in chunk_prefetched)
     if use_prefetched:
@@ -127,14 +140,31 @@ def execute_split_task(
             )
         except Exception as exc:  # noqa: BLE001
             any_failure = True
-            error = f"{spec.task_id}: chunk-{idx}-failed: {exc}"
-            task_errors.append(error)
+            typed_error = (
+                exc
+                if isinstance(exc, DownloadError)
+                else execute_failed_error(
+                    source_id=str(spec.manifest.source_id or spec.exchange_code),
+                    task_id=str(spec.task_id),
+                    raw_reason=f"chunk-{idx}-failed: {exc}",
+                )
+            )
+            task_typed_errors.append(typed_error)
             print(f"[{spec.task_id}] Chunk {idx}/{len(chunks)} failed: {exc}")
             logger.exception("[%s] Chunk %s/%s failed", spec.task_id, idx, len(chunks))
             if task_chunk_state is not None and chunk_state_ctx is not None:
-                update_chunk_state(task_chunk_state, chunk, status="failed", error=str(exc))
+                update_chunk_state(
+                    task_chunk_state,
+                    chunk,
+                    status="failed",
+                    error=typed_error.error_message,
+                )
                 save_chunk_state(chunk_state_ctx)
             continue
+
+        typed_summary_errors = [item for item in list(getattr(summary, "typed_errors", []) or []) if isinstance(item, DownloadError)]
+        if typed_summary_errors:
+            summary.typed_errors = typed_summary_errors
 
         print_summary(
             prefix=(
@@ -145,17 +175,23 @@ def execute_split_task(
             logger=logger,
         )
         if task_chunk_state is not None and chunk_state_ctx is not None:
-            if summary.errors:
+            if typed_summary_errors:
                 update_chunk_state(
                     task_chunk_state,
                     chunk,
                     status="failed",
-                    error=summary.errors[0],
+                    error=typed_summary_errors[0].error_message,
                 )
             else:
                 update_chunk_state(task_chunk_state, chunk, status="done")
             save_chunk_state(chunk_state_ctx)
-        accumulate(summary, task_totals, task_errors)
-        if summary.errors:
+        accumulate(summary, task_totals, task_typed_errors, task_downloaded_this_run)
+        if typed_summary_errors:
             any_failure = True
-    return any_failure
+    return DownloadMaterializeResult(
+        any_failure=any_failure,
+        totals=task_totals,
+        typed_errors=task_typed_errors,
+        chunk_count=len(chunks),
+        downloaded_this_run=task_downloaded_this_run,
+    )

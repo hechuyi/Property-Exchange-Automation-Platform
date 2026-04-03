@@ -48,11 +48,14 @@ def accumulate(
     summary: object,
     totals: dict[str, int],
     total_typed_errors: list[DownloadError] | None = None,
+    downloaded_this_run: set[str] | None = None,
 ) -> None:
     for field, attr in SUMMARY_FIELDS:
         totals[field] += int(getattr(summary, attr, 0) or 0)
     if total_typed_errors is not None:
         total_typed_errors.extend(getattr(summary, "typed_errors", []) or [])
+    if downloaded_this_run is not None:
+        downloaded_this_run.update(getattr(summary, "downloaded_this_run", []) or [])
 
 
 def _display_errors(summary: object) -> list[str]:
@@ -129,6 +132,7 @@ def build_task_result(
     summary: dict[str, int],
     typed_errors: list[DownloadError] | None = None,
     chunk_count: int | None = None,
+    new_downloads: list[str] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "display_name": display_name,
@@ -139,4 +143,12 @@ def build_task_result(
         payload["typed_errors"] = raw_typed_errors
     if chunk_count is not None:
         payload["chunk_count"] = int(chunk_count)
+    if new_downloads is not None:
+        payload["new_downloads"] = sorted(new_downloads)
     return payload
+
+
+def summary_metadata_to_dict(summary: object) -> dict[str, Any]:
+    return {
+        "new_downloads": sorted(getattr(summary, "downloaded_this_run", []) or []),
+    }

@@ -671,6 +671,7 @@ class CbexPhysicalAssetDownloader:
             await asyncio.get_running_loop().run_in_executor(None, lambda: open(p, "w", encoding="utf-8").write(json.dumps({"id": candidate.uid, "code": candidate.code, "url": candidate.url, "row": candidate.row, "disclosure_start_date": ds.isoformat() if ds else None}, ensure_ascii=False, indent=2)))
         self._notify_item_saved(candidate=candidate, disclosure_start=ds or list_ds)
         summary.saved += 1
+        summary.downloaded_this_run.add(os.path.relpath(candidate.html_path, self.html_root))
 
     async def _fetch_html(self, *, page, url: str, code: str) -> str:
         await page.goto(url, wait_until="domcontentloaded", timeout=self._render_timeout_ms)

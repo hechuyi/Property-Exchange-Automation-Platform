@@ -782,6 +782,7 @@ class ChongqingProjectDownloader:
             project_code=project_code,
         )
         summary.saved += 1
+        summary.downloaded_this_run.add(os.path.relpath(final_html_path, self.html_root))
 
     async def _fetch_rendered_html(self, *, page, candidate: _DownloadCandidate) -> tuple[str, str]:
         await page.goto(candidate.list_url, wait_until="domcontentloaded", timeout=self._render_timeout_ms)
