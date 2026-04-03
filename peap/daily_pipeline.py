@@ -142,19 +142,27 @@ def print_final_summary(
     print("=" * 72)
 
 
+def _resolve_archive_root(config_obj: object, args: object) -> str:
+    """Resolve the download output root using the same policy as streaming_daily_pipeline."""
+    archive_root = getattr(args, "archive_root", None) or getattr(config_obj, "ARCHIVE_ROOT", "")
+    fallback = os.path.join(str(config_obj.DATA_ROOT), "outputs", "submission")
+    return os.path.abspath(str(archive_root or fallback))
+
+
 def _build_download_request(
     args: object,
     *,
     start_text: str,
     end_text: str,
     config_obj: object,
+    output_root: str,
 ) -> DownloadRunRequest:
     defaults = config_obj.DOWNLOADER_DEFAULTS
     return DownloadRunRequest(
         exchange=str(getattr(args, "exchange", "all")),
         project_type=str(getattr(args, "project_type", "all")),
         list_tasks=False,
-        output_root="",
+        output_root=str(output_root),
         force_manual_root=False,
         start_date=start_text,
         end_date=end_text,
@@ -180,14 +188,14 @@ def _build_download_request(
     )
 
 
-def _build_parser_request(args: object, *, config_obj: object) -> ParserRunRequest:
+def _build_parser_request(args: object, *, config_obj: object, html_root: str) -> ParserRunRequest:
     parser_defaults = config_obj.PARSER_DEFAULTS
     return ParserRunRequest(
         self_check=False,
         dry_run=False,
         limit=parser_defaults["limit"],
         batch_flush_interval=parser_defaults["batch_flush_interval"],
-        html_root=str(getattr(args, "html_root", None) or default_parser_html_root(config_obj)),
+        html_root=str(html_root),
         log_dir=str(config_obj.LOG_DIR),
         log_file=None,
         compat_profile=parser_defaults["compat_profile"],
@@ -262,6 +270,8 @@ def run_daily_pipeline(
         parser_result: ParserRunResult | None = None
         postprocess_result: PostProcessRunResult | None = None
 
+        # Resolve archive root once, use for both download output and parser input
+        resolved_archive_root = _resolve_archive_root(config_obj, args)
         timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         plan_file = os.path.join(str(config_obj.LOG_DIR), f"split_plan_onclick_{timestamp}.json")
         download_request = DownloadOneClickRequest(
@@ -270,6 +280,7 @@ def run_daily_pipeline(
                 start_text=start_text,
                 end_text=end_text,
                 config_obj=config_obj,
+                output_root=resolved_archive_root,
             ),
             plan_file=plan_file,
             keep_plan=False,
@@ -300,7 +311,7 @@ def run_daily_pipeline(
             )
 
         parser_result = run_parser_request(
-            _build_parser_request(args, config_obj=config_obj),
+            _build_parser_request(args, config_obj=config_obj, html_root=resolved_archive_root),
             config_obj=config_obj,
             emit_console=emit_console,
         )

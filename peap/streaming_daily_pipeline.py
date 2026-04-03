@@ -329,10 +329,10 @@ def run_streaming_daily_pipeline(
                 with_refresh=False,
                 stage_callback=_stage_callback,
                 existing_project_codes=frozenset(
-                    store.list_existing_project_codes(states=["ready", "pending_mapping", "skipped", "conflict"])
+                    store.list_existing_project_codes(states=["ready", "pending_mapping", "mapping_conflict", "skipped", "conflict"])
                 ),
                 existing_candidate_tokens=frozenset(
-                    store.list_existing_candidate_tokens(states=["ready", "pending_mapping", "skipped", "conflict"])
+                    store.list_existing_candidate_tokens(states=["ready", "pending_mapping", "mapping_conflict", "skipped", "conflict"])
                 ),
             )
             download_result = run_download_oneclick(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -16,11 +17,14 @@ class DailyPipelineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
+        self.archive_root = os.path.join(self.temp_dir.name, "submission")
+        os.makedirs(self.archive_root, exist_ok=True)
         self.config = SimpleNamespace(
             LOG_DIR=self.temp_dir.name,
             DATA_ROOT=self.temp_dir.name,
             HTML_FOLDER=self.temp_dir.name,
-            PARSER_CACHE_DB=f"{self.temp_dir.name}\\parse_cache.sqlite3",
+            ARCHIVE_ROOT=self.archive_root,
+            PARSER_CACHE_DB=f"{self.temp_dir.name}/parse_cache.sqlite3",
             DOWNLOADER_DEFAULTS={
                 "concurrency": 2,
                 "resume": True,
@@ -56,7 +60,7 @@ class DailyPipelineTest(unittest.TestCase):
             with_refresh=True,
             no_resume=False,
             save_json=True,
-            html_root="C:\\temp\\html",
+            archive_root=self.archive_root,
             postprocess_config="C:\\temp\\postprocess.json",
             postprocess_mode="apply",
             verbose=False,
@@ -120,9 +124,11 @@ class DailyPipelineTest(unittest.TestCase):
         self.assertEqual(request.download_request.end_date, "2026-01-02")
         self.assertEqual(request.download_request.page_size, 20)
         self.assertTrue(request.with_refresh)
+        # Both download and parser should use the same archive root
+        self.assertEqual(request.download_request.output_root, self.archive_root)
         parser_request = captured_parser_request["request"]
         self.assertIsInstance(parser_request, ParserRunRequest)
-        self.assertEqual(parser_request.html_root, "C:\\temp\\html")
+        self.assertEqual(parser_request.html_root, self.archive_root)
         self.assertEqual(parser_request.compare_fields, ["project_name"])
         postprocess_request = captured_postprocess_request["request"]
         self.assertIsInstance(postprocess_request, PostProcessRunRequest)
