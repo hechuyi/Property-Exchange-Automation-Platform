@@ -123,9 +123,9 @@ def _is_cert_verify_error(exc: BaseException) -> bool:
 class ShanghaiPhysicalAssetDownloader:
     """Download Shanghai physical asset projects and save full rendered pages."""
 
-    manifest_list_endpoint = LIST_API_URL
+    manifest_list_endpoint = "/prjs/realright/list"
     manifest_detail_route = "jymhzichan"
-    manifest_date_field_candidates = ("plksrq", "gpksrq")
+    manifest_date_field_candidates = ("disclosure_start",)
 
     def __init__(
         self,
@@ -600,7 +600,7 @@ class ShanghaiPhysicalAssetDownloader:
         }
         if list_req.xmlx is not None:
             payload["XMLX"] = list_req.xmlx
-        return self._post_json(f"https://www.suaee.com{list_req.endpoint}", payload)
+        return self._post_json(f"https://www.suaee.com/si{list_req.endpoint}", payload)
 
     def _normalize_list_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -1141,6 +1141,9 @@ class ShanghaiPhysicalAssetDownloader:
 
 
 class ShanghaiEquityTransferDownloader(ShanghaiPhysicalAssetDownloader):
+    manifest_list_endpoint = "/prjs/equity/list"
+    manifest_date_field_candidates = ("disclosure_start", "disclosure_end")
+
     def __init__(self, **kwargs):
         super().__init__(
             output_type=TYPE_EQUITY_TRANSFER,
@@ -1151,6 +1154,9 @@ class ShanghaiEquityTransferDownloader(ShanghaiPhysicalAssetDownloader):
 
 
 class ShanghaiCapitalIncreaseDownloader(ShanghaiPhysicalAssetDownloader):
+    manifest_list_endpoint = "/prjs/capitalincrease/list"
+    manifest_date_field_candidates = ("disclosure_start", "disclosure_end")
+
     def __init__(self, **kwargs):
         super().__init__(
             output_type=TYPE_CAPITAL_INCREASE,
@@ -1161,6 +1167,10 @@ class ShanghaiCapitalIncreaseDownloader(ShanghaiPhysicalAssetDownloader):
 
 
 class ShanghaiPreDisclosureDownloader(ShanghaiPhysicalAssetDownloader):
+    # pre_disclosure uses two list requests, so we report the first one for manifest purposes
+    manifest_list_endpoint = "/prjs/equity/list"
+    manifest_date_field_candidates = ("disclosure_start",)
+
     def __init__(self, **kwargs):
         super().__init__(
             output_type=TYPE_PRE_DISCLOSURE,

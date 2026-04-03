@@ -94,11 +94,15 @@ class PreparedDownloadSession:
 
 def build_download_runner_settings(config_obj: object) -> DownloadRunnerSettings:
     path_within_project_root = getattr(config_obj, "is_path_within_project_root", None)
+    auto_html_root = str(getattr(config_obj, "AUTO_HTML_FOLDER", "") or "")
+    manual_html_root = str(getattr(config_obj, "HTML_FOLDER", "") or "")
+    project_root = str(getattr(config_obj, "PROJECT_ROOT", "") or "")
+    download_chunk_state_dir = str(getattr(config_obj, "DOWNLOAD_CHUNK_STATE_DIR", "") or "")
     return DownloadRunnerSettings(
-        auto_html_root="",
-        manual_html_root="",
-        project_root="",
-        download_chunk_state_dir="",
+        auto_html_root=auto_html_root,
+        manual_html_root=manual_html_root,
+        project_root=project_root,
+        download_chunk_state_dir=download_chunk_state_dir,
         is_path_within_project_root=path_within_project_root if callable(path_within_project_root) else None,
         task_registry_settings=build_download_task_registry_settings(config_obj),
     )
@@ -351,7 +355,14 @@ def _validate_output_root(
     settings: DownloadRunnerSettings | None = None,
 ) -> str:
     resolved_settings = settings or build_download_runner_settings(config_obj)
-    output_root = os.path.abspath(str(args.output_root))
+    raw_output_root = str(args.output_root or "")
+    if not raw_output_root:
+        message = (
+            "output-root is required. "
+            f"Use --output-root (default: {resolved_settings.auto_html_root or ''})"
+        )
+        raise DownloadRunnerError(message)
+    output_root = os.path.abspath(raw_output_root)
     manual_root = os.path.abspath(str(resolved_settings.manual_html_root or ""))
     if output_root == manual_root and not args.force_manual_root:
         message = (

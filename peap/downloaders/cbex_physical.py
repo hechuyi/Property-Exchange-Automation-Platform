@@ -115,7 +115,7 @@ def _skip_asset_url(v: str) -> bool:
 class CbexPhysicalAssetDownloader:
     manifest_list_endpoint = API_URL
     manifest_detail_route = "/xm/zczr/"
-    manifest_date_field_candidates = ("disclosuretime",)
+    manifest_date_field_candidates = ("disclosure_start",)
 
     def __init__(
         self,

@@ -79,7 +79,7 @@ class TpreProjectDownloader:
 
     manifest_list_endpoint = LIST_API_URL
     manifest_detail_route = "/transaction-view"
-    manifest_date_field_candidates = ("startTime", "list_disclosure_start")
+    manifest_date_field_candidates = ("disclosure_start",)
 
     def __init__(
         self,

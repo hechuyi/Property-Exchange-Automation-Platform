@@ -155,7 +155,7 @@ class ChongqingProjectDownloader:
 
     manifest_list_endpoint = f"{BASE_URL}/project"
     manifest_detail_route = "/Project/Show"
-    manifest_date_field_candidates = ("list_disclosure_start",)
+    manifest_date_field_candidates = ("disclosure_start",)
 
     def __init__(
         self,

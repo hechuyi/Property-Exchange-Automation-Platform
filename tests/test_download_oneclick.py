@@ -109,7 +109,6 @@ class DownloadOneClickTypedErrorsRegressionTest(unittest.TestCase):
             duration_sec=60.0,
             aggregate_summary={"saved": 2, "errors": 1},
             task_summaries={},
-            errors=["chunk_failed: chunk 1 failed"],
             stages=[],
             typed_errors=[typed_error],
         )

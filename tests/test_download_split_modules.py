@@ -80,6 +80,8 @@ class DownloadSplitModulesTest(unittest.TestCase):
             self.assertEqual(reloaded_chunk["last_error"], "boom")
 
     def test_save_and_load_split_plan_round_trip(self) -> None:
+        from peap.download_models import SPLIT_PLAN_UNRESOLVED_POLICY_SKIP, SplitPlanResolvedBasis
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             plan_path = os.path.join(tmp_dir, "split_plan.json")
             plan_map = {
@@ -92,6 +94,10 @@ class DownloadSplitModulesTest(unittest.TestCase):
                         )
                     ],
                     candidate_entries=[{"project_code": "XM001", "list_disclosure_start": "2026-01-02"}],
+                    resolved_basis=SplitPlanResolvedBasis(
+                        date_fields=("disclosure_start",),
+                        unresolved_candidate_policy=SPLIT_PLAN_UNRESOLVED_POLICY_SKIP,
+                    ),
                 )
             }
 
@@ -132,8 +138,8 @@ class DownloadSplitModulesTest(unittest.TestCase):
                 "2026-01-07",
             ],
             candidate_entries=[
-                {"project_code": "XM001", "list_disclosure_start": "2026-01-01"},
-                {"project_code": "XM002", "list_disclosure_start": "2026-01-05"},
+                {"project_code": "XM001", "disclosure_start": "2026-01-01"},
+                {"project_code": "XM002", "disclosure_start": "2026-01-05"},
             ],
             errors=[],
         )
@@ -155,7 +161,7 @@ class DownloadSplitModulesTest(unittest.TestCase):
                 return None
             return dt.datetime.strptime(raw, "%Y-%m-%d").date()
 
-        chunks, candidate_entries = plan_auto_split_chunks(
+        chunks, candidate_entries, resolved_basis = plan_auto_split_chunks(
             spec=spec,
             args=args,
             output_root="C:\\temp\\auto_html",
@@ -169,6 +175,7 @@ class DownloadSplitModulesTest(unittest.TestCase):
         self.assertEqual(calls["run"]["list_only"], True)
         self.assertGreater(len(chunks), 1)
         self.assertEqual(len(candidate_entries), 2)
+        self.assertIsNotNone(resolved_basis)
 
 
 if __name__ == "__main__":
