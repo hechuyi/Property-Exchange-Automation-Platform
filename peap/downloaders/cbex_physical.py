@@ -479,7 +479,10 @@ class CbexPhysicalAssetDownloader:
             if d and "list_disclosure_start" not in row:
                 row = {**row, "list_disclosure_start": d.isoformat()}
             if start or end:
-                if d and not in_date_range(d, start, end):
+                if d is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(d, start, end):
                     summary.skipped_by_list_date += 1
                     continue
 
@@ -554,7 +557,10 @@ class CbexPhysicalAssetDownloader:
 
             d = parse_loose_date(r.get("disclosuretime"))
             if start or end:
-                if d and not in_date_range(d, start, end):
+                if d is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(d, start, end):
                     summary.skipped_by_list_date += 1
                     continue
 

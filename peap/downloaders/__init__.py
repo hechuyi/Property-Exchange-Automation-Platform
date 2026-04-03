@@ -6,6 +6,7 @@ from .cbex_physical import (
     CbexPhysicalAssetDownloader,
     CbexPreDisclosureDownloader,
 )
+from .common import DownloadSummary
 from .cquae import (
     ChongqingCapitalIncreaseDownloader,
     ChongqingEquityTransferDownloader,
@@ -13,7 +14,6 @@ from .cquae import (
     ChongqingPreDisclosureDownloader,
 )
 from .sse_physical import (
-    DownloadSummary,
     ShanghaiCapitalIncreaseDownloader,
     ShanghaiEquityTransferDownloader,
     ShanghaiPhysicalAssetDownloader,

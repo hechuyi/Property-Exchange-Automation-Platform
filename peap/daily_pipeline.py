@@ -22,7 +22,7 @@ from .download_oneclick import (
     DownloadOneClickRunResult,
     run_download_oneclick,
 )
-from .download_runner import DownloadRunRequest, default_auto_html_root
+from .download_runner import DownloadRunRequest
 from .parser_runner import (
     ParserRunRequest,
     ParserRunResult,
@@ -154,7 +154,7 @@ def _build_download_request(
         exchange=str(getattr(args, "exchange", "all")),
         project_type=str(getattr(args, "project_type", "all")),
         list_tasks=False,
-        output_root=str(default_auto_html_root(config_obj)),
+        output_root="",
         force_manual_root=False,
         start_date=start_text,
         end_date=end_text,
@@ -164,7 +164,6 @@ def _build_download_request(
         resume=not bool(getattr(args, "no_resume", False)),
         save_json=bool(getattr(args, "save_json", False)),
         sse_ssl_verify=bool(defaults.get("sse_ssl_verify", True)),
-        sse_ssl_fallback_insecure=bool(defaults.get("sse_ssl_fallback_insecure", True)),
         sse_ca_bundle=defaults.get("sse_ca_bundle"),
         log_dir=str(config_obj.LOG_DIR),
         log_file=None,

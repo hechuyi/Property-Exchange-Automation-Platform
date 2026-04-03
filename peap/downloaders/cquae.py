@@ -358,9 +358,13 @@ class ChongqingProjectDownloader:
             seen_ids.add(project_id)
 
             list_disclosure_start = parse_loose_date(row.get("list_disclosure_start"))
-            if (start or end) and list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
-                summary.skipped_by_list_date += 1
-                continue
+            if start or end:
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
+                    summary.skipped_by_list_date += 1
+                    continue
 
             project_code = str(row.get("project_code") or "").strip().upper()
             project_name = str(row.get("project_name") or "").strip()
@@ -451,9 +455,13 @@ class ChongqingProjectDownloader:
             list_disclosure_start = parse_loose_date(
                 raw.get("list_disclosure_start") or row.get("list_disclosure_start")
             )
-            if (start or end) and list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
-                summary.skipped_by_list_date += 1
-                continue
+            if start or end:
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
+                    summary.skipped_by_list_date += 1
+                    continue
 
             page_url = str(raw.get("page_url") or row.get("page_url") or "").strip()
             if not page_url:

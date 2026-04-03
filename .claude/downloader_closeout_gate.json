@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "gates": [
+    {
+      "id": "hook_hardened",
+      "label": "Stop hook upgraded for downloader closeout work",
+      "done": true
+    },
+    {
+      "id": "streaming_error_boundary",
+      "label": "Streaming pipeline consumes structured downloader stage errors without downstream reclassification",
+      "done": true
+    },
+    {
+      "id": "runtime_capability_validation",
+      "label": "Runtime seam rejects unsupported combined capability inputs deterministically",
+      "done": true
+    },
+    {
+      "id": "request_normalization_purity",
+      "label": "Download request normalization avoids hidden in-place mutation",
+      "done": true
+    },
+    {
+      "id": "interface_audit",
+      "label": "Internal and external downloader interfaces reviewed for completeness and adaptation",
+      "done": true
+    },
+    {
+      "id": "extensibility_audit",
+      "label": "Downloader extensibility reviewed against future source and page-shape changes",
+      "done": true
+    },
+    {
+      "id": "legacy_compatibility_audit",
+      "label": "Legacy script and old-code compatibility removed for strict refactor closeout",
+      "done": true
+    },
+    {
+      "id": "file_naming_audit",
+      "label": "Repository file naming consistency reviewed",
+      "done": true
+    },
+    {
+      "id": "real_download_smoke_test",
+      "label": "Real downloader smoke test executed and reviewed",
+      "done": true
+    },
+    {
+      "id": "safe_cleanup",
+      "label": "Extra process files and extra test files reviewed and safely cleaned",
+      "done": true
+    },
+    {
+      "id": "strict_refactor_closeout",
+      "label": "Strict refactor closeout removed legacy downloader compatibility layers end-to-end",
+      "done": true
+    },
+    {
+      "id": "final_closeout_verification",
+      "label": "All requested downloader checks completed and re-verified",
+      "done": false
+    }
+  ]
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+from .download_errors import DownloadError
 from .download_models import DownloadRunResult
 
 
@@ -36,6 +37,32 @@ def download_task_list_to_summary_payload(
     }
 
 
+def _serialize_typed_errors(errors: list[DownloadError]) -> list[dict[str, object]]:
+    return [item.to_presenter_payload() for item in errors]
+
+
+def _serialize_task_summary_value(value: object) -> object:
+    if isinstance(value, DownloadError):
+        return value.to_presenter_payload()
+    if isinstance(value, dict):
+        return {str(key): _serialize_task_summary_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_serialize_task_summary_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_serialize_task_summary_value(item) for item in value]
+    return value
+
+
+def _serialize_task_summaries(task_summaries: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        str(task_id): {
+            str(key): _serialize_task_summary_value(value)
+            for key, value in dict(summary).items()
+        }
+        for task_id, summary in dict(task_summaries).items()
+    }
+
+
 def download_result_to_summary_payload(
     result: DownloadRunResult,
     *,
@@ -54,9 +81,12 @@ def download_result_to_summary_payload(
         "task_count": result.task_count,
         "split_plan_only": bool(split_plan_only),
         "aggregate_summary": dict(result.aggregate_summary),
-        "task_summaries": dict(result.task_summaries),
-        "errors": list(result.errors),
+        "task_summaries": _serialize_task_summaries(result.task_summaries),
+        "errors": [],  # legacy field removed; use typed_errors
     }
+    typed_errors = _serialize_typed_errors(list(result.typed_errors))
+    if typed_errors:
+        payload["typed_errors"] = typed_errors
     if start is not None:
         payload["start"] = start
     if end is not None:
@@ -100,7 +130,7 @@ def download_run_finished_message(
         f"start={start}, "
         f"end={end}, "
         f"duration_sec={duration_sec:.2f}, "
-        f"tasks={result.task_count}, errors={len(result.errors)}, log_file={log_file}"
+        f"tasks={result.task_count}, errors={len(result.typed_errors)}, log_file={log_file}"
     )
 
 

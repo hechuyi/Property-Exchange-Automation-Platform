@@ -289,9 +289,13 @@ class TpreProjectDownloader:
             seen_codes.add(project_code)
 
             list_disclosure_start = parse_loose_date(row.get("startTime"))
-            if (start or end) and list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
-                summary.skipped_by_list_date += 1
-                continue
+            if start or end:
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
+                    summary.skipped_by_list_date += 1
+                    continue
 
             page_url = urllib.parse.urljoin(BASE_URL, str(row.get("projectLink") or "").strip())
             if not page_url:
@@ -386,9 +390,13 @@ class TpreProjectDownloader:
             row_raw = raw.get("row")
             row = row_raw if isinstance(row_raw, dict) else {}
             list_disclosure_start = parse_loose_date(raw.get("list_disclosure_start") or row.get("startTime"))
-            if (start or end) and list_disclosure_start and not in_date_range(list_disclosure_start, start, end):
-                summary.skipped_by_list_date += 1
-                continue
+            if start or end:
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
+                    summary.skipped_by_list_date += 1
+                    continue
 
             page_url = urllib.parse.urljoin(
                 BASE_URL,
