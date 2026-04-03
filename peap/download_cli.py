@@ -8,9 +8,10 @@ import sys
 import time
 from typing import Iterable, Optional, Tuple
 
-from peap_core.cli_support import setup_cli_logger, write_summary_json
+from peap_core.cli_support import close_cli_logger, setup_cli_logger, write_summary_json
 
 from .download_cli_payloads import (
+    download_error_to_summary_payload,
     download_result_to_summary_payload,
     download_run_finished_message,
     download_task_list_to_summary_payload,
@@ -21,9 +22,6 @@ from .download_runner import (
 )
 from .download_runner import (
     build_task_list_payload as _build_task_list_payload,
-)
-from .download_runner import (
-    default_auto_html_root as _runner_default_auto_html_root,
 )
 from .download_runner import (
     run_download_cli_args as _run_download_cli_args,
@@ -38,10 +36,6 @@ def _load_default_download_config() -> object:
     from config import config as default_config
 
     return default_config
-
-
-def _default_auto_html_root(config_obj: object) -> str:
-    return _runner_default_auto_html_root(config_obj)
 
 
 _SESSION_LOG_FILE: Optional[str] = None
@@ -67,8 +61,8 @@ def _setup_logger(
         log_file=resolved_log_file,
         default_log_dir=default_log_dir,
         file_prefix="download",
-        base_level=str(getattr(config_obj, "LOG_LEVEL", "INFO")),
-        enable_file_logging=bool(getattr(config_obj, "LOG_TO_FILE", True)),
+        base_level="INFO",
+        enable_file_logging=True,
     )
     _SESSION_LOG_FILE = resolved_log_file
     if resolved_log_file:
@@ -100,7 +94,7 @@ def build_parser(config_obj: object | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-root",
-        default=_default_auto_html_root(resolved_config),
+        default=str(getattr(resolved_config, "AUTO_HTML_FOLDER", "") or ""),
         help="Output root folder for auto-downloaded pages",
     )
     parser.add_argument(
@@ -153,15 +147,6 @@ def build_parser(config_obj: object | None = None) -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=defaults.get("sse_ssl_verify", True),
         help="Enable SSE certificate verification (--sse-ssl-verify/--no-sse-ssl-verify)",
-    )
-    parser.add_argument(
-        "--sse-ssl-fallback-insecure",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.get("sse_ssl_fallback_insecure", True),
-        help=(
-            "When SSE cert verify fails, retry with insecure TLS "
-            "(--sse-ssl-fallback-insecure/--no-sse-ssl-fallback-insecure)"
-        ),
     )
     parser.add_argument(
         "--sse-ca-bundle",
@@ -272,50 +257,68 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         default_log_dir=str(resolved_config.LOG_DIR),
         config_obj=resolved_config,
     )
-    if log_path:
-        print(f"Download log file: {log_path}")
-    run_started_at = dt.datetime.now()
-    run_started_monotonic = time.monotonic()
-    logger.info(
-        "Run context: cwd=%s pid=%s python=%s executable=%s",
-        os.getcwd(),
-        os.getpid(),
-        sys.version.split()[0],
-        sys.executable,
-    )
     try:
-        run_result = _run_download_cli_args(
-            args,
-            logger=logger,
-            config_obj=resolved_config,
+        if log_path:
+            print(f"Download log file: {log_path}")
+        run_started_at = dt.datetime.now()
+        run_started_monotonic = time.monotonic()
+        logger.info(
+            "Run context: cwd=%s pid=%s python=%s executable=%s",
+            os.getcwd(),
+            os.getpid(),
+            sys.version.split()[0],
+            sys.executable,
         )
-    except DownloadRunnerError:
-        return 2
+        try:
+            run_result = _run_download_cli_args(
+                args,
+                logger=logger,
+                config_obj=resolved_config,
+            )
+        except DownloadRunnerError as exc:
+            write_summary_json(
+                args.summary_json,
+                download_error_to_summary_payload(
+                    log_file=log_path,
+                    split_plan_only=bool(args.split_plan_only),
+                    error=str(exc),
+                    generated_at=dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+                logger=logger,
+                label="Download summary json",
+            )
+            return 2
 
-    run_finished_at = dt.datetime.now()
-    duration_seconds = time.monotonic() - run_started_monotonic
-    exit_code = run_result.exit_code
-    write_summary_json(
-        args.summary_json,
-        download_result_to_summary_payload(
-            run_result,
+        run_finished_at = dt.datetime.now()
+        duration_seconds = time.monotonic() - run_started_monotonic
+        exit_code = run_result.exit_code
+        write_summary_json(
+            args.summary_json,
+            download_result_to_summary_payload(
+                run_result,
+                log_file=log_path,
+                split_plan_only=bool(args.split_plan_only),
+                generated_at=run_finished_at.strftime("%Y-%m-%d %H:%M:%S"),
+                start=run_started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                end=run_finished_at.strftime("%Y-%m-%d %H:%M:%S"),
+                duration_sec=duration_seconds,
+            ),
+            logger=logger,
+            label="Download summary json",
+        )
+        final_message = download_run_finished_message(
+            result=run_result,
             log_file=log_path,
-            split_plan_only=bool(args.split_plan_only),
-            generated_at=run_finished_at.strftime("%Y-%m-%d %H:%M:%S"),
             start=run_started_at.strftime("%Y-%m-%d %H:%M:%S"),
             end=run_finished_at.strftime("%Y-%m-%d %H:%M:%S"),
             duration_sec=duration_seconds,
-        ),
-        logger=logger,
-        label="Download summary json",
-    )
-    final_message = download_run_finished_message(
-        result=run_result,
-        log_file=log_path,
-        start=run_started_at.strftime("%Y-%m-%d %H:%M:%S"),
-        end=run_finished_at.strftime("%Y-%m-%d %H:%M:%S"),
-        duration_sec=duration_seconds,
-    )
-    print(final_message)
-    logger.info(final_message)
-    return exit_code
+        )
+        print(final_message)
+        logger.info(final_message)
+        return exit_code
+    finally:
+        close_cli_logger(logger)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
