@@ -18,7 +18,7 @@ Last updated: 2026-03-30
 4. Python 环境管理、CI 与本地开发入口已经统一到 `uv`。
 5. 已补上安装元数据与共享契约边界：`pyproject.toml` 导出 `desktop_backend*` 与 `peap_core*`，`record_identity` 已下沉到 `peap_core/record_identity.py`，`peap/streaming_store.py` 不再反向依赖 `desktop_backend.record_identity`。
 6. runtime source metadata 已集中到 `peap_core/source_catalog.py`；`ProductProfile`、downloader 展示名、任务进度标签与 backend 交易所归一化现在都消费同一份 catalog。
-7. 下游导出兼容层已改为显式 compat projection：`peap/compat_payload.py` 成为唯一可审计的兼容投影入口，export writer 不再因原始 parser/postprocess payload 中多出字段就被动放行。
+7. 下游导出兼容层已改为显式 canonical projection：`peap/export_projection.py` 成为唯一可审计的兼容投影入口，export writer 不再因原始 parser/postprocess payload 中多出字段就被动放行。`peap/compat_payload.py` 已被删除。
 8. legacy store 归一化已从读路径移出：`peap/streaming_store_maintenance.py` 负责显式维护，`overview()`、`list_records()`、`list_pending_mappings()`、`get_job()` 等读取路径保持无副作用；启动与 daily pipeline bootstrap 会主动运行 maintenance。
 9. `README.md`、`docs/release_gate.md`、`docs/desktop_product_runbook_2026-03-26.md`、`docs/project_layout.md` 已按当前桌面主线对齐，明确写出 `uv` / Node 前置、首次联网下载前置、repo-root 开发态耦合，以及 `docs/superpowers/` 不属于 release 文档集合。
 10. 额外发布装配脚本、附带运行时入口与已提交 `dist*` 产物已从主仓移除，主线只保留 repo-root 开发态产品路径。

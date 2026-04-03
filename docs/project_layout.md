@@ -48,9 +48,40 @@ bash scripts/bootstrap_desktop_env.sh
 
 - `peap_core/record_identity.py` 承载失败对象身份与证据路径选择等共享契约，`peap/` 与 `desktop_backend/` 都从这里取用。
 - `peap_core/source_catalog.py` 是唯一 canonical source metadata 目录，统一提供 source code、显示标签、别名解析与 downloader/backend 共享元数据。
-- `peap/compat_payload.py` 定义显式 downstream compat projection，导出链路不再把任意 raw parser/postprocess 字段直接带入 writer payload。
+- `peap/export_projection.py` 定义显式 downstream export projection，导出链路不再把任意 raw parser/postprocess 字段直接带入 writer payload。导出只允许使用 canonical 数据，禁止 raw payload 回退。
 - `peap/streaming_store_maintenance.py` 是 legacy store normalization 的显式入口；ordinary read paths 不再偷偷修复记录状态或 listing_date。
 - parser-layer 重构仍未纳入上述 runtime 边界，后续需要单独设计。
+
+## 状态机与契约模型
+
+### 显式状态机 (RecordState)
+
+记录在流水线中有明确的状态定义，状态不代表异常而是工作流状态：
+
+- `ready` - 记录已完成，可供导出
+- `pending_mapping` - 等待类型映射
+- `mapping_conflict` - 映射冲突，需人工审核
+- `skipped` - 已跳过
+- `conflict` - 冲突状态
+- `pending_review` - 等待审核
+- `parse_failed` - 解析失败
+- `postprocess_failed` - 后处理失败
+
+### Canonical 契约模型
+
+`IngestedRecord` 包含显式的 canonical 数据字段：
+
+- `canonical_record` - 规范化记录，包含 `canonical_fields`（标准字段名）和 `business_identity`
+- `canonical_projection` - 已持久化的导出投影
+- `parser_payload` / `postprocess_payload` - 原始解析/后处理数据，仅作证据保留
+
+导出只使用 `canonical_record.canonical_fields` 或 `canonical_projection`，不接受任意 raw payload 合并。
+
+### Manifest/Registry 所有权模型
+
+- `peap/download_tasks.py` 中 `DownloadTaskManifest` 定义下载任务清单
+- `DownloadTaskRegistrySettings` 管理注册表设置
+- 下载器通过 manifest 注册，运行时通过 registry 设置获取配置
 
 ## 文档边界
 
