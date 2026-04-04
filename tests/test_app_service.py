@@ -5,7 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from desktop_backend.app_config import AppConfig
 from desktop_backend.app_service import AppService, AppUserFacingError
@@ -2773,19 +2773,20 @@ class ReprocessFailureTransitionTest(unittest.TestCase):
         original = self.service.store.get_record("rec-original")
         self.assertEqual(original["state"], "ready")
 
-        # Mock reprocess to fail
-        def fake_reprocess(record_id):
-            raise RuntimeError("reprocess simulated failure")
-
-        with patch.object(self.service, "_reprocess_record", side_effect=fake_reprocess):
-            try:
+        # Mock runner.ingest to fail so _reprocess_record's exception handler
+        # triggers update_record_state instead of bypassing it via direct patch
+        fake_runner = MagicMock()
+        fake_runner.ingest.side_effect = RuntimeError("reprocess simulated failure")
+        with patch.object(self.service, "_build_ingest_runner", return_value=fake_runner):
+            with self.assertRaises(RuntimeError):
                 self.service.reprocess_record("rec-original")
-            except RuntimeError:
-                pass
 
         # The original record's state must be updated to failed, not create a new record
         original_after = self.service.store.get_record("rec-original")
-        # State should have transitioned to failed (or remained ready but with error logged)
+        self.assertEqual(
+            original_after["state"], "parse_failed",
+            "Reprocess failure must transition original record state to parse_failed"
+        )
         # The key is: there should NOT be a second failed record for the same logical record
         all_records = list(self.service.store.iter_latest_records())
         failed_records = [r for r in all_records if r["state"] in ("parse_failed", "postprocess_failed")]
@@ -2838,8 +2839,11 @@ class ReprocessFailureTransitionTest(unittest.TestCase):
 
         # Original record should have its state updated (even if reprocess failed)
         original = self.service.store.get_record("rec-pending")
-        # Verify original record state was handled appropriately
-        self.assertIn(original["state"], ("pending_mapping", "parse_failed", "postprocess_failed"))
+        # Reprocess failure must transition state to parse_failed
+        self.assertEqual(
+            original["state"], "parse_failed",
+            "Reprocess failure must transition pending_mapping record to parse_failed"
+        )
 
         # Verify no duplicate records were created
         all_records = self.service.store.iter_latest_records()

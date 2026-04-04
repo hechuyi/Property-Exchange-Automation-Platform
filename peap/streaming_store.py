@@ -568,7 +568,7 @@ class StreamingStore:
             last_error_message = ""
         with self._connect() as conn:
             # First update the record
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE records
                 SET state = ?,
@@ -579,6 +579,8 @@ class StreamingStore:
                 """,
                 (str(state), last_error_type, last_error_message, now, str(record_id)),
             )
+            if cursor.rowcount == 0:
+                raise RuntimeError(f"update_record_state: no record found with record_id={record_id!r}")
             # Also update the latest revision
             conn.execute(
                 """
