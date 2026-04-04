@@ -39,7 +39,6 @@ class CliConfigInjectionTest(unittest.TestCase):
 
         self.assertEqual(args.limit, 7)
         self.assertEqual(args.batch_flush_interval, 11)
-        self.assertEqual(args.parser_compat_profile, "ppe_ready")
         self.assertEqual(args.progress_interval, 13)
         self.assertEqual(args.log_dir, "C:\\temp\\logs")
         self.assertEqual(args.parse_cache_db, "C:\\temp\\parse_cache.sqlite3")
@@ -111,6 +110,19 @@ class CliConfigInjectionTest(unittest.TestCase):
             get_default_download_task_registry_settings().task_page_size["sse:physical_asset"],
             77,
         )
+
+def test_tpre_physical_asset_stays_5000w_plus() -> None:
+    from peap.downloaders.tpre import TianjinPhysicalAssetDownloader
+    downloader = TianjinPhysicalAssetDownloader(html_root="/tmp/test")
+    assert downloader.list_queries[0].extra_params["priceBegin"] == 5000
+
+
+def test_cquae_physical_asset_stays_5000w_plus() -> None:
+    from peap.downloaders.cquae import ChongqingPhysicalAssetDownloader
+    downloader = ChongqingPhysicalAssetDownloader(html_root="/tmp/test")
+    urls = [source.list_url for source in downloader.list_sources]
+    assert any("price=5000" in url for url in urls)
+
 
 if __name__ == "__main__":
     unittest.main()

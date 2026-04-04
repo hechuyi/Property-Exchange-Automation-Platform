@@ -9,7 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from peap.output_contract import (
     KIND_CAPITAL,
@@ -23,9 +23,12 @@ from peap.product_profile import get_product_profile
 from peap.streaming_export import ordered_export_headers, record_to_export_payload, run_ready_export
 from peap.streaming_ingest import StreamingIngestRunner, copy_snapshot_to_archive
 from peap.streaming_models import ExportRequest, ItemProgressEvent, ItemSavedPayload
-from peap.streaming_postprocess import analyze_mapping_candidates
+from peap.streaming_postprocess import (
+    analyze_mapping_candidates,
+)
 from peap.streaming_store import StreamingStore
 from peap.streaming_store_maintenance import run_streaming_store_maintenance
+from peap_core.error_contracts import PipelineFailure
 from peap_core.source_catalog import canonical_source_code, canonical_source_label
 
 from .product_errors import UserInputError
@@ -355,7 +358,7 @@ def _discover_import_files(input_dir: str) -> list[str]:
 
 
 def _build_record_display_values(record: Dict[str, Any], *, project_kind: str | None) -> Dict[str, Any]:
-    payload = record_to_export_payload(record)
+    payload = _build_record_display_payload(record)
     payload["交易所"] = _normalize_exchange_label(str(payload.get("交易所") or record.get("exchange") or ""))
 
     if not project_kind:
@@ -368,6 +371,25 @@ def _build_record_display_values(record: Dict[str, Any], *, project_kind: str | 
         candidates = list(field_candidates.get(column) or [column])
         values[column] = _first_value(payload, candidates)
     return values
+
+
+def _build_record_display_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+    payload = record_to_export_payload(record)
+    if not payload:
+        # Fall back to record's direct fields when canonical projection is unavailable
+        # (e.g. skipped/failed records without canonical data)
+        payload = {}
+    else:
+        payload = dict(payload)
+
+    if not payload.get("项目编号"):
+        payload["项目编号"] = str(record.get("project_code") or "").strip()
+    if not payload.get("项目名称"):
+        payload["项目名称"] = str(record.get("project_name") or "").strip()
+    if not payload.get("项目类型"):
+        payload["项目类型"] = str(record.get("project_type") or "").strip()
+
+    return payload
 
 
 def _mapping_template_issue(message: str, evidence: Dict[str, Any] | None = None) -> tuple[str, str] | None:
@@ -1421,6 +1443,10 @@ class AppService:
         }
 
     def _run_mapping_refresh_job(self, *, job_id: str, record_ids: list[str], reprocess_fn=None) -> None:
+        # Ensure job is in running state (handles direct test calls that bypass wrapper)
+        current = str(self.store.get_job(job_id).get("status") or "")
+        if current == "starting":
+            self.store.start_job(job_id)
         refreshed = 0
         pending = 0
         skipped = 0
@@ -1449,6 +1475,15 @@ class AppService:
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 self.store.update_job_counts(job_id, downloaded_inc=1, exception_inc=1)
+                # Reprocess failure must transition the original record to a failed state.
+                # We update the original record's state here instead of leaving it unchanged
+                # or creating a duplicate failed record.
+                self.store.update_record_state(
+                    record_id,
+                    state="parse_failed",
+                    error_type="mapping_refresh_failed",
+                    error_message=str(exc),
+                )
                 self.store.append_event(
                     ItemProgressEvent(
                         job_id=job_id,
@@ -1637,12 +1672,23 @@ class AppService:
             return 0.0
         return max(delay_ms, 0) / 1000.0
 
-    def _run_manual_import_job(self, *, job_id: str, files: list[str]) -> None:
+    def _run_manual_import_job(
+        self,
+        *,
+        job_id: str,
+        files: list[str],
+        ingest_file: Callable[[str], Dict[str, Any]] | None = None,
+    ) -> None:
+        # Ensure job is in running state (handles direct test calls that bypass wrapper)
+        current = str(self.store.get_job(job_id).get("status") or "")
+        if current == "starting":
+            self.store.start_job(job_id)
         imported = 0
         pending = 0
         skipped = 0
         failed = 0
         accepted_completed = 0
+        ingest = ingest_file or self._ingest_manual_import_file
         for index, file_path in enumerate(files, start=1):
             self.store.append_event(
                 ItemProgressEvent(
@@ -1662,7 +1708,7 @@ class AppService:
                 smoke_delay_seconds = self._manual_import_smoke_delay_seconds(file_path)
                 if smoke_delay_seconds > 0:
                     time.sleep(smoke_delay_seconds)
-                result = self._ingest_manual_import_file(file_path)
+                result = ingest(file_path)
                 state = str(result.get("state") or "")
             except Exception as exc:  # noqa: BLE001
                 failed += 1
@@ -1760,9 +1806,13 @@ class AppService:
                 )
             )
             if files:
+                ingest_file = self._ingest_manual_import_file
+
                 def _run_manual_import_wrapper() -> None:
                     try:
-                        self._run_manual_import_job(job_id=job_id, files=files)
+                        # Transition job from STARTING to RUNNING before processing.
+                        self.store.start_job(job_id)
+                        self._run_manual_import_job(job_id=job_id, files=files, ingest_file=ingest_file)
                     finally:
                         self._release_mutating_job("manual_import")
 
@@ -1844,33 +1894,77 @@ class AppService:
         runner = self._build_ingest_runner(archive_root=archive_root)
         state = str(record.get("state") or "").strip()
         if state in FAILED_RECORD_STATES:
+            # Parse source_identity_json to dict for pick_reprocess_evidence_path
+            source_identity_raw = record.get("source_identity_json")
+            if isinstance(source_identity_raw, dict):
+                source_identity = source_identity_raw
+            elif isinstance(source_identity_raw, str) and source_identity_raw.strip():
+                import json as _json
+                try:
+                    source_identity = _json.loads(source_identity_raw)
+                except Exception:
+                    source_identity = {}
+            else:
+                source_identity = {}
             preferred_source = pick_reprocess_evidence_path(
                 {
                     **record,
-                    "source_identity": record.get("source_identity_json"),
+                    "source_identity": source_identity,
                 }
             )
             if not preferred_source or not os.path.isfile(preferred_source):
-                raise FileNotFoundError(f"original evidence missing for failed record: {record_id}")
+                # Source/archive lookup failure - transition to failed
+                self.store.transition_record_to_failed(
+                    record_id=record_id,
+                    state="parse_failed",
+                    error_type="source_missing",
+                    error_message=f"original evidence missing for failed record: {record_id}",
+                )
+                return {"state": "parse_failed", "record_id": record_id}
         else:
             preferred_source = str(record.get("archive_path") or "").strip()
             if not preferred_source or not os.path.isfile(preferred_source):
                 preferred_source = str(record["source_file"])
             if not preferred_source or not os.path.isfile(preferred_source):
-                raise FileNotFoundError(f"source file missing for record: {record_id}")
-        result = runner.ingest(
-            ItemSavedPayload(
-                source_file=preferred_source,
-                page_url=str(record["parser_payload"].get("page_url") or ""),
-                project_code=str(record["project_code"]),
-                project_name=str(record["project_name"]),
-                exchange=str(record["exchange"]),
-                listing_date=str(record["listing_date"]),
-                extra={
-                    "project_type_fallback": str(record.get("project_type") or ""),
-                },
+                # Source/archive lookup failure - transition to failed
+                self.store.transition_record_to_failed(
+                    record_id=record_id,
+                    state="parse_failed",
+                    error_type="source_missing",
+                    error_message=f"source file missing for record: {record_id}",
+                )
+                return {"state": "parse_failed", "record_id": record_id}
+        try:
+            result = runner.ingest(
+                ItemSavedPayload(
+                    source_file=preferred_source,
+                    page_url=str(
+                        record["parser_payload"].get("page_url")
+                        or record.get("source_identity_json", {}).get("source_url")
+                        or ""
+                    ),
+                    project_code=str(record["project_code"]),
+                    project_name=str(record["project_name"]),
+                    exchange=str(record["exchange"]),
+                    listing_date=str(record["listing_date"]),
+                    extra={
+                        "project_type_fallback": str(record.get("project_type") or ""),
+                        "snapshot_id": str(record.get("source_identity_json", {}).get("snapshot_id") or ""),
+                        "snapshot_digest": str(record.get("source_identity_json", {}).get("snapshot_digest") or ""),
+                    },
+                )
             )
-        )
+        except Exception as exc:
+            # Exception from runner.ingest() - transition to failed
+            self.store.transition_record_to_failed(
+                record_id=record_id,
+                state="parse_failed",
+                error_type="reprocess_failed",
+                error_message=str(exc),
+            )
+            raise
+        # ingest() already called upsert_failed_record() if it returned failed state.
+        # The authoritative failure record is the sibling; nothing extra needed.
         self.store.add_audit_entry("record_reprocessed", {"record_id": record_id, "result": result})
         return result
 
@@ -2043,8 +2137,27 @@ class AppService:
             response: dict[str, Any] = {"job_id": "", "db_path": self.db_path}
             ready = threading.Event()
 
+            # Pre-create job on API thread to eliminate ghost-job race.
+            # With pre-created job, API can return durable job_id even if
+            # background thread bootstrap fails before entering pipeline.
+            job_id = self.store.create_job(
+                str(job_type),
+                metadata={
+                    "start_date": str(payload.get("start_date") or ""),
+                    "end_date": str(payload.get("end_date") or ""),
+                    "exchange": _normalize_exchange_code(payload.get("exchange") or basic["default_exchange"]),
+                    "project_type": str(payload.get("project_type") or basic["default_project_type"]),
+                    "archive_root": basic["archive_root"],
+                    "export_root": basic["export_root"],
+                },
+            )
+            response["job_id"] = job_id
+            response["db_path"] = self.db_path
+            ready.set()
+
             def _job_created(job_id: str, db_path: str) -> None:
-                response["job_id"] = job_id
+                # Informational only: pre-created job already set response["job_id"].
+                # Not used for lifecycle truth.
                 response["db_path"] = db_path
                 ready.set()
 
@@ -2086,7 +2199,26 @@ class AppService:
                             archive_root=basic["archive_root"],
                             export_root=basic["export_root"],
                             auto_export=auto_export,
+                            job_id=job_id,
                         )
+                except Exception as exc:
+                    # Crash before entering pipeline (e.g. playwright_env init failure).
+                    # Job was pre-created on API thread but never entered pipeline -> stuck in starting.
+                    # Mark it failed so it is not left as a zombie starting job.
+                    try:
+                        self.store.fail_job(
+                            job_id=str(job_id),
+                            failure=PipelineFailure(
+                                code="job_startup_failed",
+                                component="desktop_app_service",
+                                stage="startup",
+                                recoverability="retryable",
+                                message=str(exc),
+                                context={"exception_type": exc.__class__.__name__},
+                            ),
+                        )
+                    except Exception:
+                        pass  # Best-effort; store may be closed
                 finally:
                     self._release_mutating_job(job_type)
 

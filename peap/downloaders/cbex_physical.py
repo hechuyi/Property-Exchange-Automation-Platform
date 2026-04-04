@@ -13,7 +13,7 @@ import re
 import shutil
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
 from bs4 import BeautifulSoup
@@ -24,7 +24,9 @@ from ..constants import (
     TYPE_PHYSICAL_ASSET,
     TYPE_PRE_DISCLOSURE,
 )
+from ..download_errors import execute_failed_error, invalid_candidate_error, save_failed_error
 from ..submission_layout import resolve_submission_snapshot_target
+from .common import DownloadSummary, in_date_range, parse_loose_date, project_type_key
 
 BASE_URL = "https://www.cbex.com.cn"
 WARMUP_URL = "https://www.cbex.com.cn/xm/zczr/"
@@ -80,24 +82,6 @@ DISCLOSURE_START_PATTERNS = (
 
 
 @dataclass
-class DownloadSummary:
-    pages_requested: int = 0
-    listed_items: int = 0
-    detail_candidates: int = 0
-    detail_fetched: int = 0
-    saved: int = 0
-    skipped_by_list_date: int = 0
-    skipped_by_detail_date: int = 0
-    skipped_by_resume: int = 0
-    detail_failed: int = 0
-    list_unaccounted: int = 0
-    detail_unaccounted: int = 0
-    candidate_dates: List[str] = field(default_factory=list)
-    candidate_entries: List[Dict[str, Any]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-
-@dataclass
 class _Candidate:
     uid: str
     code: str
@@ -118,43 +102,6 @@ class _ChallengeError(RuntimeError):
     pass
 
 
-def _parse_date(value: Any) -> Optional[dt.date]:
-    if value in (None, ""):
-        return None
-    raw = str(value).strip()
-    if not raw:
-        return None
-    raw = re.sub(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?", r"\1-\2-\3", raw)
-    raw = raw.replace("/", "-").replace(".", "-")
-    if "T" in raw:
-        raw = raw.split("T", 1)[0]
-    if " " in raw:
-        raw = raw.split(" ", 1)[0]
-    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", raw)
-    if not m:
-        return None
-    try:
-        y, mo, d = (int(x) for x in m.groups())
-        return dt.date(y, mo, d)
-    except ValueError:
-        return None
-
-
-def _in_range(value: Optional[dt.date], start: Optional[dt.date], end: Optional[dt.date]) -> bool:
-    if value is None:
-        return False
-    if start and value < start:
-        return False
-    if end and value > end:
-        return False
-    return True
-
-
-def _safe_filename(name: str) -> str:
-    t = re.sub(r"[\\/:*?\"<>|]+", "_", str(name or "").strip())
-    return t or "unknown"
-
-
 def _is_challenge_html(text: str) -> bool:
     low = text.lower()
     return any(h in low for h in CHALLENGE_HINTS)
@@ -166,6 +113,10 @@ def _skip_asset_url(v: str) -> bool:
 
 
 class CbexPhysicalAssetDownloader:
+    manifest_list_endpoint = API_URL
+    manifest_detail_route = "/xm/zczr/"
+    manifest_date_field_candidates = ("disclosure_start",)
+
     def __init__(
         self,
         *,
@@ -214,8 +165,8 @@ class CbexPhysicalAssetDownloader:
         list_only: bool = False,
         prefetched_candidates: Optional[List[Dict[str, Any]]] = None,
     ) -> DownloadSummary:
-        start = _parse_date(start_date) if start_date else None
-        end = _parse_date(end_date) if end_date else None
+        start = parse_loose_date(start_date) if start_date else None
+        end = parse_loose_date(end_date) if end_date else None
         if start_date and start is None:
             raise ValueError(f"invalid start-date: {start_date!r}")
         if end_date and end is None:
@@ -290,7 +241,13 @@ class CbexPhysicalAssetDownloader:
                         end=end,
                     )
             except Exception as exc:  # noqa: BLE001
-                summary.errors.append(f"cbex-list-failed: {exc}")
+                summary.typed_errors.append(
+                    execute_failed_error(
+                        source_id="cbex",
+                        task_id=f"cbex:{project_type_key(self.output_type)}",
+                        raw_reason=f"cbex-list-failed: {exc}",
+                    )
+                )
             finally:
                 await page.close()
 
@@ -310,7 +267,7 @@ class CbexPhysicalAssetDownloader:
                     async with lock:
                         done += 1
                         elapsed = max(time.monotonic() - t0, 0.001)
-                        self.logger.info("Detail progress: %s/%s saved=%s errors=%s speed=%.2f/min", done, len(cands), summary.saved, len(summary.errors), done / elapsed * 60)
+                        self.logger.info("Detail progress: %s/%s saved=%s errors=%s speed=%.2f/min", done, len(cands), summary.saved, len(summary.typed_errors), done / elapsed * 60)
 
                 await asyncio.gather(*[asyncio.create_task(worker(c)) for c in cands])
             else:
@@ -490,7 +447,13 @@ class CbexPhysicalAssetDownloader:
     ) -> None:
         for index, raw in enumerate(prefetched_candidates, start=1):
             if not isinstance(raw, dict):
-                summary.errors.append(f"prefetched-entry-{index}-invalid-format")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="cbex",
+                        task_id=f"cbex:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-invalid-format",
+                    )
+                )
                 continue
             summary.listed_items += 1
             entry = dict(raw)
@@ -512,11 +475,14 @@ class CbexPhysicalAssetDownloader:
                 continue
             seen.add(uid)
 
-            d = _parse_date(entry.get("list_disclosure_start") or row.get("disclosuretime"))
-            if d and "list_disclosure_start" not in row:
-                row = {**row, "list_disclosure_start": d.isoformat()}
+            d = parse_loose_date(entry.get("disclosure_start") or row.get("disclosuretime"))
+            if d and "disclosure_start" not in row:
+                row = {**row, "disclosure_start": d.isoformat()}
             if start or end:
-                if d and not _in_range(d, start, end):
+                if d is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(d, start, end):
                     summary.skipped_by_list_date += 1
                     continue
 
@@ -525,7 +491,13 @@ class CbexPhysicalAssetDownloader:
                     href = str(row.get("url") or "").strip()
                     url = urllib.parse.urljoin(BASE_URL, href) if href else ""
                 if not url:
-                    summary.errors.append(f"prefetched-entry-{index}-missing-detail-url: id={uid}")
+                    summary.typed_errors.append(
+                        invalid_candidate_error(
+                            source_id="cbex",
+                            task_id=f"cbex:{project_type_key(self.output_type)}",
+                            raw_reason=f"prefetched-entry-{index}-missing-detail-url: id={uid}",
+                        )
+                    )
                     continue
 
             project_name = str(entry.get("project_name") or row.get("title") or row.get("name") or "").strip()
@@ -549,7 +521,7 @@ class CbexPhysicalAssetDownloader:
                     "code": candidate.code,
                     "url": candidate.url,
                     "row": row,
-                    "list_disclosure_start": d.isoformat() if d else None,
+                    "disclosure_start": d.isoformat() if d else None,
                 }
             )
             if d is not None:
@@ -583,14 +555,23 @@ class CbexPhysicalAssetDownloader:
                 continue
             seen.add(uid)
 
-            d = _parse_date(r.get("disclosuretime"))
+            d = parse_loose_date(r.get("disclosuretime"))
             if start or end:
-                if d and not _in_range(d, start, end):
+                if d is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(d, start, end):
                     summary.skipped_by_list_date += 1
                     continue
 
             if not url:
-                summary.errors.append(f"missing-detail-url: id={uid}")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="cbex",
+                        task_id=f"cbex:{project_type_key(self.output_type)}",
+                        raw_reason=f"missing-detail-url: id={uid}",
+                    )
+                )
                 continue
 
             project_name = str(r.get("title") or r.get("name") or "").strip()
@@ -614,7 +595,7 @@ class CbexPhysicalAssetDownloader:
                     "code": candidate.code,
                     "url": candidate.url,
                     "row": row_with_source,
-                    "list_disclosure_start": d.isoformat() if d else None,
+                    "disclosure_start": d.isoformat() if d else None,
                 }
             )
             if d is not None:
@@ -635,13 +616,25 @@ class CbexPhysicalAssetDownloader:
                 if k <= 2:
                     await asyncio.sleep(1.2 * k + random.random())
                 else:
-                    summary.errors.append(f"id={candidate.uid} timeout-or-challenge: {exc}")
+                    summary.typed_errors.append(
+                        execute_failed_error(
+                            source_id="cbex",
+                            task_id=f"cbex:{project_type_key(self.output_type)}",
+                            raw_reason=f"id={candidate.uid} timeout-or-challenge: {exc}",
+                        )
+                    )
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 if k <= 2:
                     await asyncio.sleep(1.2 * k + random.random())
                 else:
-                    summary.errors.append(f"id={candidate.uid} fetch-failed: {exc}")
+                    summary.typed_errors.append(
+                        execute_failed_error(
+                            source_id="cbex",
+                            task_id=f"cbex:{project_type_key(self.output_type)}",
+                            raw_reason=f"id={candidate.uid} fetch-failed: {exc}",
+                        )
+                    )
             finally:
                 await page.close()
 
@@ -652,20 +645,30 @@ class CbexPhysicalAssetDownloader:
             return
 
         ds = self._extract_disclosure_start_date(html)
-        list_ds = _parse_date(
-            candidate.row.get("list_disclosure_start")
+        list_ds = parse_loose_date(
+            candidate.row.get("disclosure_start")
             or candidate.row.get("disclosuretime")
         )
+        final_date = ds if ds is not None else list_ds
         if start or end:
-            check_date = list_ds if list_ds is not None else ds
-            if check_date is not None and not _in_range(check_date, start, end):
+            if final_date is None:
+                summary.date_missing_skipped += 1
+                summary.skipped_by_detail_date += 1
+                return
+            if not in_date_range(final_date, start, end):
                 summary.skipped_by_detail_date += 1
                 return
 
         try:
             await self._save_complete_page(html=html, page_url=candidate.url, html_path=candidate.html_path, request_context=context.request)
         except Exception as exc:  # noqa: BLE001
-            summary.errors.append(f"id={candidate.uid} save-failed: {exc}")
+            summary.typed_errors.append(
+                save_failed_error(
+                    source_id="cbex",
+                    task_id=f"cbex:{project_type_key(self.output_type)}",
+                    raw_reason=str(exc),
+                )
+            )
             summary.detail_failed += 1
             return
 
@@ -674,6 +677,7 @@ class CbexPhysicalAssetDownloader:
             await asyncio.get_running_loop().run_in_executor(None, lambda: open(p, "w", encoding="utf-8").write(json.dumps({"id": candidate.uid, "code": candidate.code, "url": candidate.url, "row": candidate.row, "disclosure_start_date": ds.isoformat() if ds else None}, ensure_ascii=False, indent=2)))
         self._notify_item_saved(candidate=candidate, disclosure_start=ds or list_ds)
         summary.saved += 1
+        summary.downloaded_this_run.add(os.path.relpath(candidate.html_path, self.html_root))
 
     async def _fetch_html(self, *, page, url: str, code: str) -> str:
         await page.goto(url, wait_until="domcontentloaded", timeout=self._render_timeout_ms)
@@ -701,7 +705,7 @@ class CbexPhysicalAssetDownloader:
         for p in DISCLOSURE_START_PATTERNS:
             m = re.search(p, text)
             if m:
-                d = _parse_date(m.group(1))
+                d = parse_loose_date(m.group(1))
                 if d:
                     return d
         return None
@@ -777,7 +781,7 @@ class CbexPhysicalAssetDownloader:
                     "project_code": candidate.code,
                     "project_name": str(candidate.row.get("title") or candidate.row.get("name") or ""),
                     "listing_date": disclosure_start.isoformat() if disclosure_start else "",
-                    "exchange": "beijing",
+                    "source_id": "cbex",
                     "project_type": self.output_type,
                     "row": candidate.row,
                 }

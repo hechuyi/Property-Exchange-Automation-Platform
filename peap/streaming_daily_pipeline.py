@@ -84,19 +84,15 @@ def _stage_error_type(payload: Dict[str, Any]) -> str:
     explicit = str(payload.get("error_code") or payload.get("error_type") or "").strip()
     if explicit:
         return explicit
-    message = _stage_error_message(payload)
-    if (
-        "suaee.com/manageprojectweb/foreign/project/queryAllNew" in message
-        and "HTTP Error 404: Not Found" in message
-    ):
-        return "sse_list_api_not_found"
+    summary_payload = payload.get("summary_payload")
+    if isinstance(summary_payload, dict):
+        explicit = str(summary_payload.get("error_code") or summary_payload.get("error_type") or "").strip()
+        if explicit:
+            return explicit
     return ""
 
 
 def _stage_display_error_message(payload: Dict[str, Any]) -> str:
-    error_type = _stage_error_type(payload)
-    if error_type == "sse_list_api_not_found":
-        return "上交所列表接口 queryAllNew 返回 404，当前扫描已中止"
     return _stage_error_message(payload)
 
 
@@ -195,7 +191,7 @@ def _build_download_request(
         exchange=str(getattr(args, "exchange", "all")),
         project_type=str(getattr(args, "project_type", "all")),
         list_tasks=False,
-        output_root=str(output_root or getattr(config_obj, "AUTO_HTML_FOLDER", "")),
+        output_root=str(output_root or ""),
         force_manual_root=False,
         start_date=start_text,
         end_date=end_text,
@@ -205,7 +201,6 @@ def _build_download_request(
         resume=not bool(getattr(args, "no_resume", False)),
         save_json=bool(getattr(args, "save_json", False)),
         sse_ssl_verify=bool(defaults.get("sse_ssl_verify", True)),
-        sse_ssl_fallback_insecure=bool(defaults.get("sse_ssl_fallback_insecure", True)),
         sse_ca_bundle=defaults.get("sse_ca_bundle"),
         log_dir=str(config_obj.LOG_DIR),
         log_file=None,
@@ -233,6 +228,7 @@ def run_streaming_daily_pipeline(
     archive_root: str | None = None,
     export_root: str | None = None,
     auto_export: bool | None = None,
+    job_id: str | None = None,
 ) -> StreamingDailyPipelineRunResult:
     logger, log_file = _setup_logger(
         verbose=bool(getattr(args, "verbose", False)),
@@ -284,24 +280,29 @@ def run_streaming_daily_pipeline(
         service.start()
 
         try:
-            job_id = store.create_job(
-                str(job_type),
-                metadata={
-                    "start_date": start_text,
-                    "end_date": end_text,
-                    "exchange": getattr(args, "exchange", "all"),
-                    "project_type": getattr(args, "project_type", "all"),
-                    "archive_root": resolved_archive_root,
-                    "export_root": resolved_export_root,
-                },
-            )
             if not str(job_id or "").strip():
-                raise RuntimeError(f"{job_type} job did not provide job_id")
-            if job_created_callback is not None:
-                try:
-                    job_created_callback(job_id, db_path)
-                except Exception:
-                    pass
+                job_id = store.create_job(
+                    str(job_type),
+                    metadata={
+                        "start_date": start_text,
+                        "end_date": end_text,
+                        "exchange": getattr(args, "exchange", "all"),
+                        "project_type": getattr(args, "project_type", "all"),
+                        "archive_root": resolved_archive_root,
+                        "export_root": resolved_export_root,
+                    },
+                )
+                if not str(job_id or "").strip():
+                    raise RuntimeError(f"{job_type} job did not provide job_id")
+                if job_created_callback is not None:
+                    try:
+                        job_created_callback(job_id, db_path)
+                    except Exception:
+                        pass
+            # Transition job from STARTING to RUNNING. Both paths (pipeline-created
+            # and pre-created jobs) must go through this transition before any
+            # pipeline work begins.
+            store.start_job(job_id)
             started_at = time.monotonic()
             callback = service.build_callback(job_id=job_id)
 
@@ -334,10 +335,10 @@ def run_streaming_daily_pipeline(
                 with_refresh=False,
                 stage_callback=_stage_callback,
                 existing_project_codes=frozenset(
-                    store.list_existing_project_codes(states=["ready", "pending_mapping", "skipped", "conflict"])
+                    store.list_existing_project_codes(states=["ready", "pending_mapping", "mapping_conflict", "skipped", "conflict"])
                 ),
                 existing_candidate_tokens=frozenset(
-                    store.list_existing_candidate_tokens(states=["ready", "pending_mapping", "skipped", "conflict"])
+                    store.list_existing_candidate_tokens(states=["ready", "pending_mapping", "mapping_conflict", "skipped", "conflict"])
                 ),
             )
             download_result = run_download_oneclick(

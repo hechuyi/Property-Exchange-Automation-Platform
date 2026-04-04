@@ -8,7 +8,12 @@ from typing import Any, Callable
 
 from peap_core.runtime import load_json_file, write_json_file_atomic
 
-from .download_models import DateChunk, TaskSplitPlan
+from .download_models import (
+    SPLIT_PLAN_UNRESOLVED_POLICY_SKIP,
+    DateChunk,
+    SplitPlanResolvedBasis,
+    TaskSplitPlan,
+)
 from .download_tasks import DownloadTaskSpec
 
 
@@ -34,8 +39,20 @@ def _split_chunk(start: dt.date, end: dt.date) -> list[DateChunk] | None:
     ]
 
 
-def entry_date(entry: dict[str, object]) -> dt.date | None:
-    for key in ("list_disclosure_start", "disclosure_date", "date"):
+def candidate_date_fields(spec: DownloadTaskSpec) -> tuple[str, ...]:
+    return tuple(
+        str(value)
+        for value in getattr(spec.manifest, "date_field_candidates", ())
+        if str(value)
+    )
+
+
+def entry_date(
+    entry: dict[str, object],
+    *,
+    date_fields: tuple[str, ...],
+) -> dt.date | None:
+    for key in date_fields:
         raw = entry.get(key)
         if raw in (None, ""):
             continue
@@ -46,34 +63,76 @@ def entry_date(entry: dict[str, object]) -> dt.date | None:
     return None
 
 
+def _check_summary_for_typed_errors(summary: object) -> None:
+    """Raise an explicit error if the list-stage summary contains typed errors.
+
+    Split planning must not produce chunks when the list-stage scan itself
+    failed with typed errors.
+    """
+    typed_errors = getattr(summary, "typed_errors", None)
+    if isinstance(typed_errors, list) and typed_errors:
+        first_error = typed_errors[0]
+        error_msg = str(getattr(first_error, "error_message", first_error))
+        raise ValueError(f"list-stage scan failed with typed errors: {error_msg}")
+
+
 def extract_candidate_entries(
     summary: object,
     *,
     start: dt.date,
     end: dt.date,
+    date_fields: tuple[str, ...],
+    unresolved_candidate_policy: str,
 ) -> list[dict[str, object]]:
     raw_values = getattr(summary, "candidate_entries", None)
     if not isinstance(raw_values, list):
         return []
+
+    if unresolved_candidate_policy != SPLIT_PLAN_UNRESOLVED_POLICY_SKIP:
+        raise ValueError(
+            f"unsupported unresolved candidate policy: {unresolved_candidate_policy}"
+        )
 
     values: list[dict[str, object]] = []
     for raw in raw_values:
         if not isinstance(raw, dict):
             continue
         normalized = dict(raw)
-        item_date = entry_date(normalized)
-        if item_date is not None:
-            if item_date < start or item_date > end:
-                continue
-            normalized["list_disclosure_start"] = item_date.isoformat()
+        item_date = entry_date(normalized, date_fields=date_fields)
+        if item_date is None:
+            continue
+        if item_date < start or item_date > end:
+            continue
         values.append(normalized)
     return values
 
 
-def extract_candidate_dates(summary: object, *, start: dt.date, end: dt.date) -> list[dt.date]:
+def extract_candidate_dates(
+    summary: object,
+    *,
+    start: dt.date,
+    end: dt.date,
+    date_fields: tuple[str, ...],
+    unresolved_candidate_policy: str,
+) -> list[dt.date]:
+    raw_candidate_entries = getattr(summary, "candidate_entries", None)
+    if isinstance(raw_candidate_entries, list):
+        entry_values: list[dt.date] = []
+        for entry in extract_candidate_entries(
+            summary,
+            start=start,
+            end=end,
+            date_fields=date_fields,
+            unresolved_candidate_policy=unresolved_candidate_policy,
+        ):
+            item_date = entry_date(entry, date_fields=date_fields)
+            if item_date is not None:
+                entry_values.append(item_date)
+        return entry_values
+
     raw_values = getattr(summary, "candidate_dates", None)
     if not isinstance(raw_values, list):
-        raw_values = []
+        return []
     values: list[dt.date] = []
     for raw in raw_values:
         try:
@@ -81,13 +140,6 @@ def extract_candidate_dates(summary: object, *, start: dt.date, end: dt.date) ->
         except Exception:
             continue
         if start <= item_date <= end:
-            values.append(item_date)
-    if values:
-        return values
-
-    for entry in extract_candidate_entries(summary, start=start, end=end):
-        item_date = entry_date(entry)
-        if item_date is not None:
             values.append(item_date)
     return values
 
@@ -159,15 +211,20 @@ def assign_entries_to_chunks(
     *,
     chunks: list[DateChunk],
     candidate_entries: list[dict[str, object]],
+    date_fields: tuple[str, ...],
+    unresolved_candidate_policy: str,
 ) -> list[list[dict[str, object]]]:
     if not chunks:
         return []
+    if unresolved_candidate_policy != SPLIT_PLAN_UNRESOLVED_POLICY_SKIP:
+        raise ValueError(
+            f"unsupported unresolved candidate policy: {unresolved_candidate_policy}"
+        )
     assigned: list[list[dict[str, object]]] = [[] for _ in chunks]
     sorted_chunks = sorted(enumerate(chunks), key=lambda item: item[1].start)
     for entry in candidate_entries:
-        item_date = entry_date(entry)
+        item_date = entry_date(entry, date_fields=date_fields)
         if item_date is None:
-            assigned[sorted_chunks[0][0]].append(entry)
             continue
 
         target_idx: int | None = None
@@ -184,39 +241,45 @@ def assign_entries_to_chunks(
     return assigned
 
 
-def load_split_plan_file(path: str) -> dict[str, TaskSplitPlan]:
+def load_split_plan_file(path: str, *, scope: dict[str, object] | None = None) -> dict[str, TaskSplitPlan]:
     payload = load_json_file(path, encoding="utf-8-sig")
-    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid split plan format: {path}")
+    tasks = payload.get("tasks")
     if not isinstance(tasks, dict):
         raise ValueError(f"invalid split plan format: {path}")
+    # Validate scope if provided
+    if scope is not None:
+        saved_scope = payload.get("scope")
+        if not isinstance(saved_scope, dict):
+            raise ValueError(f"split plan scope is missing from: {path}")
+        saved_scope_clean = {k: v for k, v in saved_scope.items() if k in scope}
+        if saved_scope_clean != scope:
+            raise ValueError(f"split plan scope mismatch: saved={saved_scope_clean} != requested={scope}")
     parsed: dict[str, TaskSplitPlan] = {}
     for task_id, task_raw in tasks.items():
         if not isinstance(task_id, str):
             continue
-        chunks_raw: object
-        candidate_entries_raw: object
-        if isinstance(task_raw, list):
-            chunks_raw = task_raw
-            candidate_entries_raw = []
-        elif isinstance(task_raw, dict):
-            chunks_raw = task_raw.get("chunks") or []
-            candidate_entries_raw = task_raw.get("candidate_entries") or []
-        else:
-            continue
+        if not isinstance(task_raw, dict):
+            raise ValueError(f"split plan task {task_id} missing resolved_basis")
+        chunks_raw = task_raw.get("chunks") or []
+        candidate_entries_raw = task_raw.get("candidate_entries") or []
+        resolved_basis_raw = task_raw.get("resolved_basis")
         if not isinstance(chunks_raw, list):
             continue
+        if not isinstance(resolved_basis_raw, dict):
+            raise ValueError(f"split plan task {task_id} missing resolved_basis")
         chunks: list[DateChunk] = []
         for chunk_raw in chunks_raw:
             if not isinstance(chunk_raw, dict):
                 continue
             chunks.append(DateChunk.from_dict(chunk_raw))
-        candidate_entries: list[dict[str, object]] = []
-        if isinstance(candidate_entries_raw, list):
-            for raw in candidate_entries_raw:
-                if isinstance(raw, dict):
-                    candidate_entries.append(dict(raw))
-        if chunks:
-            parsed[task_id] = TaskSplitPlan(chunks=chunks, candidate_entries=candidate_entries)
+        candidate_entries = [dict(item) for item in candidate_entries_raw if isinstance(item, dict)]
+        parsed[task_id] = TaskSplitPlan(
+            chunks=chunks,
+            candidate_entries=candidate_entries,
+            resolved_basis=SplitPlanResolvedBasis.from_dict(resolved_basis_raw),
+        )
     return parsed
 
 
@@ -234,6 +297,7 @@ def save_split_plan_file(
             task_id: {
                 "chunks": [chunk.to_dict() for chunk in plan.chunks],
                 "candidate_entries": plan.candidate_entries,
+                "resolved_basis": plan.resolved_basis.to_dict(),
             }
             for task_id, plan in tasks_to_plan.items()
         },
@@ -256,59 +320,64 @@ def plan_auto_split_chunks(
     build_downloader: Callable[..., object],
     run_downloader: Callable[..., Any],
     parse_date_arg: Callable[[str | None, str], dt.date | None],
-) -> tuple[list[DateChunk], list[dict[str, object]]]:
+) -> tuple[list[DateChunk], list[dict[str, object]], SplitPlanResolvedBasis]:
     start = parse_date_arg(getattr(args, "start_date", None), "start-date")
     end = parse_date_arg(getattr(args, "end_date", None), "end-date")
     if start is None or end is None:
-        raise ValueError("--auto-split requires both --start-date and --end-date")
+        raise ValueError("auto-split requires both --start-date and --end-date")
     if start > end:
-        raise ValueError(
-            f"start-date {getattr(args, 'start_date', None)!r} "
-            f"is after end-date {getattr(args, 'end_date', None)!r}"
-        )
+        raise ValueError("start-date must be before or equal to end-date")
 
-    min_days = max(1, int(args.split_min_days))
-    split_candidates = max(1, int(args.split_candidates))
-    max_depth = max(0, int(args.split_max_depth))
-
-    downloader = build_downloader(spec, args=args, output_root=output_root, logger=logger)
-    summary = run_downloader(
-        downloader,
-        start_date=start.isoformat(),
-        end_date=end.isoformat(),
-        list_only=True,
+    runtime = build_downloader(spec, args=args, output_root=output_root, logger=logger)
+    summary = run_downloader(runtime, start_date=start.isoformat(), end_date=end.isoformat(), list_only=True)
+    _check_summary_for_typed_errors(summary)
+    date_fields = candidate_date_fields(spec)
+    resolved_basis = SplitPlanResolvedBasis(
+        date_fields=date_fields,
+        unresolved_candidate_policy=SPLIT_PLAN_UNRESOLVED_POLICY_SKIP,
     )
-    estimated = estimate_candidates(summary)
-    candidate_entries = extract_candidate_entries(summary, start=start, end=end)
-    candidate_dates = extract_candidate_dates(summary, start=start, end=end)
-
-    summary_errors = list(getattr(summary, "errors", []) or [])
-    if summary_errors:
-        logger.warning(
-            "Auto-split planning has list errors for %s (count=%s). Keep single chunk for safety.",
-            spec.task_id,
-            len(summary_errors),
-        )
-        return [DateChunk(start=start, end=end, estimated_candidates=estimated)], []
-
-    if not candidate_dates:
-        logger.info(
-            "Auto-split plan: %s %s..%s estimated=%s keep",
-            spec.task_id,
-            start.isoformat(),
-            end.isoformat(),
-            estimated,
-        )
-        return [DateChunk(start=start, end=end, estimated_candidates=estimated)], candidate_entries
-
+    dates = extract_candidate_dates(
+        summary,
+        start=start,
+        end=end,
+        date_fields=resolved_basis.date_fields,
+        unresolved_candidate_policy=resolved_basis.unresolved_candidate_policy,
+    )
+    candidate_entries = extract_candidate_entries(
+        summary,
+        start=start,
+        end=end,
+        date_fields=resolved_basis.date_fields,
+        unresolved_candidate_policy=resolved_basis.unresolved_candidate_policy,
+    )
+    if candidate_entries:
+        estimated_candidates = len(candidate_entries)
+    else:
+        estimated_candidates = estimate_candidates(summary)
+    if estimated_candidates <= int(getattr(args, "split_candidates", 0) or 0):
+        return [DateChunk(start=start, end=end, estimated_candidates=estimated_candidates)], candidate_entries, resolved_basis
     chunks = build_chunks_from_dates(
         task_id=spec.task_id,
         start=start,
         end=end,
-        dates=sorted(candidate_dates),
-        split_candidates=split_candidates,
-        min_days=min_days,
-        max_depth=max_depth,
+        dates=dates,
+        split_candidates=int(getattr(args, "split_candidates", 0) or 0),
+        min_days=int(getattr(args, "split_min_days", 0) or 0),
+        max_depth=int(getattr(args, "split_max_depth", 0) or 0),
         logger=logger,
     )
-    return chunks, candidate_entries
+    return chunks, candidate_entries, resolved_basis
+
+
+__all__ = [
+    "assign_entries_to_chunks",
+    "build_chunks_from_dates",
+    "candidate_date_fields",
+    "entry_date",
+    "estimate_candidates",
+    "extract_candidate_dates",
+    "extract_candidate_entries",
+    "load_split_plan_file",
+    "plan_auto_split_chunks",
+    "save_split_plan_file",
+]

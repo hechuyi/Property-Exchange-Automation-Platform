@@ -9,6 +9,18 @@ from typing import Any, Dict, Iterable, List
 
 from .streaming_models import PostProcessFinding
 
+__all__ = [
+    "BUSINESS_PROJECT_TYPES",
+    "derive_listing_times_from_project_code",
+    "finalize_streaming_payload",
+    "normalize_record_payload",
+    "apply_mapping_entries",
+    "apply_policy_engine_to_payload",
+    "run_record_postprocess",
+    "analyze_mapping_candidates",
+    "findings_to_json",
+]
+
 COMPANY_FIELDS = (
     "转让方",
     "融资方",
@@ -128,25 +140,19 @@ def finalize_streaming_payload(
     return resolved, normalized_findings
 
 
-def merge_record_payloads(
-    parser_payload: Dict[str, Any] | None,
-    postprocess_payload: Dict[str, Any] | None,
-) -> Dict[str, Any]:
-    merged = dict(parser_payload or {})
-    for key, value in dict(postprocess_payload or {}).items():
-        if value is None or value == "":
-            continue
-        merged[str(key)] = value
-    return merged
-
-
 def normalize_record_payload(
     *,
     parser_payload: Dict[str, Any] | None,
     postprocess_payload: Dict[str, Any] | None,
     findings: Iterable[PostProcessFinding] | None = None,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
-    merged = merge_record_payloads(parser_payload, postprocess_payload)
+    # Merge: postprocess (enriched) takes precedence over parser (raw),
+    # but skip null/empty postprocess values to avoid overwriting valid parser data.
+    merged = dict(parser_payload or {})
+    for key, value in dict(postprocess_payload or {}).items():
+        if value is None or value == "":
+            continue
+        merged[str(key)] = value
     return finalize_streaming_payload(merged, findings=findings)
 
 
@@ -728,6 +734,17 @@ def _apply_optional_rule_registry(
     return resolved, findings
 
 
+
+
+def apply_policy_engine_to_payload(
+    payload: Dict[str, Any],
+    *,
+    mapping_entries: Iterable[Dict[str, Any]] | None = None,
+) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
+    resolved, findings = apply_mapping_entries(payload, mapping_entries=mapping_entries)
+    return resolved, findings
+
+
 def run_record_postprocess(
     payload: Dict[str, Any],
     *,
@@ -736,7 +753,7 @@ def run_record_postprocess(
     rules_config: Dict[str, Any] | None = None,
 ) -> tuple[Dict[str, Any], List[PostProcessFinding]]:
     working = copy.deepcopy(dict(payload or {}))
-    mapped_payload, findings = apply_mapping_entries(
+    mapped_payload, findings = apply_policy_engine_to_payload(
         working,
         mapping_entries=mapping_entries,
     )

@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
 from bs4 import BeautifulSoup
@@ -25,7 +25,9 @@ from ..constants import (
     TYPE_PHYSICAL_ASSET,
     TYPE_PRE_DISCLOSURE,
 )
+from ..download_errors import execute_failed_error, invalid_candidate_error, list_failed_error, save_failed_error
 from ..submission_layout import resolve_submission_snapshot_target
+from .common import DownloadSummary, in_date_range, parse_bound, parse_loose_date, project_type_key
 from .snapshot_utils import SnapshotSaver, is_snapshot_complete, remove_snapshot
 
 BASE_URL = "https://www.cquae.com"
@@ -68,26 +70,6 @@ FALLBACK_PROJECT_CODE_RE = re.compile(r"\b(20\d{10})\b")
 RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 
-@dataclass
-class DownloadSummary:
-    pages_requested: int = 0
-    listed_items: int = 0
-    detail_fetched: int = 0
-    saved: int = 0
-    skipped_by_list_date: int = 0
-    skipped_by_detail_date: int = 0
-    skipped_by_resume: int = 0
-    skipped_by_duplicate: int = 0
-    skipped_by_missing_xmid: int = 0
-    detail_candidates: int = 0
-    detail_failed: int = 0
-    list_unaccounted: int = 0
-    detail_unaccounted: int = 0
-    candidate_dates: List[str] = field(default_factory=list)
-    candidate_entries: List[Dict[str, Any]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-
 @dataclass(frozen=True)
 class _ListSource:
     label: str
@@ -105,57 +87,6 @@ class _DownloadCandidate:
     project_code: str = ""
 
 
-def _parse_date(value: Any) -> Optional[dt.date]:
-    if value in (None, ""):
-        return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        ts = float(value)
-        if ts > 10_000_000_000:
-            ts /= 1000.0
-        try:
-            return dt.datetime.utcfromtimestamp(ts).date()
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    raw = str(value).strip()
-    if not raw:
-        return None
-    if raw.isdigit():
-        try:
-            return _parse_date(int(raw))
-        except ValueError:
-            return None
-
-    raw = re.sub(
-        r"(\d{4})\s*\u5e74\s*(\d{1,2})\s*\u6708\s*(\d{1,2})\s*\u65e5?",
-        r"\1-\2-\3",
-        raw,
-    )
-    raw = raw.replace("/", "-").replace(".", "-")
-    if "T" in raw:
-        raw = raw.split("T", 1)[0]
-    if " " in raw:
-        raw = raw.split(" ", 1)[0]
-
-    match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", raw)
-    if not match:
-        return None
-    try:
-        year, month, day = (int(part) for part in match.groups())
-        return dt.date(year, month, day)
-    except ValueError:
-        return None
-
-
-def _parse_bound(raw: Optional[str], name: str) -> Optional[dt.date]:
-    if raw in (None, ""):
-        return None
-    parsed = _parse_date(raw)
-    if parsed is None:
-        raise ValueError(f"invalid {name}: {raw!r} (expected YYYY-MM-DD)")
-    return parsed
-
-
 def _parse_price(value: str) -> Optional[float]:
     text = str(value or "").strip()
     if not text or text in {"-", "\u9762\u8bae", "\u53e6\u884c\u516c\u544a"}:
@@ -165,21 +96,6 @@ def _parse_price(value: str) -> Optional[float]:
         return float(text)
     except ValueError:
         return None
-
-
-def _in_range(value: Optional[dt.date], start: Optional[dt.date], end: Optional[dt.date]) -> bool:
-    if value is None:
-        return False
-    if start and value < start:
-        return False
-    if end and value > end:
-        return False
-    return True
-
-
-def _safe_filename(name: str) -> str:
-    cleaned = re.sub(r"[\\/:*?\"<>|]+", "_", str(name or "").strip())
-    return cleaned or "unknown"
 
 
 def _build_list_url(params: Dict[str, Any]) -> str:
@@ -237,6 +153,10 @@ def _decode_html(raw: bytes, charset_hint: Optional[str]) -> str:
 class ChongqingProjectDownloader:
     """Download Chongqing detail pages after parsing list pages."""
 
+    manifest_list_endpoint = f"{BASE_URL}/project"
+    manifest_detail_route = "/Project/Show"
+    manifest_date_field_candidates = ("disclosure_start",)
+
     def __init__(
         self,
         *,
@@ -282,8 +202,8 @@ class ChongqingProjectDownloader:
         list_only: bool = False,
         prefetched_candidates: Optional[List[Dict[str, Any]]] = None,
     ) -> DownloadSummary:
-        start = _parse_bound(start_date, "start-date")
-        end = _parse_bound(end_date, "end-date")
+        start = parse_bound(start_date, "start-date")
+        end = parse_bound(end_date, "end-date")
         if start and end and start > end:
             raise ValueError(f"start-date {start_date!r} is after end-date {end_date!r}")
 
@@ -373,7 +293,13 @@ class ChongqingProjectDownloader:
                     html = self._fetch_list_html(current_url)
                 except Exception as exc:  # noqa: BLE001
                     summary.pages_requested += 1
-                    summary.errors.append(f"list-{source.label}-page-{page_index}-request-failed: {exc}")
+                    summary.typed_errors.append(
+                        list_failed_error(
+                            source_id="cquae",
+                            task_id=f"cquae:{project_type_key(self.output_type)}",
+                            raw_reason=f"list-{source.label}-page-{page_index}-request-failed: {exc}",
+                        )
+                    )
                     break
 
                 summary.pages_requested += 1
@@ -418,17 +344,27 @@ class ChongqingProjectDownloader:
             project_id = str(row.get("project_id") or "").strip()
             if not project_id:
                 summary.skipped_by_missing_xmid += 1
-                summary.errors.append(f"list-{source.label}-missing-project-id")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="cquae",
+                        task_id=f"cquae:{project_type_key(self.output_type)}",
+                        raw_reason=f"list-{source.label}-missing-project-id",
+                    )
+                )
                 continue
             if project_id in seen_ids:
                 summary.skipped_by_duplicate += 1
                 continue
             seen_ids.add(project_id)
 
-            list_disclosure_start = _parse_date(row.get("list_disclosure_start"))
-            if (start or end) and list_disclosure_start and not _in_range(list_disclosure_start, start, end):
-                summary.skipped_by_list_date += 1
-                continue
+            list_disclosure_start = parse_loose_date(row.get("disclosure_start"))
+            if start or end:
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
+                    summary.skipped_by_list_date += 1
+                    continue
 
             project_code = str(row.get("project_code") or "").strip().upper()
             project_name = str(row.get("project_name") or "").strip()
@@ -437,14 +373,14 @@ class ChongqingProjectDownloader:
                 archive_root=output_dir,
                 project_code=html_seed,
                 project_name=project_name,
-                listing_date=str(row.get("list_disclosure_start") or ""),
+                listing_date=str(row.get("disclosure_start") or ""),
             )
             resume_html_path = self._resolve_resume_html_path(
                 output_dir=output_dir,
                 project_id=project_id,
                 project_code=project_code,
                 project_name=project_name,
-                listing_date=str(row.get("list_disclosure_start") or ""),
+                listing_date=str(row.get("disclosure_start") or ""),
             )
             if self.resume and resume_html_path and is_snapshot_complete(resume_html_path):
                 summary.skipped_by_resume += 1
@@ -469,11 +405,11 @@ class ChongqingProjectDownloader:
                     "page_url": candidate.page_url,
                     "list_url": candidate.list_url,
                     "row": row_with_source,
-                    "list_disclosure_start": row.get("list_disclosure_start"),
+                    "disclosure_start": row.get("disclosure_start"),
                 }
             )
-            if row.get("list_disclosure_start"):
-                summary.candidate_dates.append(str(row["list_disclosure_start"]))
+            if row.get("disclosure_start"):
+                summary.candidate_dates.append(str(row["disclosure_start"]))
 
     def _build_prefetched_candidates(
         self,
@@ -488,14 +424,26 @@ class ChongqingProjectDownloader:
         seen_ids: Set[str] = set()
         for index, raw in enumerate(prefetched_candidates, start=1):
             if not isinstance(raw, dict):
-                summary.errors.append(f"prefetched-entry-{index}-invalid-format")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="cquae",
+                        task_id=f"cquae:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-invalid-format",
+                    )
+                )
                 continue
             summary.listed_items += 1
 
             project_id = str(raw.get("project_id") or "").strip()
             if not project_id:
                 summary.skipped_by_missing_xmid += 1
-                summary.errors.append(f"prefetched-entry-{index}-missing-project-id")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="cquae",
+                        task_id=f"cquae:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-missing-project-id",
+                    )
+                )
                 continue
             if project_id in seen_ids:
                 summary.skipped_by_duplicate += 1
@@ -504,16 +452,26 @@ class ChongqingProjectDownloader:
 
             row_raw = raw.get("row")
             row = row_raw if isinstance(row_raw, dict) else {}
-            list_disclosure_start = _parse_date(
-                raw.get("list_disclosure_start") or row.get("list_disclosure_start")
+            list_disclosure_start = parse_loose_date(
+                raw.get("disclosure_start") or row.get("disclosure_start")
             )
-            if (start or end) and list_disclosure_start and not _in_range(list_disclosure_start, start, end):
-                summary.skipped_by_list_date += 1
-                continue
+            if start or end:
+                if list_disclosure_start is None:
+                    summary.skipped_by_list_date += 1
+                    continue
+                if not in_date_range(list_disclosure_start, start, end):
+                    summary.skipped_by_list_date += 1
+                    continue
 
             page_url = str(raw.get("page_url") or row.get("page_url") or "").strip()
             if not page_url:
-                summary.errors.append(f"prefetched-entry-{index}-missing-page-url: project_id={project_id}")
+                summary.typed_errors.append(
+                    invalid_candidate_error(
+                        source_id="cquae",
+                        task_id=f"cquae:{project_type_key(self.output_type)}",
+                        raw_reason=f"prefetched-entry-{index}-missing-page-url: project_id={project_id}",
+                    )
+                )
                 continue
 
             list_url = str(raw.get("list_url") or row.get("list_url") or BASE_URL).strip()
@@ -538,7 +496,7 @@ class ChongqingProjectDownloader:
                 continue
 
             row_with_source = dict(row)
-            row_with_source["list_disclosure_start"] = (
+            row_with_source["disclosure_start"] = (
                 list_disclosure_start.isoformat() if list_disclosure_start else None
             )
             row_with_source["list_url"] = list_url
@@ -560,7 +518,7 @@ class ChongqingProjectDownloader:
                     "page_url": candidate.page_url,
                     "list_url": candidate.list_url,
                     "row": row_with_source,
-                    "list_disclosure_start": list_disclosure_start.isoformat()
+                    "disclosure_start": list_disclosure_start.isoformat()
                     if list_disclosure_start
                     else None,
                 }
@@ -631,8 +589,8 @@ class ChongqingProjectDownloader:
             "project_name": title,
             "page_url": page_url,
             "list_url": current_url,
-            "list_disclosure_start": start_match.group(1) if start_match else None,
-            "list_disclosure_end": end_match.group(1) if end_match else None,
+            "disclosure_start": start_match.group(1) if start_match else None,
+            "disclosure_end": end_match.group(1) if end_match else None,
             "list_price": raw_price,
             "list_price_value": _parse_price(raw_price),
         }
@@ -700,7 +658,7 @@ class ChongqingProjectDownloader:
                             total,
                             summary.saved,
                             summary.skipped_by_detail_date,
-                            len(summary.errors),
+                            len(summary.typed_errors),
                             completed / elapsed * 60.0,
                         )
 
@@ -734,13 +692,25 @@ class ChongqingProjectDownloader:
                 if attempt <= self._detail_retries:
                     await asyncio.sleep(1.5 * attempt)
                 else:
-                    summary.errors.append(f"project_id={candidate.project_id} page-timeout: {exc}")
+                    summary.typed_errors.append(
+                        execute_failed_error(
+                            source_id="cquae",
+                            task_id=f"cquae:{project_type_key(self.output_type)}",
+                            raw_reason=f"project_id={candidate.project_id} page-timeout: {exc}",
+                        )
+                    )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt <= self._detail_retries:
                     await asyncio.sleep(1.5 * attempt)
                 else:
-                    summary.errors.append(f"project_id={candidate.project_id} page-fetch-failed: {exc}")
+                    summary.typed_errors.append(
+                        execute_failed_error(
+                            source_id="cquae",
+                            task_id=f"cquae:{project_type_key(self.output_type)}",
+                            raw_reason=f"project_id={candidate.project_id} page-fetch-failed: {exc}",
+                        )
+                    )
             finally:
                 await page.close()
 
@@ -751,17 +721,20 @@ class ChongqingProjectDownloader:
             return
 
         disclosure_start = self._extract_disclosure_start_date(rendered_html)
-        list_start = _parse_date(candidate.row.get("list_disclosure_start"))
-        if (start or end):
-            check_date = list_start if list_start is not None else disclosure_start
-            if check_date is not None and not _in_range(check_date, start, end):
+        list_start = parse_loose_date(candidate.row.get("disclosure_start"))
+        final_date = disclosure_start if disclosure_start is not None else list_start
+        if start or end:
+            if final_date is None:
+                summary.date_missing_skipped += 1
+                summary.skipped_by_detail_date += 1
+                return
+            if not in_date_range(final_date, start, end):
                 summary.skipped_by_detail_date += 1
                 return
 
         project_code = self._extract_project_code(
             html_text=rendered_html,
             page_url=final_url,
-            fallback_project_id=candidate.project_id,
         )
         final_html_path, _ = resolve_submission_snapshot_target(
             archive_root=self.html_root,
@@ -783,7 +756,13 @@ class ChongqingProjectDownloader:
             )
         except Exception as exc:  # noqa: BLE001
             summary.detail_failed += 1
-            summary.errors.append(f"project_id={candidate.project_id} save-failed: {exc}")
+            summary.typed_errors.append(
+                save_failed_error(
+                    source_id="cquae",
+                    task_id=f"cquae:{project_type_key(self.output_type)}",
+                    raw_reason=str(exc),
+                )
+            )
             return
 
         if self.save_json:
@@ -811,6 +790,7 @@ class ChongqingProjectDownloader:
             project_code=project_code,
         )
         summary.saved += 1
+        summary.downloaded_this_run.add(os.path.relpath(final_html_path, self.html_root))
 
     async def _fetch_rendered_html(self, *, page, candidate: _DownloadCandidate) -> tuple[str, str]:
         await page.goto(candidate.list_url, wait_until="domcontentloaded", timeout=self._render_timeout_ms)
@@ -879,7 +859,6 @@ class ChongqingProjectDownloader:
         *,
         html_text: str,
         page_url: str,
-        fallback_project_id: str,
     ) -> str:
         soup = BeautifulSoup(html_text, "html.parser")
 
@@ -904,7 +883,7 @@ class ChongqingProjectDownloader:
             if match:
                 return f"CQID{match.group(1)}"
 
-        return f"CQID{fallback_project_id}"
+        return ""
 
     @staticmethod
     def _match_project_code(text: str) -> str:
@@ -943,7 +922,7 @@ class ChongqingProjectDownloader:
                     "project_code": project_code,
                     "project_name": candidate.project_name,
                     "listing_date": disclosure_start.isoformat() if disclosure_start else "",
-                    "exchange": "chongqing",
+                    "source_id": "cquae",
                     "project_type": self.output_type,
                     "row": candidate.row,
                 }
@@ -1026,7 +1005,7 @@ class ChongqingProjectDownloader:
         for pattern in DISCLOSURE_START_PATTERNS:
             match = re.search(pattern, text)
             if match:
-                parsed = _parse_date(match.group(1))
+                parsed = parse_loose_date(match.group(1))
                 if parsed is not None:
                     return parsed
         return None

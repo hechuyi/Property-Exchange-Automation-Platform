@@ -8,18 +8,21 @@ import json
 import logging
 import os
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from peap_core.source_catalog import get_source_descriptor
 
-from .download_models import DownloadRunResult, TaskSplitPlan
+from .download_errors import collect_failed_error
+from .download_models import DownloadRunResult, TaskSplitPlan, TaskTypedErrorList
 from .download_reporting import (
     merge_totals,
     new_totals,
     print_aggregate_summary,
     totals_to_summary_dict,
 )
+from .download_runtime import build_download_driver, run_download_driver
 from .download_split_planning import save_split_plan_file
 from .download_task_flow import (
     DownloadTaskFlowError,
@@ -54,7 +57,6 @@ class DownloadRunRequest:
     resume: bool = True
     save_json: bool = False
     sse_ssl_verify: bool = True
-    sse_ssl_fallback_insecure: bool = True
     sse_ca_bundle: str | None = None
     log_dir: str = ""
     log_file: str | None = None
@@ -85,24 +87,25 @@ class DownloadRunnerSettings:
 @dataclass(frozen=True)
 class PreparedDownloadSession:
     settings: DownloadRunnerSettings
+    request: object
     output_root: str
     tasks: list[DownloadTaskSpec]
 
 
 def build_download_runner_settings(config_obj: object) -> DownloadRunnerSettings:
     path_within_project_root = getattr(config_obj, "is_path_within_project_root", None)
+    auto_html_root = str(getattr(config_obj, "AUTO_HTML_FOLDER", "") or "")
+    manual_html_root = str(getattr(config_obj, "HTML_FOLDER", "") or "")
+    project_root = str(getattr(config_obj, "PROJECT_ROOT", "") or "")
+    download_chunk_state_dir = str(getattr(config_obj, "DOWNLOAD_CHUNK_STATE_DIR", "") or "")
     return DownloadRunnerSettings(
-        auto_html_root=default_auto_html_root(config_obj),
-        manual_html_root=str(getattr(config_obj, "HTML_FOLDER", "") or ""),
-        project_root=str(getattr(config_obj, "PROJECT_ROOT", "") or ""),
-        download_chunk_state_dir=str(getattr(config_obj, "DOWNLOAD_CHUNK_STATE_DIR", "") or ""),
+        auto_html_root=auto_html_root,
+        manual_html_root=manual_html_root,
+        project_root=project_root,
+        download_chunk_state_dir=download_chunk_state_dir,
         is_path_within_project_root=path_within_project_root if callable(path_within_project_root) else None,
         task_registry_settings=build_download_task_registry_settings(config_obj),
     )
-
-
-def default_auto_html_root(config_obj: object) -> str:
-    return str(getattr(config_obj, "AUTO_HTML_FOLDER", getattr(config_obj, "HTML_FOLDER", "")))
 
 
 def clone_download_request(request: DownloadRunRequest, **overrides: object) -> DownloadRunRequest:
@@ -128,7 +131,7 @@ def build_download_run_request(
         exchange=str(getattr(args, "exchange", defaults.get("exchange", "all"))),
         project_type=str(getattr(args, "project_type", defaults.get("project_type", "all"))),
         list_tasks=bool(getattr(args, "list_tasks", False)),
-        output_root=str(getattr(args, "output_root", None) or default_auto_html_root(config_obj)),
+        output_root=str(getattr(args, "output_root", None) or ""),
         force_manual_root=bool(getattr(args, "force_manual_root", False)),
         start_date=getattr(args, "start_date", None),
         end_date=getattr(args, "end_date", None),
@@ -138,11 +141,8 @@ def build_download_run_request(
         resume=bool(getattr(args, "resume", defaults.get("resume", True))),
         save_json=bool(getattr(args, "save_json", defaults.get("save_json", False))),
         sse_ssl_verify=bool(getattr(args, "sse_ssl_verify", defaults.get("sse_ssl_verify", True))),
-        sse_ssl_fallback_insecure=bool(
-            getattr(args, "sse_ssl_fallback_insecure", defaults.get("sse_ssl_fallback_insecure", True))
-        ),
         sse_ca_bundle=getattr(args, "sse_ca_bundle", defaults.get("sse_ca_bundle")),
-        log_dir=str(getattr(args, "log_dir", getattr(config_obj, "LOG_DIR", ""))),
+        log_dir=str(getattr(args, "log_dir", "")),
         log_file=getattr(args, "log_file", None),
         verbose=bool(getattr(args, "verbose", False)),
         auto_split=auto_split,
@@ -181,6 +181,12 @@ def build_task_list_payload(
             "task_id": task_id,
             "display_name": registry[task_id].display_name,
             "default_page_size": registry[task_id].default_page_size,
+            "source_id": registry[task_id].manifest.source_id,
+            "list_endpoint": registry[task_id].manifest.list_endpoint,
+            "detail_route": registry[task_id].manifest.detail_route,
+            "date_field_candidates": list(registry[task_id].manifest.date_field_candidates),
+            "supports_list_only": registry[task_id].capabilities.supports_list_only,
+            "supports_prefetched_candidates": registry[task_id].capabilities.supports_prefetched_candidates,
         }
         for task_id in sorted(registry)
     ]
@@ -253,25 +259,37 @@ def parse_date_arg(raw: str | None, name: str) -> dt.date | None:
         raise ValueError(f"invalid {name}: {raw!r} (expected YYYY-MM-DD)") from exc
 
 
-def normalize_date_range_args(args: object, *, logger: logging.Logger) -> None:
-    start = parse_date_arg(getattr(args, "start_date", None), "start-date")
-    end = parse_date_arg(getattr(args, "end_date", None), "end-date")
-    if start is None or end is None:
-        return
-    if start <= end:
-        return
+def _copy_request_object(request: object) -> object:
+    if isinstance(request, DownloadRunRequest):
+        return clone_download_request(request)
+    if is_dataclass(request):
+        return replace(request)
+    if hasattr(request, "__dict__"):
+        return SimpleNamespace(**vars(request))
+    raise TypeError(f"unsupported download request object: {type(request)!r}")
 
-    original_start = getattr(args, "start_date", None)
-    original_end = getattr(args, "end_date", None)
-    args.start_date = end.isoformat()
-    args.end_date = start.isoformat()
+
+def normalize_date_range_args(args: object, *, logger: logging.Logger) -> object:
+    normalized_args = _copy_request_object(args)
+    start = parse_date_arg(getattr(normalized_args, "start_date", None), "start-date")
+    end = parse_date_arg(getattr(normalized_args, "end_date", None), "end-date")
+    if start is None or end is None:
+        return normalized_args
+    if start <= end:
+        return normalized_args
+
+    original_start = getattr(normalized_args, "start_date", None)
+    original_end = getattr(normalized_args, "end_date", None)
+    normalized_args.start_date = end.isoformat()
+    normalized_args.end_date = start.isoformat()
     message = (
         "Detected reversed date range, auto-corrected by swapping: "
         f"start-date={original_start} end-date={original_end} -> "
-        f"start-date={args.start_date} end-date={args.end_date}"
+        f"start-date={normalized_args.start_date} end-date={normalized_args.end_date}"
     )
     print(message)
     logger.warning(message)
+    return normalized_args
 
 
 def build_downloader(
@@ -282,31 +300,13 @@ def build_downloader(
     logger: logging.Logger,
     resume_override: bool | None = None,
 ):
-    page_size = getattr(args, "page_size", None)
-    resolved_page_size = page_size if page_size is not None else spec.default_page_size
-    resume_enabled = getattr(args, "resume", False) if resume_override is None else bool(resume_override)
-    downloader_kwargs = {
-        "html_root": output_root,
-        "page_size": resolved_page_size,
-        "max_pages": getattr(args, "max_pages", None),
-        "concurrency": max(1, int(getattr(args, "concurrency", 1))),
-        "resume": resume_enabled,
-        "save_json": getattr(args, "save_json", False),
-        "logger": logger,
-    }
-    if spec.exchange_code == "sse":
-        ca_bundle = str(getattr(args, "sse_ca_bundle", "") or "").strip() or None
-        downloader_kwargs.update(
-            {
-                "ssl_verify": bool(getattr(args, "sse_ssl_verify", True)),
-                "ssl_fallback_insecure": bool(getattr(args, "sse_ssl_fallback_insecure", True)),
-                "ssl_ca_bundle": ca_bundle,
-            }
-        )
-    item_saved_callback = getattr(args, "item_saved_callback", None)
-    if item_saved_callback is not None:
-        downloader_kwargs["item_saved_callback"] = item_saved_callback
-    return spec.downloader_cls(**downloader_kwargs)
+    return build_download_driver(
+        spec,
+        args=args,
+        output_root=output_root,
+        logger=logger,
+        resume_override=resume_override,
+    )
 
 
 def _json_safe(value: object) -> object:
@@ -339,19 +339,13 @@ def run_downloader_with_prefetched(
     list_only: bool,
     prefetched_candidates: list[dict[str, object]] | None,
 ):
-    try:
-        return downloader.run(
-            start_date=start_date,
-            end_date=end_date,
-            list_only=list_only,
-            prefetched_candidates=prefetched_candidates,
-        )
-    except TypeError:
-        if prefetched_candidates is not None:
-            raise
-        if list_only:
-            raise
-        return downloader.run(start_date=start_date, end_date=end_date)
+    return run_download_driver(
+        downloader,
+        start_date=start_date,
+        end_date=end_date,
+        list_only=list_only,
+        prefetched_candidates=prefetched_candidates,
+    )
 
 
 def _validate_output_root(
@@ -361,12 +355,19 @@ def _validate_output_root(
     settings: DownloadRunnerSettings | None = None,
 ) -> str:
     resolved_settings = settings or build_download_runner_settings(config_obj)
-    output_root = os.path.abspath(str(args.output_root))
-    manual_root = os.path.abspath(str(resolved_settings.manual_html_root or getattr(config_obj, "HTML_FOLDER", "")))
+    raw_output_root = str(args.output_root or "")
+    if not raw_output_root:
+        message = (
+            "output-root is required. "
+            f"Use --output-root (default: {resolved_settings.auto_html_root or ''})"
+        )
+        raise DownloadRunnerError(message)
+    output_root = os.path.abspath(raw_output_root)
+    manual_root = os.path.abspath(str(resolved_settings.manual_html_root or ""))
     if output_root == manual_root and not args.force_manual_root:
         message = (
             "Refusing to write into manual html root. "
-            f"Use another --output-root (default: {resolved_settings.auto_html_root or default_auto_html_root(config_obj)}) "
+            f"Use another --output-root (default: {resolved_settings.auto_html_root or ''}) "
             "or pass --force-manual-root."
         )
         raise DownloadRunnerError(message)
@@ -375,7 +376,7 @@ def _validate_output_root(
     if within_project_root:
         message = (
             "Refusing to write downloader output under project root in rebuilt data-root mode. "
-            f"output_root={output_root} project_root={resolved_settings.project_root or getattr(config_obj, 'PROJECT_ROOT', '')}"
+            f"output_root={output_root} project_root={resolved_settings.project_root or ''}"
         )
         raise DownloadRunnerError(message)
     return output_root
@@ -383,7 +384,7 @@ def _validate_output_root(
 
 def _build_split_plan_scope(args: object) -> dict[str, object]:
     return {
-        "exchange": getattr(args, "exchange", None),
+        "source_id": getattr(args, "exchange", None),
         "project_type": getattr(args, "project_type", None),
         "start_date": getattr(args, "start_date", None),
         "end_date": getattr(args, "end_date", None),
@@ -403,7 +404,7 @@ def prepare_download_session(
 ) -> PreparedDownloadSession:
     resolved_settings = settings or build_download_runner_settings(config_obj)
     try:
-        normalize_date_range_args(request, logger=logger)
+        normalized_request = normalize_date_range_args(request, logger=logger)
     except ValueError as exc:
         print(str(exc))
         logger.error(str(exc))
@@ -411,11 +412,11 @@ def prepare_download_session(
 
     logger.info(
         "Run args: %s",
-        json.dumps(_json_safe(vars(request)), ensure_ascii=False, sort_keys=True),
+        json.dumps(_json_safe(vars(normalized_request)), ensure_ascii=False, sort_keys=True),
     )
 
     try:
-        output_root = _validate_output_root(request, config_obj=config_obj, settings=resolved_settings)
+        output_root = _validate_output_root(normalized_request, config_obj=config_obj, settings=resolved_settings)
     except DownloadRunnerError as exc:
         print(str(exc))
         logger.error(str(exc))
@@ -423,8 +424,8 @@ def prepare_download_session(
 
     tasks = resolve_tasks(
         config_obj,
-        str(getattr(request, "exchange", "all")),
-        str(getattr(request, "project_type", "all")),
+        str(getattr(normalized_request, "exchange", "all")),
+        str(getattr(normalized_request, "project_type", "all")),
         settings=resolved_settings,
     )
     if not tasks:
@@ -438,6 +439,7 @@ def prepare_download_session(
 
     return PreparedDownloadSession(
         settings=resolved_settings,
+        request=normalized_request,
         output_root=output_root,
         tasks=tasks,
     )
@@ -457,21 +459,22 @@ def _run_download_session_core(
         settings=settings,
     )
     resolved_settings = prepared.settings
+    normalized_args = prepared.request
     output_root = prepared.output_root
     tasks = prepared.tasks
 
     any_failure = False
     totals = new_totals()
-    total_errors: list[str] = []
+    total_typed_errors = TaskTypedErrorList()
     task_results: dict[str, dict[str, Any]] = {}
     loaded_plan_map: dict[str, TaskSplitPlan] = {}
     generated_plan_map: dict[str, TaskSplitPlan] = {}
-    task_progress_callback = getattr(args, "task_progress_callback", None)
+    task_progress_callback = getattr(normalized_args, "task_progress_callback", None)
 
     try:
-        loaded_plan_map = load_requested_split_plans(args, logger=logger)
+        loaded_plan_map = load_requested_split_plans(normalized_args, logger=logger)
         chunk_state_ctx = prepare_chunk_state_context(
-            args,
+            normalized_args,
             logger=logger,
             default_dir=str(resolved_settings.download_chunk_state_dir),
         )
@@ -492,7 +495,7 @@ def _run_download_session_core(
             )
         task_run = run_download_task(
             spec,
-            args=args,
+            args=normalized_args,
             logger=logger,
             output_root=output_root,
             loaded_plan_map=loaded_plan_map,
@@ -504,7 +507,7 @@ def _run_download_session_core(
         )
         any_failure = any_failure or task_run.any_failure
         merge_totals(totals, task_run.totals)
-        total_errors.extend(task_run.errors)
+        total_typed_errors.extend(task_run.typed_errors)
         if task_run.generated_plan is not None:
             generated_plan_map[spec.task_id] = task_run.generated_plan
         if task_run.task_result is not None:
@@ -522,34 +525,40 @@ def _run_download_session_core(
                 }
             )
 
-    if len(tasks) > 1 and not getattr(args, "split_plan_only", False):
-        print_aggregate_summary(totals, total_errors, logger=logger)
+    if len(tasks) > 1 and not getattr(normalized_args, "split_plan_only", False):
+        print_aggregate_summary(totals, logger=logger)
 
-    if getattr(args, "split_plan_only", False):
+    if getattr(normalized_args, "split_plan_only", False):
         print("Split plan generated. No download executed because --split-plan-only is set.")
         logger.info("Split plan generated. No download executed because --split-plan-only is set.")
 
-    if getattr(args, "split_plan_file", None) and not getattr(args, "split_use_plan", False):
+    if getattr(normalized_args, "split_plan_file", None) and not getattr(normalized_args, "split_use_plan", False):
         try:
             save_split_plan_file(
-                str(args.split_plan_file),
+                str(normalized_args.split_plan_file),
                 tasks_to_plan=generated_plan_map,
-                scope=_build_split_plan_scope(args),
+                scope=_build_split_plan_scope(normalized_args),
             )
-            print(f"Split plan saved: {args.split_plan_file}")
-            logger.info("Split plan saved: %s", args.split_plan_file)
+            print(f"Split plan saved: {normalized_args.split_plan_file}")
+            logger.info("Split plan saved: %s", normalized_args.split_plan_file)
         except Exception as exc:  # noqa: BLE001
             any_failure = True
-            total_errors.append(f"split-plan-save-failed: {exc}")
-            print(f"Failed to save split plan file: {args.split_plan_file} ({exc})")
-            logger.exception("Failed to save split plan file: %s", args.split_plan_file)
+            total_typed_errors.append(
+                collect_failed_error(
+                    source_id=str(getattr(normalized_args, "exchange", "") or ""),
+                    task_id="",
+                    raw_reason=f"split-plan-save-failed: {exc}",
+                )
+            )
+            print(f"Failed to save split plan file: {normalized_args.split_plan_file} ({exc})")
+            logger.exception("Failed to save split plan file: %s", normalized_args.split_plan_file)
 
     return DownloadRunResult(
         exit_code=1 if any_failure else 0,
         task_count=len(tasks),
-        aggregate_summary=totals_to_summary_dict(totals, total_errors),
+        aggregate_summary=totals_to_summary_dict(totals),
         task_summaries=task_results,
-        errors=list(total_errors),
+        typed_errors=total_typed_errors,
         any_failure=any_failure,
     )
 

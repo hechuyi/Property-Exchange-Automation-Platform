@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .compat_compare import DEFAULT_COMPARE_FIELDS, compare_data_fields
+from peap_postprocess.compare_regression import DEFAULT_COMPARE_FIELDS
 from .constants import (
     KEY_PROJECT_CODE,
     SKIP_FILE_NAME,
@@ -29,10 +29,9 @@ from .output_mapping import map_standard_to_excel_payload
 from .parse_cache import (
     ParseCacheStore,
     build_parser_signature,
+    build_runtime_version_signature,
 )
 from .parsing import (
-    COMPAT_PROFILE_FULL,
-    COMPAT_PROFILE_PPE_READY,
     ParsedProject,
     ParseError,
     SkipParse,
@@ -173,8 +172,6 @@ class ParserPipeline:
         dry_run: bool = False,
         limit: Optional[int] = None,
         batch_flush_interval: int = 50,
-        compat_profile: str = COMPAT_PROFILE_FULL,
-        dual_run_compare: bool = False,
         compare_report_file: Optional[str] = None,
         compare_fields: Optional[List[str]] = None,
         parse_cache_enabled: bool = True,
@@ -192,8 +189,6 @@ class ParserPipeline:
         self.dry_run = dry_run
         self.limit = limit
         self.batch_flush_interval = max(0, int(batch_flush_interval))
-        self.compat_profile = str(compat_profile or COMPAT_PROFILE_FULL).strip().lower()
-        self.dual_run_compare = bool(dual_run_compare)
         self.compare_report_file = compare_report_file
         self.compare_fields = compare_fields or list(DEFAULT_COMPARE_FIELDS)
         self.parse_cache_enabled = bool(parse_cache_enabled)
@@ -241,13 +236,13 @@ class ParserPipeline:
         pending_counts_by_target: Dict[str, int] = {}
         pending_sync_files_by_target: Dict[str, List[str]] = {}
         pre_archive_actions: List[tuple[str, str, str]] = []
-        compare_writer = None
         run_started = dt.datetime.now()
 
         if self.parse_cache_enabled and self.parse_cache_db:
             try:
                 parser_signature = build_parser_signature()
-                run_signature = f"{self.compat_profile}|{parser_signature}|no-mapping"
+                runtime_signature = build_runtime_version_signature()
+                run_signature = f"{runtime_signature}|{parser_signature}|no-mapping"
                 parse_cache_store = ParseCacheStore(
                     db_path=self.parse_cache_db,
                     run_signature=run_signature,
@@ -267,18 +262,18 @@ class ParserPipeline:
         else:
             self.logger.info("Parse cache disabled by args")
 
-        def _parse_with_cache(file_path: str, *, compat_profile: str) -> ParsedProject:
+        def _parse_with_cache(file_path: str) -> ParsedProject:
             if parse_cache_store is not None:
                 try:
-                    cached = parse_cache_store.get(file_path, compat_profile=compat_profile)
+                    cached = parse_cache_store.get(file_path)
                     if cached is not None:
                         return cached
                 except Exception as exc:
                     self.logger.warning("Parse cache read failed: %s (%s)", file_path, exc)
-            parsed_fresh = parse_file(file_path, compat_profile=compat_profile)
+            parsed_fresh = parse_file(file_path)
             if parse_cache_store is not None:
                 try:
-                    parse_cache_store.put(parsed_fresh, compat_profile=compat_profile)
+                    parse_cache_store.put(parsed_fresh)
                 except Exception as exc:
                     self.logger.warning("Parse cache write failed: %s (%s)", file_path, exc)
             return parsed_fresh
@@ -315,7 +310,6 @@ class ParserPipeline:
                     try:
                         parse_cache_store.mark_output_synced_batch(
                             synced_files,
-                            compat_profile=self.compat_profile,
                             target_file=target_file,
                         )
                     except Exception as exc:
@@ -356,30 +350,6 @@ class ParserPipeline:
                 error_message = f"{target_file}: batch-flush-failed: {message}"
                 summary.errors.append(error_message)
                 self.logger.error("Failed: %s", error_message)
-
-        def _resolve_compare_report_path() -> str:
-            if self.compare_report_file:
-                return os.path.abspath(self.compare_report_file)
-            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            report_dir = os.path.abspath(self.compare_report_dir or os.getcwd())
-            return os.path.join(report_dir, f"parser_dual_compare_{timestamp}.jsonl")
-
-        if self.dual_run_compare:
-            report_path = _resolve_compare_report_path()
-            os.makedirs(os.path.dirname(report_path), exist_ok=True)
-            compare_writer = open(report_path, "w", encoding="utf-8")
-            summary.compare_report_file = report_path
-            self.logger.info(
-                "Dual-run compare enabled: primary_profile=%s alternate_profile=%s fields=%s report=%s",
-                self.compat_profile,
-                (
-                    COMPAT_PROFILE_PPE_READY
-                    if self.compat_profile == COMPAT_PROFILE_FULL
-                    else COMPAT_PROFILE_FULL
-                ),
-                self.compare_fields,
-                report_path,
-            )
 
         html_files = self.collect_html_files()
         if not html_files:
@@ -427,40 +397,7 @@ class ParserPipeline:
             for file_path in html_files:
                 summary.processed += 1
                 try:
-                    parsed = _parse_with_cache(file_path, compat_profile=self.compat_profile)
-                    if self.dual_run_compare:
-                        alt_profile = (
-                            COMPAT_PROFILE_PPE_READY
-                            if self.compat_profile == COMPAT_PROFILE_FULL
-                            else COMPAT_PROFILE_FULL
-                        )
-                        try:
-                            parsed_alt = _parse_with_cache(file_path, compat_profile=alt_profile)
-                            diffs = compare_data_fields(
-                                file_path=file_path,
-                                compare_fields=self.compare_fields,
-                                primary_profile=self.compat_profile,
-                                baseline_profile=alt_profile,
-                                primary_data=parsed,
-                                baseline_data=parsed_alt,
-                            )
-                            for diff in diffs:
-                                summary.compare_diffs += 1
-                                self.logger.warning(
-                                    "Compat diff: file=%s project_code=%s field=%s baseline(%s)=%r primary(%s)=%r",
-                                    diff["file"],
-                                    diff["project_code"],
-                                    diff["field"],
-                                    diff["baseline_profile"],
-                                    diff["baseline_value"],
-                                    diff["primary_profile"],
-                                    diff["primary_value"],
-                                )
-                                if compare_writer is not None:
-                                    compare_writer.write(json.dumps(diff, ensure_ascii=False) + "\n")
-                        except Exception as compare_exc:
-                            self.logger.warning("Dual-run compare failed for %s: %s", file_path, compare_exc)
-
+                    parsed = _parse_with_cache(file_path)
                     if _is_invalid_parsed_project(parsed):
                         self.logger.warning("Skip invalid detail page (404): %s", file_path)
                         summary.succeeded += 1
@@ -498,7 +435,6 @@ class ParserPipeline:
                         try:
                             if parse_cache_store.is_output_synced(
                                 file_path,
-                                compat_profile=self.compat_profile,
                                 target_file=target_file,
                                 payload_hash=output_hash,
                             ):
@@ -531,7 +467,6 @@ class ParserPipeline:
                         try:
                             parse_cache_store.mark_output_pending(
                                 file_path,
-                                compat_profile=self.compat_profile,
                                 target_file=target_file,
                                 payload_hash=output_hash,
                             )
@@ -564,8 +499,6 @@ class ParserPipeline:
                 finally:
                     _log_progress()
         finally:
-            if compare_writer is not None:
-                compare_writer.close()
             if not self.dry_run and batch_writer is not None:
                 _flush_batch(final=True)
             if parse_cache_store is not None:

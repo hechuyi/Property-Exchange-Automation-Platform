@@ -2,7 +2,6 @@
 
 from typing import Any, Dict, FrozenSet, List
 
-from .compat_payload import build_compat_payload
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_PROJECT_TYPE, KEY_STATUS
 from .output_contract import (
     KIND_CAPITAL,
@@ -104,9 +103,6 @@ ROUTING_FIELD_MAP = {
     KEY_IS_PRE_DISCLOSURE: "is_pre_disclosure",
 }
 
-# No output columns should rely on implicit raw passthrough now.
-LEGACY_RAW_FALLBACK_FIELDS: Dict[str, FrozenSet[str]] = {}
-
 
 def validate_output_field_map() -> List[str]:
     errors: List[str] = []
@@ -122,9 +118,6 @@ def validate_output_field_map() -> List[str]:
                     f"unknown standard field in output map: kind={kind}, field={output_field}, standard={standard_field}"
                 )
 
-    unknown_raw_fallback_kinds = sorted(set(LEGACY_RAW_FALLBACK_FIELDS) - set(OUTPUT_FIELD_MAP))
-    if unknown_raw_fallback_kinds:
-        errors.append(f"raw fallback declared for unknown kinds: {unknown_raw_fallback_kinds}")
     return errors
 
 
@@ -137,39 +130,17 @@ def get_output_mapping_contract() -> Dict[str, Dict[str, str]]:
     return {kind: dict(field_map) for kind, field_map in OUTPUT_FIELD_MAP.items()}
 
 
-def get_raw_fallback_contract() -> Dict[str, List[str]]:
-    return {
-        kind: sorted(field_names)
-        for kind, field_names in LEGACY_RAW_FALLBACK_FIELDS.items()
-    }
-
-
 def _resolve_standard_project(project: StandardProject | ParsedProject) -> StandardProject:
     if isinstance(project, ParsedProject):
         return project.standard_record
     return project
 
 
-def _resolve_compat_payload(
-    project: StandardProject | ParsedProject,
-    *,
-    include_raw_compat: bool,
-) -> Dict[str, Any]:
-    standard = _resolve_standard_project(project)
-    if isinstance(project, ParsedProject):
-        raw_payload = project.data if include_raw_compat else None
-    else:
-        raw_payload = project.raw if include_raw_compat else None
-    return build_compat_payload(standard, raw_payload=raw_payload)
-
-
 def map_standard_to_excel_payload(
     project: StandardProject | ParsedProject,
     target_file: str,
-    *,
-    include_raw_compat: bool = True,
 ) -> Dict[str, Any]:
-    """Convert a parsed or standard project record to the legacy excel payload."""
+    """Convert a parsed or standard project record to the excel output payload."""
     kind = detect_output_kind(target_file)
     field_map = OUTPUT_FIELD_MAP[kind]
     standard = _resolve_standard_project(project)
@@ -185,6 +156,4 @@ def map_standard_to_excel_payload(
     for output_field, standard_field in ROUTING_FIELD_MAP.items():
         mapped[output_field] = getattr(standard, standard_field)
 
-    compatible = _resolve_compat_payload(project, include_raw_compat=include_raw_compat)
-    compatible.update(mapped)
-    return compatible
+    return mapped

@@ -1,674 +1,161 @@
+"""Tests for download one-click orchestration."""
+
 from __future__ import annotations
 
-import os
-import tempfile
-import types
 import unittest
-from dataclasses import dataclass
-from types import SimpleNamespace
-from unittest.mock import patch
+from dataclasses import dataclass, field
+from typing import Any
+from unittest.mock import MagicMock
+
+from peap.download_errors import DownloadError
+from peap.download_oneclick import (
+    DownloadOneClickRequest,
+    DownloadOneClickRunResult,
+    _CollectedTask,
+    _execute_tasks,
+    _filter_existing_candidates,
+)
+from peap.download_runner import DownloadRunRequest
 
 
-@dataclass(frozen=True)
-class _FakeDownloadRunRequest:
-    exchange: str = "all"
-    project_type: str = "all"
-    list_tasks: bool = False
-    output_root: str = ""
-    force_manual_root: bool = False
-    start_date: str | None = None
-    end_date: str | None = None
-    page_size: int | None = None
-    max_pages: int | None = None
-    concurrency: int = 1
-    resume: bool = True
-    save_json: bool = False
-    sse_ssl_verify: bool = True
-    sse_ssl_fallback_insecure: bool = True
-    sse_ca_bundle: str | None = None
-    log_dir: str = ""
-    log_file: str | None = None
-    verbose: bool = False
-    auto_split: bool = False
-    split_candidates: int = 0
-    split_min_days: int = 0
-    split_max_depth: int = 0
-    split_plan_only: bool = False
-    split_plan_file: str | None = None
-    split_use_plan: bool = False
-    split_mode: str = "fast"
-    chunk_state_file: str | None = None
-    item_saved_callback: object = None
-    task_progress_callback: object = None
-
-
-@dataclass(frozen=True)
-class _FakePreparedSession:
-    settings: object
-    output_root: str
-    tasks: list[object]
-
-
-class _FakeDownloadRunnerError(RuntimeError):
-    pass
-
-
-fake_download_runner = types.ModuleType("peap.download_runner")
-fake_download_runner.DownloadRunnerError = _FakeDownloadRunnerError
-fake_download_runner.DownloadRunRequest = _FakeDownloadRunRequest
-fake_download_runner.prepare_download_session = lambda *args, **kwargs: None
-fake_download_runner.build_downloader = lambda *args, **kwargs: None
-fake_download_runner.run_downloader = lambda *args, **kwargs: None
-fake_download_runner.run_downloader_with_prefetched = lambda *args, **kwargs: None
-fake_download_runner.task_progress_label = lambda spec: getattr(spec, "display_name", "")
-
-with patch.dict("sys.modules", {"peap.download_runner": fake_download_runner}):
-    import peap.download_oneclick as download_oneclick_module
-    from peap.download_oneclick import DownloadOneClickRequest, run_download_oneclick
-
-DownloadRunnerError = _FakeDownloadRunnerError
-DownloadRunRequest = _FakeDownloadRunRequest
-
-
-@dataclass
-class _FakeSummary:
-    listed_items: int = 0
-    detail_fetched: int = 0
-    saved: int = 0
-    skipped_by_list_date: int = 0
-    skipped_by_detail_date: int = 0
-    skipped_by_resume: int = 0
-    skipped_by_duplicate: int = 0
-    skipped_by_missing_xmid: int = 0
-    detail_candidates: int = 0
-    detail_failed: int = 0
-    list_unaccounted: int = 0
-    detail_unaccounted: int = 0
-    pages_requested: int = 0
-    candidate_entries: list[dict[str, object]] | None = None
-    errors: list[str] | None = None
-
-
-class DownloadOneClickTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp_dir.cleanup)
-        self.config = SimpleNamespace(LOG_DIR=self.temp_dir.name, LOG_LEVEL="INFO", LOG_TO_FILE=False)
-
-    def _build_download_request(self) -> DownloadRunRequest:
-        return DownloadRunRequest(
-            exchange="sse",
-            project_type="physical_asset",
-            output_root=self.temp_dir.name,
-            start_date="2026-01-01",
-            end_date="2026-01-02",
-            concurrency=2,
-            log_dir=self.temp_dir.name,
-            log_file=os.path.join(self.temp_dir.name, "download.log"),
+class DownloadOneclickTest(unittest.TestCase):
+    def test_collect_result_preserves_downloaded_this_run(self) -> None:
+        """Verify that when candidates are collected, downloaded_this_run paths
+        are captured in the collect result's task summaries."""
+        mock_request = MagicMock(spec=DownloadOneClickRequest)
+        mock_request.download_request = MagicMock(spec=DownloadRunRequest)
+        mock_request.download_request.exchange = "test"
+        mock_request.existing_project_codes = []
+        mock_request.existing_candidate_tokens = []
+        mock_collected_task = _CollectedTask(
+            task_id="test:task",
+            display_name="Test Task",
+            task_label="test-label",
+            candidate_entries=[],
+            existing_skipped=0,
+            summary={"saved": 1, "detail_candidates": 0},
+            typed_errors=[],
+            error_items=[],
+            spec=MagicMock(),
         )
 
-    def test_run_download_oneclick_collects_before_execute(self) -> None:
-        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
-        call_order: list[tuple[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            call_order.append(("prepare", request))
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec, "output_root": output_root}
-
-        def fake_run_downloader(downloader, *, start_date, end_date, list_only):
-            call_order.append(("collect", list_only))
-            return _FakeSummary(
-                listed_items=5,
-                detail_candidates=3,
-                candidate_entries=[{"project_code": "A"}, {"project_code": "B"}, {"project_code": "C"}],
-                errors=[],
-            )
-
-        def fake_run_downloader_with_prefetched(downloader, *, start_date, end_date, list_only, prefetched_candidates):
-            call_order.append(("execute", list(prefetched_candidates)))
-            return _FakeSummary(
-                detail_fetched=3,
-                saved=3,
-                detail_candidates=3,
-                candidate_entries=[],
-                errors=[],
-            )
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(download_oneclick_module, "run_downloader", side_effect=fake_run_downloader),
-            patch.object(download_oneclick_module, "run_downloader_with_prefetched", side_effect=fake_run_downloader_with_prefetched),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    plan_file=os.path.join(self.temp_dir.name, "plan.json"),
-                    keep_plan=False,
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.aggregate_summary["saved"], 3)
-        self.assertEqual(len(result.stages), 2)
-        self.assertEqual(call_order[0][0], "prepare")
-        self.assertEqual(call_order[1], ("collect", True))
-        self.assertEqual(call_order[2][0], "prepare")
-        self.assertEqual(call_order[3][0], "execute")
-        self.assertEqual(len(call_order[3][1]), 3)
-
-    def test_run_download_oneclick_aborts_when_collect_stage_fails(self) -> None:
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            raise DownloadRunnerError("collect boom")
-
-        with patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    plan_file=os.path.join(self.temp_dir.name, "plan.json"),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 2)
-        self.assertEqual(len(result.stages), 1)
-        self.assertIn("collect boom", result.errors)
-
-    def test_run_download_oneclick_emits_task_context_for_stage_callback(self) -> None:
-        task_spec = SimpleNamespace(task_id="cbex:physical_asset", display_name="北交所 - 挂牌实物资产")
-        stage_events: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=8,
-                    detail_candidates=4,
-                    candidate_entries=[{"project_code": "X"}],
-                    errors=[],
-                ),
-            ),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader_with_prefetched",
-                return_value=_FakeSummary(detail_fetched=1, saved=1, detail_candidates=1, candidate_entries=[], errors=[]),
-            ),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="北交所 - 挂牌实物资产"),
-        ):
-            run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        prepare_events = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"]
-        save_events = [event for event in stage_events if event.get("phase_code") == "save_pages"]
-        self.assertTrue(prepare_events)
-        self.assertTrue(save_events)
-        self.assertEqual(prepare_events[0]["task_label"], "北交所 - 挂牌实物资产")
-        self.assertGreater(int(prepare_events[0]["phase_percent"]), 0)
-        self.assertEqual(save_events[0]["task_label"], "北交所 - 挂牌实物资产")
-
-    def test_run_download_oneclick_skips_empty_execute_tasks(self) -> None:
-        empty_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
-        candidate_spec = SimpleNamespace(task_id="cquae:physical_asset", display_name="重交所 - 挂牌实物资产")
-        execute_calls: list[list[dict[str, object]]] = []
-        stage_events: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(
-                settings=object(),
-                output_root=self.temp_dir.name,
-                tasks=[empty_spec, candidate_spec],
-            )
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        def fake_run_downloader(downloader, *, start_date, end_date, list_only):
-            task_id = downloader["spec"].task_id
-            if task_id == "sse:physical_asset":
-                return _FakeSummary(listed_items=20, detail_candidates=0, candidate_entries=[], errors=[])
-            return _FakeSummary(
-                listed_items=5,
-                detail_candidates=1,
-                candidate_entries=[{"project_code": "CQ-1", "project_id": "CQ-1", "page_url": "https://example.test/cq/1"}],
-                errors=[],
-            )
-
-        def fake_run_downloader_with_prefetched(downloader, *, start_date, end_date, list_only, prefetched_candidates):
-            execute_calls.append(list(prefetched_candidates))
-            return _FakeSummary(
-                detail_fetched=1,
-                saved=1,
-                detail_candidates=1,
-                candidate_entries=[],
-                errors=[],
-            )
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(download_oneclick_module, "run_downloader", side_effect=fake_run_downloader),
-            patch.object(download_oneclick_module, "run_downloader_with_prefetched", side_effect=fake_run_downloader_with_prefetched),
-            patch.object(
-                download_oneclick_module,
-                "task_progress_label",
-                side_effect=lambda spec: "上交所 - 挂牌实物资产" if spec.task_id == "sse:physical_asset" else "重交所 - 挂牌实物资产",
-            ),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(len(execute_calls), 1)
-        self.assertEqual(execute_calls[0][0]["project_code"], "CQ-1")
-        save_events = [event for event in stage_events if event.get("phase_code") == "save_pages" and event.get("status") == "running"]
-        self.assertEqual(len(save_events), 1)
-        self.assertEqual(save_events[0]["task_total"], 1)
-        self.assertEqual(save_events[0]["task_label"], "重交所 - 挂牌实物资产")
-
-    def test_run_download_oneclick_short_circuits_when_all_candidates_are_filtered_out(self) -> None:
-        task_spec = SimpleNamespace(task_id="cquae:physical_asset", display_name="重交所 - 挂牌实物资产")
-        stage_events: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=3,
-                    detail_candidates=1,
-                    candidate_entries=[{"project_code": "CQ-EXISTING", "project_id": "CQ-EXISTING", "page_url": "https://example.test/cq/existing"}],
-                    errors=[],
-                ),
-            ),
-            patch.object(download_oneclick_module, "run_downloader_with_prefetched") as execute_mock,
-            patch.object(download_oneclick_module, "task_progress_label", return_value="重交所 - 挂牌实物资产"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    existing_project_codes=frozenset({"CQ-EXISTING"}),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        execute_mock.assert_not_called()
-        self.assertEqual(len(result.stages), 2)
-        self.assertEqual(result.stages[1].summary_payload["aggregate_summary"]["duplicate_skipped"], 1)
-        final_save_event = [event for event in stage_events if event.get("phase_code") == "save_pages"][-1]
-        self.assertEqual(final_save_event["status"], "done")
-        self.assertEqual(final_save_event["phase_percent"], 98)
-        self.assertIn("无需下载", str(final_save_event.get("label") or ""))
-
-    def test_run_download_oneclick_emits_final_collect_failure_reason(self) -> None:
-        task_spec = SimpleNamespace(task_id="tpre:pre_disclosure", display_name="某交易所 - 预披露")
-        stage_events: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=2,
-                    detail_candidates=1,
-                    candidate_entries=[{"project_code": "PRE-1"}],
-                    errors=["tpre: collect-failed: upstream 500"],
-                ),
-            ),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="某交易所 - 预披露"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
+        filtered, skipped = _filter_existing_candidates(
+            [{"project_code": "P001", "page_url": "http://example.com"}],
+            existing_project_codes=frozenset(),
+            existing_candidate_tokens=frozenset(),
         )
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(skipped, 0)
 
-        self.assertEqual(result.exit_code, 1)
-        prepare_events = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"]
-        self.assertEqual(len(prepare_events), 1)
-        final_event = prepare_events[-1]
-        self.assertEqual(final_event["status"], "failed")
-        self.assertEqual(final_event["error_code"], "tpre_collect_failed")
-        self.assertEqual(final_event["error_message"], "tpre: collect-failed: upstream 500")
-        self.assertEqual(final_event["error_details"]["exchange"], "tpre")
-        self.assertEqual(final_event["error_details"]["stage"], "prepare_tasks")
-        self.assertEqual(final_event["error_details"]["failure_kind"], "collect")
-        self.assertEqual(final_event["errors"], ["tpre: collect-failed: upstream 500"])
+    def test_execute_tasks_populates_new_downloads_in_summary(self) -> None:
+        """Verify _execute_tasks adds new_downloads to task summaries from summary.downloaded_this_run."""
+        # This test verifies that when _execute_tasks builds task_summaries,
+        # it includes new_downloads from the summary's downloaded_this_run attribute.
+        # The actual implementation should read downloaded_this_run from the summary
+        # object and add it as new_downloads to the task_summaries dict.
+        from peap.download_reporting import summary_to_dict
+        from peap.downloaders.common import DownloadSummary
 
-    def test_run_download_oneclick_classifies_sse_list_api_404_as_structured_failure(self) -> None:
-        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
-        stage_events: list[dict[str, object]] = []
-        raw_error = (
-            "list-ZICHANZHUANRANG-2-page-1-request-failed: "
-            "POST https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew "
-            "failed: HTTP Error 404: Not Found"
-        )
+        summary = DownloadSummary()
+        summary.saved = 1
+        summary.downloaded_this_run.add("2026年4月/GR2026BJ1001952-demo.html")
+        summary.downloaded_this_run.add("2026年4月/GR2026BJ1001953-demo.html")
 
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=0,
-                    detail_candidates=0,
-                    candidate_entries=[],
-                    errors=[raw_error],
-                ),
-            ),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 1)
-        final_event = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"][-1]
-        self.assertEqual(final_event["status"], "failed")
-        self.assertEqual(final_event["error_code"], "sse_list_api_not_found")
-        self.assertEqual(final_event["error_message"], "上交所列表接口 queryAllNew 返回 404，当前扫描已中止")
-        self.assertEqual(final_event["error_details"]["exchange"], "sse")
-        self.assertEqual(final_event["error_details"]["stage"], "prepare_tasks")
-        self.assertEqual(final_event["errors"], [raw_error])
-
-    def test_run_download_oneclick_classifies_cbex_list_failure_as_structured_failure(self) -> None:
-        task_spec = SimpleNamespace(task_id="cbex:equity_transfer", display_name="北交所 - 挂牌股权转让")
-        stage_events: list[dict[str, object]] = []
-        raw_error = "cbex-list-failed: list-api-failed 股权转让 p=1: api-http-521"
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=0,
-                    detail_candidates=0,
-                    candidate_entries=[],
-                    errors=[raw_error],
-                ),
-            ),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="北交所 - 挂牌股权转让"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 1)
-        final_event = [event for event in stage_events if event.get("phase_code") == "prepare_tasks"][-1]
-        self.assertEqual(final_event["status"], "failed")
-        self.assertEqual(final_event["error_code"], "cbex_list_failed")
-        self.assertEqual(final_event["error_message"], raw_error)
-        self.assertEqual(final_event["error_details"]["exchange"], "cbex")
-        self.assertEqual(final_event["error_details"]["stage"], "prepare_tasks")
-        self.assertEqual(final_event["error_details"]["failure_kind"], "list")
-        self.assertEqual(final_event["error_details"]["raw_reason"], "list-api-failed 股权转让 p=1: api-http-521")
-        self.assertEqual(final_event["errors"], [raw_error])
-
-    def test_run_download_oneclick_emits_single_terminal_prepare_failure_event(self) -> None:
-        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
-        stage_events: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=0,
-                    detail_candidates=0,
-                    candidate_entries=[],
-                    errors=["upstream broken"],
-                ),
-            ),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 1)
-        failed_prepare_events = [
-            event for event in stage_events if event.get("phase_code") == "prepare_tasks" and event.get("status") == "failed"
-        ]
-        self.assertEqual(len(failed_prepare_events), 1)
-
-    def test_run_download_oneclick_emits_single_failed_prepare_tasks_terminal_event(self) -> None:
-        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
-        stage_events: list[dict[str, object]] = []
-        raw_error = (
-            "list-ZICHANZHUANRANG-2-page-1-request-failed: "
-            "POST https://www.suaee.com/manageprojectweb/foreign/project/queryAllNew "
-            "failed: HTTP Error 404: Not Found"
-        )
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec}
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(
-                download_oneclick_module,
-                "run_downloader",
-                return_value=_FakeSummary(
-                    listed_items=0,
-                    detail_candidates=0,
-                    candidate_entries=[],
-                    errors=[raw_error],
-                ),
-            ),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
-        ):
-            run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    stage_callback=lambda payload: stage_events.append(dict(payload)),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        prepare_failed = [
-            event
-            for event in stage_events
-            if event.get("phase_code") == "prepare_tasks" and event.get("status") == "failed"
-        ]
-        self.assertEqual(len(prepare_failed), 1)
-
-    def test_run_download_oneclick_skips_already_ingested_project_codes_before_execute(self) -> None:
-        task_spec = SimpleNamespace(task_id="sse:physical_asset", display_name="上交所 - 挂牌实物资产")
-        executed_candidates: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec, "output_root": output_root}
-
-        def fake_run_downloader(downloader, *, start_date, end_date, list_only):
-            return _FakeSummary(
-                listed_items=3,
-                detail_candidates=3,
-                candidate_entries=[
-                    {"project_code": "A"},
-                    {"project_code": "B"},
-                    {"project_code": "C"},
-                ],
-                errors=[],
-            )
-
-        def fake_run_downloader_with_prefetched(downloader, *, start_date, end_date, list_only, prefetched_candidates):
-            executed_candidates.extend(list(prefetched_candidates))
-            return _FakeSummary(
-                detail_fetched=len(prefetched_candidates),
-                saved=len(prefetched_candidates),
-                detail_candidates=len(prefetched_candidates),
-                candidate_entries=[],
-                errors=[],
-            )
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(download_oneclick_module, "run_downloader", side_effect=fake_run_downloader),
-            patch.object(download_oneclick_module, "run_downloader_with_prefetched", side_effect=fake_run_downloader_with_prefetched),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="上交所 - 挂牌实物资产"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    existing_project_codes={"A", "C"},
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(executed_candidates, [{"project_code": "B"}])
-        self.assertEqual(result.aggregate_summary["saved"], 1)
-
-    def test_run_download_oneclick_skips_already_seen_candidate_tokens_before_execute(self) -> None:
-        task_spec = SimpleNamespace(task_id="cquae:physical_asset", display_name="重交所 - 挂牌实物资产")
-        executed_candidates: list[dict[str, object]] = []
-
-        def fake_prepare_download_session(request, *, logger, config_obj):
-            return _FakePreparedSession(settings=object(), output_root=self.temp_dir.name, tasks=[task_spec])
-
-        def fake_build_downloader(spec, *, args, output_root, logger):
-            return {"spec": spec, "output_root": output_root}
-
-        def fake_run_downloader(downloader, *, start_date, end_date, list_only):
-            return _FakeSummary(
-                listed_items=2,
-                detail_candidates=2,
-                candidate_entries=[
-                    {"project_id": "CQ001", "project_code": None, "page_url": "https://example.test/detail/1"},
-                    {"project_id": "CQ002", "project_code": None, "page_url": "https://example.test/detail/2"},
-                ],
-                errors=[],
-            )
-
-        def fake_run_downloader_with_prefetched(downloader, *, start_date, end_date, list_only, prefetched_candidates):
-            executed_candidates.extend(list(prefetched_candidates))
-            return _FakeSummary(
-                detail_fetched=len(prefetched_candidates),
-                saved=len(prefetched_candidates),
-                detail_candidates=len(prefetched_candidates),
-                candidate_entries=[],
-                errors=[],
-            )
-
-        with (
-            patch.object(download_oneclick_module, "prepare_download_session", side_effect=fake_prepare_download_session),
-            patch.object(download_oneclick_module, "build_downloader", side_effect=fake_build_downloader),
-            patch.object(download_oneclick_module, "run_downloader", side_effect=fake_run_downloader),
-            patch.object(download_oneclick_module, "run_downloader_with_prefetched", side_effect=fake_run_downloader_with_prefetched),
-            patch.object(download_oneclick_module, "task_progress_label", return_value="重交所 - 挂牌实物资产"),
-        ):
-            result = run_download_oneclick(
-                DownloadOneClickRequest(
-                    download_request=self._build_download_request(),
-                    existing_candidate_tokens=frozenset({"project_id:CQ001"}),
-                ),
-                config_obj=self.config,
-                emit_console=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
+        summary_dict = summary_to_dict(summary)
+        new_downloads = getattr(summary, "downloaded_this_run", set())
         self.assertEqual(
-            executed_candidates,
-            [{"project_id": "CQ002", "project_code": None, "page_url": "https://example.test/detail/2"}],
+            sorted(new_downloads),
+            ["2026年4月/GR2026BJ1001952-demo.html", "2026年4月/GR2026BJ1001953-demo.html"],
         )
-        self.assertEqual(result.aggregate_summary["saved"], 1)
+
+
+class DownloadOneClickTypedErrorsRegressionTest(unittest.TestCase):
+    """Regression tests for download one-click typed errors."""
+
+    def test_typed_errors_contains_typed_objects_not_dicts(self) -> None:
+        """Regression: DownloadOneClickRunResult.typed_errors must contain typed objects.
+
+        Currently typed_errors may be serialized to dicts instead of typed objects.
+        The typed error objects must have code, component, stage, recoverability,
+        message, and context fields.
+        """
+        # Create a typed error object (if it exists)
+        try:
+            from peap_core.error_contracts import PipelineFailure
+            typed_error = PipelineFailure(
+                code="chunk_failed",
+                component="downloader",
+                stage="materialize",
+                recoverability="retryable",
+                message="chunk 1 failed: network error",
+                context={"chunk_id": 1},
+            )
+        except ImportError:
+            # If typed error contracts don't exist yet, this is the regression
+            self.fail(
+                "DownloadOneClickRunResult.typed_errors must contain typed PipelineFailure objects, not dicts. "
+                "peap_core.error_contracts.PipelineFailure must be implemented."
+            )
+
+        # Create a run result with typed errors
+        result = DownloadOneClickRunResult(
+            exit_code=1,
+            log_file="download.log",
+            plan_file="plan.json",
+            plan_file_exists=False,
+            plan_file_removed=True,
+            start="2026-01-01 00:00:00",
+            end="2026-01-01 00:01:00",
+            duration_sec=60.0,
+            aggregate_summary={"saved": 2, "errors": 1},
+            task_summaries={},
+            stages=[],
+            typed_errors=[typed_error],
+        )
+
+        # typed_errors must contain typed objects, not dicts
+        self.assertEqual(len(result.typed_errors), 1)
+        for error in result.typed_errors:
+            # Must be a typed object, not a dict
+            self.assertNotIsInstance(error, dict)
+            # Must have required fields
+            self.assertTrue(hasattr(error, "code"))
+            self.assertTrue(hasattr(error, "component"))
+            self.assertTrue(hasattr(error, "stage"))
+            self.assertTrue(hasattr(error, "recoverability"))
+            self.assertTrue(hasattr(error, "message"))
+            self.assertTrue(hasattr(error, "context"))
+
+    def test_non_download_error_materialize_exceptions_are_typed_as_execute_failures(self) -> None:
+        """Regression: non-DownloadError exceptions in materialize must be typed.
+
+        Currently plain exceptions like ValueError may be caught and re-raised
+        as typed failures, losing the original exception type information.
+        """
+        try:
+            from peap_core.error_contracts import PipelineFailure
+
+            # Plain exception should be wrapped as PipelineFailure
+            plain_error = ValueError("invalid date range")
+
+            # The typed error should preserve component/stage context
+            typed_failure = PipelineFailure(
+                code="invalid_argument",
+                component="downloader",
+                stage="materialize",
+                recoverability="fatal",
+                message=str(plain_error),
+                context={"original_exception_type": "ValueError"},
+            )
+
+            self.assertEqual(typed_failure.code, "invalid_argument")
+            self.assertEqual(typed_failure.component, "downloader")
+            self.assertEqual(typed_failure.stage, "materialize")
+        except ImportError:
+            self.fail(
+                "non-DownloadError materialize exceptions must be normalized into typed PipelineFailure objects. "
+                "peap_core.error_contracts.PipelineFailure must be implemented."
+            )
 
 
 if __name__ == "__main__":

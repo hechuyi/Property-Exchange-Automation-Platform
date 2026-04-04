@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from peap.streaming_ingest import (
     StreamingIngestDependencies,
@@ -233,6 +234,120 @@ class StreamingIngestRunnerTest(unittest.TestCase):
         skipped = self.store.iter_latest_records(states=["skipped"])
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["state"], "skipped")
+
+    def test_ingest_ready_record_persists_snapshot_identity_and_canonical_projection(self) -> None:
+        def fake_parser(file_path: str):
+            return {
+                "项目编号": "G32025SH1000200",
+                "项目名称": "带谱系项目",
+                "项目类型": "股权转让",
+                "交易所": "shanghai",
+                "挂牌开始日期": "2026-03-21",
+                "转让方": "上海测试公司",
+                "page_url": "https://example.test/detail/lineage",
+                "project_id": "LINEAGE001",
+            }
+
+        def fake_postprocess(payload, **kwargs):
+            updated = dict(payload)
+            updated["类型"] = "国资"
+            updated["canonical_projection"] = {
+                "项目编号": payload["项目编号"],
+                "项目名称": payload["项目名称"],
+                "项目类型": payload["项目类型"],
+                "转让方": payload["转让方"],
+            }
+            return updated, []
+
+        runner = StreamingIngestRunner(
+            store=self.store,
+            archive_root=self.archive_root,
+            dependencies=StreamingIngestDependencies(
+                parser=fake_parser,
+                postprocess=fake_postprocess,
+            ),
+        )
+
+        result = runner.ingest(
+            ItemSavedPayload(
+                source_file=self.html_path,
+                exchange="shanghai",
+                page_url="https://example.test/detail/lineage",
+                extra={"project_id": "LINEAGE001"},
+            )
+        )
+
+        latest = self.store.iter_latest_records(states=["ready"])
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0]["parser_payload"]["page_url"], "https://example.test/detail/lineage")
+        self.assertEqual(latest[0]["parser_payload"]["project_id"], "LINEAGE001")
+        self.assertEqual(latest[0]["postprocess_payload"]["page_url"], "https://example.test/detail/lineage")
+        self.assertEqual(latest[0]["postprocess_payload"]["project_id"], "LINEAGE001")
+        self.assertEqual(latest[0]["project_code"], "G32025SH1000200")
+        self.assertEqual(latest[0]["project_name"], "带谱系项目")
+        self.assertEqual(latest[0]["source_identity_json"]["original_source_file"], self.html_path)
+        self.assertEqual(latest[0]["source_identity_json"]["source_url"], "https://example.test/detail/lineage")
+        self.assertEqual(
+            latest[0]["source_identity_json"]["candidate_tokens"],
+            [
+                "project_code:G32025SH1000200",
+                "project_id:LINEAGE001",
+                "page_url:https://example.test/detail/lineage",
+            ],
+        )
+        self.assertEqual(
+            latest[0]["canonical_record"]["canonical_fields"]["project_code"],
+            "G32025SH1000200",
+        )
+        self.assertEqual(
+            latest[0]["canonical_record"]["canonical_fields"]["project_name"],
+            "带谱系项目",
+        )
+        self.assertEqual(
+            latest[0]["canonical_record"]["canonical_fields"]["seller"],
+            "上海测试公司",
+        )
+        self.assertEqual(
+            latest[0]["canonical_record"]["canonical_fields"]["source_type"],
+            "国资",
+        )
+        self.assertEqual(
+            latest[0]["canonical_projection"],
+            {
+                "项目编号": "G32025SH1000200",
+                "项目名称": "带谱系项目",
+                "项目类型": "股权转让",
+                "转让方": "上海测试公司",
+            },
+        )
+
+    def test_ingest_parse_failure_preserves_typed_failure_taxonomy(self) -> None:
+        def fake_parser(file_path: str):
+            raise RuntimeError("decode_failed: malformed snapshot")
+
+        runner = StreamingIngestRunner(
+            store=self.store,
+            archive_root=self.archive_root,
+            dependencies=StreamingIngestDependencies(
+                parser=fake_parser,
+            ),
+        )
+
+        result = runner.ingest(
+            ItemSavedPayload(
+                source_file=self.html_path,
+                exchange="shanghai",
+                project_code="FAIL-001",
+            )
+        )
+
+        failed = self.store.iter_latest_records(states=["parse_failed"])
+        self.assertEqual(result["state"], "parse_failed")
+        self.assertEqual(result["error_type"], "decode_failed")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["last_error_type"], "decode_failed")
+        self.assertIn("decode_failed", failed[0]["last_error_message"])
 
     def test_ingest_ready_record_uses_existing_canonical_file_without_copy(self) -> None:
         canonical_dir = os.path.join(self.archive_root, "2026年3月")
@@ -488,7 +603,7 @@ class StreamingIngestRunnerTest(unittest.TestCase):
         )
 
         self.assertEqual(result["state"], "parse_failed")
-        self.assertEqual(result["error_type"], "parse_failed")
+        self.assertEqual(result["error_type"], "cbex-otc-page-unrecoverable")
         self.assertIn("cbex-otc-page-unrecoverable", result["error_message"])
         failed = self.store.iter_latest_records(states=["parse_failed"])
         self.assertEqual(len(failed), 1)
@@ -591,6 +706,83 @@ class StreamingIngestRunnerTest(unittest.TestCase):
         latest = self.store.iter_latest_records(states=["pending_mapping"])
         self.assertEqual(len(latest), 1)
         self.assertTrue(any(str(item.get("type") or "") == "project_type_unknown" for item in latest[0]["findings"]))
+
+
+class StreamingIngestCanonicalFieldRegressionTest(unittest.TestCase):
+    """Regression tests for canonical field preservation in streaming ingest."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = os.path.join(self.temp_dir.name, "streaming_canonical.sqlite3")
+        self.archive_root = os.path.join(self.temp_dir.name, "submission")
+        self.store = StreamingStore(self.db_path)
+        self.html_path = os.path.join(self.temp_dir.name, "canonical_test.html")
+        with open(self.html_path, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>canonical field test</body></html>")
+
+    def test_ingest_preserves_canonical_fields_through_assemble_normalize(self) -> None:
+        """Regression: ingest must preserve canonical fields through assemble -> normalize.
+
+        Fields like project_type, status, start_date, price, seller must be preserved.
+        """
+        def fake_parser(file_path: str):
+            return {
+                "项目编号": "G32025SH1000194",
+                "项目名称": "规范场测试项目",
+                "项目类型": "股权转让",
+                "交易所": "shanghai",
+                "挂牌开始日期": "2026-03-21",
+                "挂牌价格": "108.00",
+                "转让方": "上海测试公司",
+                "项目状态": "挂牌中",
+                "类型": "国资",
+            }
+
+        def fake_postprocess(payload, **kwargs):
+            updated = dict(payload)
+            # Simulate canonical normalization that should preserve these fields
+            updated["canonical_projection"] = {
+                "项目编号": payload["项目编号"],
+                "项目名称": payload["项目名称"],
+                "项目类型": payload["项目类型"],
+                "挂牌开始日期": payload["挂牌开始日期"],
+                "挂牌价格": payload["挂牌价格"],
+                "转让方": payload["转让方"],
+            }
+            return updated, []
+
+        runner = StreamingIngestRunner(
+            store=self.store,
+            archive_root=self.archive_root,
+            dependencies=StreamingIngestDependencies(
+                parser=fake_parser,
+                postprocess=fake_postprocess,
+            ),
+        )
+
+        result = runner.ingest(ItemSavedPayload(source_file=self.html_path, exchange="shanghai"))
+
+        self.assertEqual(result["state"], "ready")
+        latest = self.store.iter_latest_records(states=["ready"])
+        self.assertEqual(len(latest), 1)
+
+        # Canonical fields must be preserved in the stored record
+        record = latest[0]
+
+        # project_type must be preserved
+        self.assertEqual(record["project_type"], "股权转让")
+
+        # canonical_record must contain all required fields
+        canonical = record.get("canonical_record", {})
+        canonical_fields = canonical.get("canonical_fields", {})
+
+        # These fields must be preserved through the canonical chain
+        self.assertIn("project_type", canonical_fields, "project_type must be in canonical_fields")
+        self.assertIn("status", canonical_fields, "status must be in canonical_fields")
+        self.assertIn("start_date", canonical_fields, "start_date must be in canonical_fields")
+        self.assertIn("price", canonical_fields, "price must be in canonical_fields")
+        self.assertIn("seller", canonical_fields, "seller must be in canonical_fields")
 
 
 if __name__ == "__main__":

@@ -1,56 +1,108 @@
+"""Anti-compat tests: verify legacy compatibility surfaces are deleted."""
+
 from __future__ import annotations
 
 import unittest
 
-from peap.compat_payload import COMPAT_PAYLOAD_KEYS, build_compat_payload
-from peap.standard_model import build_standard_project
 
+class CompatPayloadAntiCompatTest(unittest.TestCase):
+    """Tests that verify compat_payload module is not used in production runtime."""
 
-class CompatPayloadTest(unittest.TestCase):
-    def test_build_compat_payload_keeps_bounded_standard_projection(self) -> None:
-        standard = build_standard_project(
-            {
-                "项目编号": "P001",
-                "项目名称": "标准化项目",
-                "项目类型": "股权转让",
-                "状态": "挂牌",
-                "交易所": "北交所",
-                "转让方": "测试转让方",
-                "挂牌价格": "108.00",
-                "挂牌开始日期": "2026-03-21",
-                "挂牌截止日期": "2026-03-31",
-                "神秘字段": "should-not-leak",
-            }
+    def test_peap_compat_payload_module_does_not_exist(self) -> None:
+        """The peap.compat_payload module must be deleted."""
+        with self.assertRaises(ImportError):
+            from peap import compat_payload  # type: ignore
+
+    def test_standard_model_does_not_import_compat_payload(self) -> None:
+        """standard_model.py must not import from peap.compat_payload."""
+        import ast
+        from pathlib import Path
+
+        source_path = Path(__file__).resolve().parents[1] / "peap" / "standard_model.py"
+        source = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module and "compat_payload" in node.module:
+                    self.fail(f"standard_model.py imports from compat_payload: {node.module}")
+
+    def test_output_mapping_does_not_import_compat_payload(self) -> None:
+        """output_mapping.py must not import from peap.compat_payload."""
+        import ast
+        from pathlib import Path
+
+        source_path = Path(__file__).resolve().parents[1] / "peap" / "output_mapping.py"
+        source = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module and "compat_payload" in node.module:
+                    self.fail(f"output_mapping.py imports from compat_payload: {node.module}")
+
+    def test_checks_does_not_import_compat_payload(self) -> None:
+        """checks.py must not import from peap.compat_payload."""
+        import ast
+        from pathlib import Path
+
+        source_path = Path(__file__).resolve().parents[1] / "peap" / "checks.py"
+        source = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module and "compat_payload" in node.module:
+                    self.fail(f"checks.py imports from compat_payload: {node.module}")
+
+    def test_streaming_export_does_not_import_compat_payload(self) -> None:
+        """streaming_export.py must not import from peap.compat_payload."""
+        import ast
+        from pathlib import Path
+
+        source_path = Path(__file__).resolve().parents[1] / "peap" / "streaming_export.py"
+        source = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module and "compat_payload" in node.module:
+                    self.fail(f"streaming_export.py imports from compat_payload: {node.module}")
+
+    def test_parsing_does_not_have_to_compat_payload_method(self) -> None:
+        """ParsedProject must not expose to_compat_payload() for runtime use."""
+        from peap.parsing import ParsedProject
+
+        self.assertFalse(
+            hasattr(ParsedProject, "to_compat_payload"),
+            "ParsedProject must NOT expose to_compat_payload() method",
         )
 
-        payload = build_compat_payload(standard, raw_payload=standard.raw)
+    def test_no_runtime_imports_peap_record_projection(self) -> None:
+        """Production runtime must not import peap.record_projection."""
+        import ast
+        from pathlib import Path
 
-        self.assertEqual(payload["项目编号"], "P001")
-        self.assertEqual(payload["挂牌价格"], "108.00")
-        self.assertNotIn("神秘字段", payload)
-        self.assertEqual(set(payload), set(COMPAT_PAYLOAD_KEYS))
+        peap_dir = Path(__file__).resolve().parents[1] / "peap"
+        for source_path in peap_dir.glob("*.py"):
+            try:
+                source = source_path.read_text(encoding="utf-8")
+                # Remove BOM if present
+                if source.startswith("\ufeff"):
+                    source = source[1:]
+                tree = ast.parse(source)
+            except SyntaxError:
+                # Skip files with syntax errors (e.g., BOM issues)
+                continue
 
-    def test_build_compat_payload_preserves_public_resource_contract_fields(self) -> None:
-        standard = build_standard_project(
-            {
-                "交易所": "北交所",
-                "项目编号": "GR20260001",
-                "项目名称": "成交样例项目",
-                "交易方式": "网络竞价",
-                "受让方名称": "样例受让方",
-                "转让标的评估值": "88.00",
-                "成交金额": "108.00",
-                "成交日期": "2026/03/01",
-            }
-        )
-
-        payload = build_compat_payload(standard, raw_payload=standard.raw)
-
-        self.assertEqual(payload["交易方式"], "网络竞价")
-        self.assertEqual(payload["受让方名称"], "样例受让方")
-        self.assertEqual(payload["转让标的评估值"], "88.00")
-        self.assertEqual(payload["成交金额"], "108.00")
-        self.assertEqual(payload["成交日期"], "2026/03/01")
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    if node.module and "record_projection" in node.module:
+                        self.fail(f"{source_path.name} imports from record_projection: {node.module}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if "record_projection" in alias.name:
+                            self.fail(f"{source_path.name} imports record_projection: {alias.name}")
 
 
 if __name__ == "__main__":

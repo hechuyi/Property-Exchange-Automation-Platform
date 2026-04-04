@@ -22,7 +22,7 @@ from .download_oneclick import (
     DownloadOneClickRunResult,
     run_download_oneclick,
 )
-from .download_runner import DownloadRunRequest, default_auto_html_root
+from .download_runner import DownloadRunRequest
 from .parser_runner import (
     ParserRunRequest,
     ParserRunResult,
@@ -142,19 +142,37 @@ def print_final_summary(
     print("=" * 72)
 
 
+def _resolve_archive_root(config_obj: object, args: object) -> str:
+    """Resolve the download output root using the same policy as parser_runner.
+
+    Resolution order:
+    1. ARCHIVE_ROOT if explicitly set
+    2. DATA_ROOT/raw if that directory exists (legacy parser behavior)
+    3. DATA_ROOT/outputs/submission (same fallback as default_parser_html_root)
+    """
+    archive_root = str(getattr(args, "archive_root", None) or getattr(config_obj, "ARCHIVE_ROOT", "") or "").strip()
+    if archive_root:
+        return os.path.abspath(archive_root)
+    raw_root = os.path.abspath(os.path.join(str(config_obj.DATA_ROOT), "raw"))
+    if os.path.isdir(raw_root):
+        return raw_root
+    return os.path.abspath(os.path.join(str(config_obj.DATA_ROOT), "outputs", "submission"))
+
+
 def _build_download_request(
     args: object,
     *,
     start_text: str,
     end_text: str,
     config_obj: object,
+    output_root: str,
 ) -> DownloadRunRequest:
     defaults = config_obj.DOWNLOADER_DEFAULTS
     return DownloadRunRequest(
         exchange=str(getattr(args, "exchange", "all")),
         project_type=str(getattr(args, "project_type", "all")),
         list_tasks=False,
-        output_root=str(default_auto_html_root(config_obj)),
+        output_root=str(output_root),
         force_manual_root=False,
         start_date=start_text,
         end_date=end_text,
@@ -164,7 +182,6 @@ def _build_download_request(
         resume=not bool(getattr(args, "no_resume", False)),
         save_json=bool(getattr(args, "save_json", False)),
         sse_ssl_verify=bool(defaults.get("sse_ssl_verify", True)),
-        sse_ssl_fallback_insecure=bool(defaults.get("sse_ssl_fallback_insecure", True)),
         sse_ca_bundle=defaults.get("sse_ca_bundle"),
         log_dir=str(config_obj.LOG_DIR),
         log_file=None,
@@ -181,18 +198,16 @@ def _build_download_request(
     )
 
 
-def _build_parser_request(args: object, *, config_obj: object) -> ParserRunRequest:
+def _build_parser_request(args: object, *, config_obj: object, html_root: str) -> ParserRunRequest:
     parser_defaults = config_obj.PARSER_DEFAULTS
     return ParserRunRequest(
         self_check=False,
         dry_run=False,
         limit=parser_defaults["limit"],
         batch_flush_interval=parser_defaults["batch_flush_interval"],
-        html_root=str(getattr(args, "html_root", None) or default_parser_html_root(config_obj)),
+        html_root=str(html_root),
         log_dir=str(config_obj.LOG_DIR),
         log_file=None,
-        compat_profile=parser_defaults["compat_profile"],
-        dual_run_compare=False,
         compare_report_file=None,
         compare_fields=list(parser_defaults["compare_fields"]),
         parse_cache_enabled=bool(parser_defaults["parse_cache_enabled"]),
@@ -263,6 +278,8 @@ def run_daily_pipeline(
         parser_result: ParserRunResult | None = None
         postprocess_result: PostProcessRunResult | None = None
 
+        # Resolve archive root once, use for both download output and parser input
+        resolved_archive_root = _resolve_archive_root(config_obj, args)
         timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         plan_file = os.path.join(str(config_obj.LOG_DIR), f"split_plan_onclick_{timestamp}.json")
         download_request = DownloadOneClickRequest(
@@ -271,6 +288,7 @@ def run_daily_pipeline(
                 start_text=start_text,
                 end_text=end_text,
                 config_obj=config_obj,
+                output_root=resolved_archive_root,
             ),
             plan_file=plan_file,
             keep_plan=False,
@@ -301,7 +319,7 @@ def run_daily_pipeline(
             )
 
         parser_result = run_parser_request(
-            _build_parser_request(args, config_obj=config_obj),
+            _build_parser_request(args, config_obj=config_obj, html_root=resolved_archive_root),
             config_obj=config_obj,
             emit_console=emit_console,
         )

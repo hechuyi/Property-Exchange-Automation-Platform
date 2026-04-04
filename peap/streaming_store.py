@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS record_revisions (
     revision_hash TEXT NOT NULL,
     parser_payload_json TEXT NOT NULL DEFAULT '{}',
     postprocess_payload_json TEXT NOT NULL DEFAULT '{}',
+    canonical_record_json TEXT NOT NULL DEFAULT '{}',
+    canonical_projection_json TEXT NOT NULL DEFAULT '{}',
     findings_json TEXT NOT NULL DEFAULT '[]',
     state TEXT NOT NULL,
     source_file TEXT NOT NULL DEFAULT '',
@@ -412,6 +414,18 @@ class StreamingStore:
             if column_name in existing_columns:
                 continue
             conn.execute(f"ALTER TABLE records ADD COLUMN {column_name} {column_spec}")
+        revision_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(record_revisions)").fetchall()
+        }
+        revision_migration_columns = [
+            ("canonical_record_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("canonical_projection_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ]
+        for column_name, column_spec in revision_migration_columns:
+            if column_name in revision_columns:
+                continue
+            conn.execute(f"ALTER TABLE record_revisions ADD COLUMN {column_name} {column_spec}")
         self._backfill_failed_record_contracts(conn)
 
     def _backfill_failed_record_contracts(self, conn: sqlite3.Connection) -> None:
@@ -486,9 +500,97 @@ class StreamingStore:
                     job_id, job_type, status, metadata_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, str(job_type), "running", _json_dumps(metadata or {}), now, now),
+                (job_id, str(job_type), "starting", _json_dumps(metadata or {}), now, now),
             )
         return job_id
+
+    def start_job(self, job_id: str) -> None:
+        """Transition a job from STARTING to RUNNING and emit a startup stage event.
+
+        Called by the worker thread when it actually begins pipeline execution.
+        """
+        now = _utcnow()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                ("running", now, str(job_id)),
+            )
+            if cursor.rowcount == 0:
+                raise RuntimeError(f"start_job: no job found with job_id={job_id!r}")
+
+            # Emit a startup stage event to record that pipeline execution has begun.
+            # This marks the bootstrap/thread-init phase as complete.
+            conn.execute(
+                """
+                INSERT INTO job_events (
+                    job_id, event_ts, stage, status, project_code, archive_path,
+                    error_type, error_message, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(job_id),
+                    now,
+                    "startup",
+                    "running",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "{}",
+                ),
+            )
+
+    def fail_job(
+        self,
+        job_id: str,
+        *,
+        failure,  # PipelineFailure
+        event_payload: Dict[str, Any] | None = None,
+        exception_inc: int = 1,
+    ) -> None:
+        """Atomically fail a job: updates status + appends failure event.
+
+        This is the single authoritative method for recording startup failures.
+        It replaces any ad-hoc finish_job(failed) patching in service code.
+        """
+        now = _utcnow()
+        failure_dict = failure.to_dict() if hasattr(failure, "to_dict") else {
+            "code": getattr(failure, "code", "unknown"),
+            "component": getattr(failure, "component", "unknown"),
+            "stage": getattr(failure, "stage", "unknown"),
+            "recoverability": getattr(failure, "recoverability", "permanent"),
+            "message": str(failure),
+            "context": getattr(failure, "context", {}),
+        }
+        with self._connect() as conn:
+            # Update job to failed
+            cursor = conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                ("failed", now, str(job_id)),
+            )
+            if cursor.rowcount == 0:
+                raise RuntimeError(f"fail_job: no job found with job_id={job_id!r}")
+
+            # Append failure event with stage=startup
+            conn.execute(
+                """
+                INSERT INTO job_events (
+                    job_id, event_ts, stage, status, project_code, archive_path,
+                    error_type, error_message, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(job_id),
+                    now,
+                    "startup",
+                    "failed",
+                    "",
+                    "",
+                    failure_dict.get("code", "unknown"),
+                    failure_dict.get("message", ""),
+                    _json_dumps(event_payload or {}),
+                ),
+            )
 
     def update_job_counts(
         self,
@@ -529,6 +631,75 @@ class StreamingStore:
                 """,
                 (str(status), _json_dumps(summary or {}), now, job_id),
             )
+
+    def update_record_state(
+        self,
+        record_id: str,
+        *,
+        state: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Update just the state of an existing record.
+
+        This is used when reprocess fails to transition the original record
+        to a failed state instead of creating a new sibling failed record.
+        """
+        now = _utcnow()
+        if error_type is not None:
+            last_error_type = str(error_type)
+        else:
+            last_error_type = ""
+        if error_message is not None:
+            last_error_message = str(error_message)
+        else:
+            last_error_message = ""
+        with self._connect() as conn:
+            # First update the record
+            cursor = conn.execute(
+                """
+                UPDATE records
+                SET state = ?,
+                    last_error_type = ?,
+                    last_error_message = ?,
+                    updated_at = ?
+                WHERE record_id = ?
+                """,
+                (str(state), last_error_type, last_error_message, now, str(record_id)),
+            )
+            if cursor.rowcount == 0:
+                raise RuntimeError(f"update_record_state: no record found with record_id={record_id!r}")
+            # Also update the latest revision
+            conn.execute(
+                """
+                UPDATE record_revisions
+                SET state = ?
+                WHERE revision_id = (
+                    SELECT latest_revision_id FROM records WHERE record_id = ?
+                )
+                """,
+                (str(state), str(record_id)),
+            )
+
+    def transition_record_to_failed(
+        self,
+        record_id: str,
+        *,
+        state: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Transition an existing record to a failed state.
+
+        This updates the record in-place (no sibling created) and records
+        the failure on the latest revision.
+        """
+        self.update_record_state(
+            record_id=record_id,
+            state=state,
+            error_type=error_type,
+            error_message=error_message,
+        )
 
     def interrupt_running_jobs(self, *, reason: str) -> list[str]:
         now = _utcnow()
@@ -1045,8 +1216,10 @@ class StreamingStore:
                         record_id,
                         business_key,
                         record_family,
-                        "",
-                        "{}",
+                        build_identity_anchor(record_state=record.state, source_identity=record.source_identity)
+                        if record.source_identity
+                        else "",
+                        _json_dumps(record.source_identity),
                         record.project_code,
                         record.project_name,
                         record.project_type,
@@ -1077,14 +1250,17 @@ class StreamingStore:
                     """
                     INSERT INTO record_revisions (
                         record_id, revision_hash, parser_payload_json,
-                        postprocess_payload_json, findings_json, state, source_file, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        postprocess_payload_json, canonical_record_json, canonical_projection_json,
+                        findings_json, state, source_file, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record_id,
                         record.revision_hash,
                         _json_dumps(record.parser_payload),
                         _json_dumps(record.postprocess_payload),
+                        _json_dumps(record.canonical_record),
+                        _json_dumps(record.canonical_projection),
                         _json_dumps(findings_json),
                         record.state,
                         record.source_file,
@@ -1098,6 +1274,8 @@ class StreamingStore:
                     UPDATE record_revisions
                     SET parser_payload_json = ?,
                         postprocess_payload_json = ?,
+                        canonical_record_json = ?,
+                        canonical_projection_json = ?,
                         findings_json = ?,
                         state = ?,
                         source_file = ?
@@ -1106,6 +1284,8 @@ class StreamingStore:
                     (
                         _json_dumps(record.parser_payload),
                         _json_dumps(record.postprocess_payload),
+                        _json_dumps(record.canonical_record),
+                        _json_dumps(record.canonical_projection),
                         _json_dumps(findings_json),
                         record.state,
                         record.source_file,
@@ -1143,8 +1323,10 @@ class StreamingStore:
                     record_id,
                     business_key,
                     record_family,
-                    "",
-                    "{}",
+                    build_identity_anchor(record_state=record.state, source_identity=record.source_identity)
+                    if record.source_identity
+                    else "",
+                    _json_dumps(record.source_identity),
                     record.project_code,
                     record.project_name,
                     record.project_type,
@@ -1760,12 +1942,16 @@ class StreamingStore:
                 records.state,
                 records.source_file,
                 records.archive_path,
+                records.last_error_type,
+                records.last_error_message,
                 records.created_at,
                 records.updated_at,
                 revisions.revision_id,
                 revisions.revision_hash,
                 revisions.parser_payload_json,
                 revisions.postprocess_payload_json,
+                revisions.canonical_record_json,
+                revisions.canonical_projection_json,
                 revisions.findings_json
             FROM records
             JOIN record_revisions AS revisions
@@ -1792,12 +1978,16 @@ class StreamingStore:
                     "state": row["state"],
                     "source_file": row["source_file"],
                     "archive_path": row["archive_path"],
+                    "last_error_type": row["last_error_type"],
+                    "last_error_message": row["last_error_message"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "revision_id": int(row["revision_id"]),
                     "revision_hash": row["revision_hash"],
                     "parser_payload": _json_loads(row["parser_payload_json"], default={}),
                     "postprocess_payload": _json_loads(row["postprocess_payload_json"], default={}),
+                    "canonical_record": _json_loads(row["canonical_record_json"], default={}),
+                    "canonical_projection": _json_loads(row["canonical_projection_json"], default={}),
                     "findings": _json_loads(row["findings_json"], default=[]),
                 }
             )

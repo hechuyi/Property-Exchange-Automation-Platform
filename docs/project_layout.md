@@ -48,9 +48,66 @@ bash scripts/bootstrap_desktop_env.sh
 
 - `peap_core/record_identity.py` 承载失败对象身份与证据路径选择等共享契约，`peap/` 与 `desktop_backend/` 都从这里取用。
 - `peap_core/source_catalog.py` 是唯一 canonical source metadata 目录，统一提供 source code、显示标签、别名解析与 downloader/backend 共享元数据。
-- `peap/compat_payload.py` 定义显式 downstream compat projection，导出链路不再把任意 raw parser/postprocess 字段直接带入 writer payload。
+- `peap/export_projection.py` 定义显式 downstream export projection，导出链路不再把任意 raw parser/postprocess 字段直接带入 writer payload。导出只允许使用 canonical 数据，禁止 raw payload 回退。
 - `peap/streaming_store_maintenance.py` 是 legacy store normalization 的显式入口；ordinary read paths 不再偷偷修复记录状态或 listing_date。
 - parser-layer 重构仍未纳入上述 runtime 边界，后续需要单独设计。
+
+## 解析器与流水线决策
+
+### Guangzhou 远程完成例外
+
+Guangzhou 远程完成是当前可接受的临时例外，不作为解析器纯度目标。解析器设计不以 Guangzhou 远程完成作为对标标准。
+
+### 源分类硬失败
+
+ambiguous source classification（源分类模糊）为硬失败， raises `PipelineFailure` with code `ambiguous_source_match`。
+
+### compat_profile 不是 runtime 维度
+
+`compat_profile` 不是 runtime 维度，不作为运行时解析或导出的分类依据。
+
+### 导出状态键
+
+导出使用单一状态键：`项目状态`。
+
+### Split Planning 输入约束
+
+Split planning 仅消费 normalized candidate entries（`disclosure_start` / `disclosure_end`），不接受未规范化的原始记录。
+
+### Streaming Reprocess 行为
+
+Streaming reprocess 会修改原记录状态，而非插入重复的失败记录。
+
+## 状态机与契约模型
+
+### 显式状态机 (RecordState)
+
+记录在流水线中有明确的状态定义，状态不代表异常而是工作流状态：
+
+- `ready` - 记录已完成，可供导出
+- `pending_mapping` - 等待类型映射
+- `mapping_conflict` - 映射冲突，需人工审核
+- `skipped` - 已跳过
+- `conflict` - 冲突状态
+- `pending_review` - 等待审核
+- `parse_failed` - 解析失败
+- `postprocess_failed` - 后处理失败
+
+### Canonical 契约模型
+
+`IngestedRecord` 包含显式的 canonical 数据字段：
+
+- `canonical_record` - 规范化记录，包含 `canonical_fields`（标准字段名）和 `business_identity`
+- `canonical_projection` - 已持久化的导出投影
+- `parser_payload` / `postprocess_payload` - 原始解析/后处理数据，仅作证据保留
+
+导出只使用 `canonical_record.canonical_fields` 或 `canonical_projection`，不接受任意 raw payload 合并。
+
+### Manifest/Registry 所有权模型
+
+- `peap/download_tasks.py` 中 `DownloadTaskManifest` 定义下载任务清单
+- `DownloadTaskRegistrySettings` 管理注册表设置
+- 下载器通过 manifest 注册，运行时通过 registry 设置获取配置
 
 ## 文档边界
 

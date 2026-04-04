@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import re
 import sys
@@ -117,7 +118,7 @@ class TpreDownloaderFixTest(unittest.TestCase):
             )
 
             self.assertEqual(summary.skipped_by_missing_xmid, 0)
-            self.assertEqual(len(summary.errors), 0)
+            self.assertEqual(len(summary.typed_errors), 0)
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0].project_code, "T32025TJ1000018-5")
 
@@ -278,6 +279,58 @@ class SseDownloaderFixTest(unittest.TestCase):
                 downloader.run(start_date="2026-03-10", end_date="2026-03-10", list_only=True)
 
             self.assertEqual(captured["output_dir"], temp_dir)
+
+    def test_sse_query_list_page_uses_current_realright_endpoint(self):
+        downloader = ShanghaiPhysicalAssetDownloader(html_root="/tmp/test")
+        captured = {}
+
+        def fake_post_json(url, payload):
+            captured["url"] = url
+            captured["payload"] = payload
+            return {"code": 200, "data": [], "extra": 0}
+
+        downloader._post_json = fake_post_json
+        downloader._query_list_page(page_index=2, list_project_type="ZICHANZHUANRANG", gplx="2")
+
+        assert captured["url"] == "https://www.suaee.com/si/prjs/realright/list"
+        assert captured["payload"]["pageNo"] == 2
+        assert captured["payload"]["pageSize"] == downloader.page_size
+
+    def test_sse_collect_list_candidates_accepts_current_uppercase_row_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            downloader = ShanghaiPhysicalAssetDownloader(html_root=tmp_dir)
+            summary = DownloadSummary()
+            candidates = []
+
+            downloader._query_list_page = lambda **_: {
+                "code": 200,
+                "data": [
+                    {
+                        "XMID": 113868,
+                        "XMBH": "GR2026SH1000510",
+                        "XMMC": "demo",
+                        "PLKSRQ": 20260403,
+                    }
+                ],
+                "extra": 1,
+            }
+
+            downloader._collect_list_candidates(
+                output_dir=tmp_dir,
+                summary=summary,
+                candidates=candidates,
+                start=dt.date(2026, 4, 3),
+                end=dt.date(2026, 4, 3),
+            )
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].xmid, "113868")
+            self.assertEqual(candidates[0].project_code, "GR2026SH1000510")
+
+    def test_sse_resolve_page_url_returns_live_detail_route(self):
+        downloader = ShanghaiPhysicalAssetDownloader(html_root="/tmp/test")
+        url = downloader._resolve_page_url(row={}, xmid="113868")
+        assert url == "https://www.suaee.com/xmzx.html#/zczrDetail?XMID=113868"
 
 
 class CbexDownloaderFixTest(unittest.TestCase):

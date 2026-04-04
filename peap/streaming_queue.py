@@ -99,7 +99,7 @@ class StreamingIngestService:
             try:
                 result = self.runner.ingest(item)
                 state = str(result.get("state") or "")
-                if state in {"ready", "pending_mapping", "conflict"}:
+                if state in {"ready", "pending_mapping", "mapping_conflict", "conflict"}:
                     self.store.update_job_counts(job_id, persisted_inc=1)
                     self.store.append_event(
                         ItemProgressEvent(

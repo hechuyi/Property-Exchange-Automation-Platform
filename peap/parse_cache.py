@@ -12,19 +12,57 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Optional
 
-from .parsing import ParsedProject
+from .parsing import PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY, ParsedProject
 
 CACHE_SCHEMA_VERSION = "v2"
+DECODER_VERSION = "snapshot_decoder/v1"
+CLASSIFIER_VERSION = "source_classifier/v1"
+PARSER_FAMILY_VERSION = "parser_family_runtime/v1"
+PARSER_VARIANT_VERSION = "parser_variant_runtime/v1"
+ASSEMBLER_VERSION = "record_assembler/v1"
+NORMALIZER_VERSION = "record_normalizer/v1"
+POLICY_VERSION = "policy_engine/v1"
 
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _compute_source_fingerprint(file_path: str) -> Optional[str]:
+    """
+    Compute a stable content-based fingerprint for a file.
+
+    Uses file size + mtime + hash of first 4KB and last 4KB of content.
+    This is fast (doesn't read entire file) but content-aware.
+    Returns None if file cannot be read.
+    """
+    try:
+        stat = os.stat(file_path)
+        size = stat.st_size
+        mtime_ns = stat.st_mtime_ns
+
+        # Read first and last chunks for content fingerprint
+        content_chunks = []
+        with open(file_path, "rb") as f:
+            # Read first 4KB
+            content_chunks.append(f.read(4096))
+            # If file is larger than 4KB, read last 4KB
+            if size > 4096:
+                f.seek(-4096, 2)
+                content_chunks.append(f.read(4096))
+
+        content_hash = hashlib.sha256(b"".join(content_chunks)).hexdigest()[:24]
+        return f"{size}|{mtime_ns}|{content_hash}"
+    except (OSError, IOError):
+        return None
+
+
 def build_parser_signature() -> str:
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     target_files = [
         os.path.join(root_dir, "peap", "parsing.py"),
+        os.path.join(root_dir, "peap", "parser_subsystem.py"),
+        os.path.join(root_dir, "peap", "io_utils.py"),
         os.path.join(root_dir, "peap", "finance_fallback.py"),
         os.path.join(root_dir, "peap", "group_fallback.py"),
         os.path.join(root_dir, "peap", "pre_disclosure_fallback.py"),
@@ -34,7 +72,7 @@ def build_parser_signature() -> str:
         os.path.join(root_dir, "peap", "standard_model.py"),
         os.path.join(root_dir, "peap", "excel_handler.py"),
     ]
-    target_files.extend(glob.glob(os.path.join(root_dir, "parsers", "*.py")))
+    target_files.extend(glob.glob(os.path.join(root_dir, "peap_parsers", "*.py")))
     target_files = sorted({os.path.abspath(path) for path in target_files if os.path.isfile(path)})
     rows = [f"schema={CACHE_SCHEMA_VERSION}"]
     for path in target_files:
@@ -44,7 +82,20 @@ def build_parser_signature() -> str:
     return _sha256_text("\n".join(rows))
 
 
-@dataclass(frozen=True)
+def build_runtime_version_signature() -> str:
+    parts = [
+        f"decoder={DECODER_VERSION}",
+        f"classifier={CLASSIFIER_VERSION}",
+        f"family={PARSER_FAMILY_VERSION}",
+        f"variant={PARSER_VARIANT_VERSION}",
+        f"assembler={ASSEMBLER_VERSION}",
+        f"normalizer={NORMALIZER_VERSION}",
+        f"policy={POLICY_VERSION}",
+    ]
+    return "|".join(parts)
+
+
+@dataclass
 class CacheStats:
     hits: int = 0
     misses: int = 0
@@ -81,7 +132,6 @@ class ParseCacheStore:
             """
             CREATE TABLE IF NOT EXISTS parse_cache (
                 file_path TEXT NOT NULL,
-                compat_profile TEXT NOT NULL,
                 run_signature TEXT NOT NULL,
                 file_mtime_ns INTEGER NOT NULL,
                 file_size INTEGER NOT NULL,
@@ -89,8 +139,9 @@ class ParseCacheStore:
                 encoding TEXT NOT NULL,
                 data_json TEXT NOT NULL,
                 parsed_json TEXT NOT NULL DEFAULT '',
+                source_fingerprint TEXT DEFAULT '',
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (file_path, compat_profile, run_signature)
+                PRIMARY KEY (file_path, run_signature)
             )
             """
         )
@@ -98,7 +149,6 @@ class ParseCacheStore:
             """
             CREATE TABLE IF NOT EXISTS output_cache (
                 file_path TEXT NOT NULL,
-                compat_profile TEXT NOT NULL,
                 run_signature TEXT NOT NULL,
                 target_file TEXT NOT NULL,
                 payload_hash TEXT NOT NULL,
@@ -106,7 +156,7 @@ class ParseCacheStore:
                 target_mtime_ns INTEGER NOT NULL DEFAULT -1,
                 target_size INTEGER NOT NULL DEFAULT -1,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (file_path, compat_profile, run_signature)
+                PRIMARY KEY (file_path, run_signature)
             )
             """
         )
@@ -132,6 +182,14 @@ class ParseCacheStore:
             try:
                 self._conn.execute(
                     "ALTER TABLE parse_cache ADD COLUMN parsed_json TEXT NOT NULL DEFAULT ''"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        if "source_fingerprint" not in existing:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE parse_cache ADD COLUMN source_fingerprint TEXT DEFAULT ''"
                 )
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
@@ -177,7 +235,7 @@ class ParseCacheStore:
     def stats(self) -> CacheStats:
         return CacheStats(hits=self._hits, misses=self._misses, writes=self._writes)
 
-    def get(self, file_path: str, *, compat_profile: str) -> Optional[ParsedProject]:
+    def get(self, file_path: str) -> Optional[ParsedProject]:
         abs_path = os.path.abspath(file_path)
         try:
             stat = os.stat(abs_path)
@@ -185,63 +243,104 @@ class ParseCacheStore:
             self._misses += 1
             return None
 
+        # Try path-based lookup first
+        cached = self._get_by_path(abs_path, stat)
+        if cached is not None:
+            self._hits += 1
+            return cached
+
+        # Fall back to content-based fingerprint lookup for archive stability
+        fingerprint = _compute_source_fingerprint(abs_path)
+        if fingerprint:
+            cached = self._get_by_fingerprint(fingerprint, stat, file_path)
+            if cached is not None:
+                self._hits += 1
+                return cached
+
+        self._misses += 1
+        return None
+
+    def _get_by_path(self, abs_path: str, stat: os.stat_result) -> Optional[ParsedProject]:
+        """Look up cache entry by file path."""
         row = self._conn.execute(
             """
             SELECT file_mtime_ns, file_size, exchange, encoding, data_json, parsed_json
             FROM parse_cache
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
-            (abs_path, compat_profile, self.run_signature),
+            (abs_path, self.run_signature),
         ).fetchone()
         if row is None:
-            self._misses += 1
             return None
 
         cached_mtime_ns, cached_size, exchange, encoding, data_json, parsed_json = row
         if int(cached_mtime_ns) != int(stat.st_mtime_ns) or int(cached_size) != int(stat.st_size):
-            self._misses += 1
             return None
 
-        for raw_json in (str(parsed_json or ""), str(data_json or "")):
-            if not raw_json:
-                continue
-            try:
-                payload = json.loads(raw_json)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            try:
-                parsed = ParsedProject.from_cache_payload(
-                    file_path=file_path,
-                    exchange=str(exchange),
-                    encoding=str(encoding),
-                    payload=payload,
-                )
-            except Exception:
-                continue
-            self._hits += 1
-            return parsed
+        return self._deserialize_cached(row, abs_path)
 
-        self._conn.execute(
+    def _get_by_fingerprint(
+        self, fingerprint: str, stat: os.stat_result, file_path: str
+    ) -> Optional[ParsedProject]:
+        """Look up cache entry by content fingerprint (for archive stability)."""
+        # Find entries with matching fingerprint, same run_signature, and matching size
+        rows = self._conn.execute(
             """
-            DELETE FROM parse_cache
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            SELECT file_path, file_mtime_ns, file_size, exchange, encoding, data_json, parsed_json
+            FROM parse_cache
+            WHERE source_fingerprint = ? AND run_signature = ?
             """,
-            (abs_path, compat_profile, self.run_signature),
-        )
-        self._pending_writes += 1
-        self._misses += 1
+            (fingerprint, self.run_signature),
+        ).fetchall()
+
+        for row in rows:
+            orig_path, cached_mtime_ns, cached_size, exchange, encoding, data_json, parsed_json = row
+            # Check if file content matches (same size and close mtime indicates same content)
+            if int(cached_size) == int(stat.st_size):
+                result = self._deserialize_cached(row, file_path)
+                if result is not None:
+                    return result
         return None
 
-    def put(self, parsed: ParsedProject, *, compat_profile: str) -> None:
+    def _deserialize_cached(self, row: tuple, file_path: str) -> Optional[ParsedProject]:
+        """Deserialize a cache row into ParsedProject from parsed_json."""
+        # Handle both 6-column (legacy) and 7-column (with fingerprint) rows
+        if len(row) >= 7:
+            cached_mtime_ns, cached_size, exchange, encoding, data_json, parsed_json = row[1:7]
+        else:
+            cached_mtime_ns, cached_size, exchange, encoding, data_json, parsed_json = row
+
+        raw_json = str(parsed_json or "")
+        if not raw_json:
+            return None
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY not in payload:
+            return None
+        try:
+            return ParsedProject.from_cache_payload(
+                file_path=file_path,
+                exchange=str(exchange),
+                encoding=str(encoding),
+                payload=payload,
+            )
+        except Exception:
+            return None
+
+    def put(self, parsed: ParsedProject) -> None:
         abs_path = os.path.abspath(parsed.file_path)
         try:
             stat = os.stat(abs_path)
         except OSError:
             return
 
-        legacy_payload = json.dumps(parsed.data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        # Compute content-based fingerprint for archive-stable identity
+        source_fingerprint = _compute_source_fingerprint(abs_path) or ""
+
         parsed_payload = json.dumps(
             parsed.to_cache_payload(),
             ensure_ascii=False,
@@ -252,7 +351,6 @@ class ParseCacheStore:
             """
             INSERT OR REPLACE INTO parse_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 file_mtime_ns,
                 file_size,
@@ -260,20 +358,21 @@ class ParseCacheStore:
                 encoding,
                 data_json,
                 parsed_json,
+                source_fingerprint,
                 updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 abs_path,
-                compat_profile,
                 self.run_signature,
                 int(stat.st_mtime_ns),
                 int(stat.st_size),
                 parsed.exchange,
                 parsed.encoding,
-                legacy_payload,
+                "",
                 parsed_payload,
+                source_fingerprint,
                 dt.datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -286,7 +385,6 @@ class ParseCacheStore:
         self,
         file_path: str,
         *,
-        compat_profile: str,
         target_file: str,
         payload_hash: str,
     ) -> bool:
@@ -302,9 +400,9 @@ class ParseCacheStore:
             """
             SELECT target_file, payload_hash, synced, target_mtime_ns, target_size
             FROM output_cache
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
-            (abs_path, compat_profile, self.run_signature),
+            (abs_path, self.run_signature),
         ).fetchone()
         if row is None:
             return False
@@ -321,7 +419,6 @@ class ParseCacheStore:
         self,
         file_path: str,
         *,
-        compat_profile: str,
         target_file: str,
         payload_hash: str,
     ) -> None:
@@ -338,7 +435,6 @@ class ParseCacheStore:
             """
             INSERT OR REPLACE INTO output_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 target_file,
                 payload_hash,
@@ -347,11 +443,10 @@ class ParseCacheStore:
                 target_size,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 abs_path,
-                compat_profile,
                 self.run_signature,
                 target_abs,
                 str(payload_hash),
@@ -368,7 +463,6 @@ class ParseCacheStore:
         self,
         file_paths: list[str],
         *,
-        compat_profile: str,
         target_file: str,
     ) -> None:
         if not file_paths:
@@ -386,7 +480,7 @@ class ParseCacheStore:
             """
             UPDATE output_cache
             SET synced = 1, target_mtime_ns = ?, target_size = ?, updated_at = ?
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
             [
                 (
@@ -394,7 +488,6 @@ class ParseCacheStore:
                     target_size,
                     dt.datetime.now().isoformat(timespec="seconds"),
                     path,
-                    compat_profile,
                     self.run_signature,
                 )
                 for path in normalized

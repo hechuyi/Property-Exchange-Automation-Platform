@@ -51,6 +51,15 @@ For backend-only local debugging:
 uv run python -m desktop_backend.app_backend --host 127.0.0.1 --port 42679
 ```
 
+## Runtime Boundaries
+
+The platform uses an explicit canonical contract model:
+
+- **Single contract mainline**: All export output uses `peap/export_projection.py` which enforces strict field allowlisting from canonical data only - no raw payload passthrough
+- **Explicit state machine**: Records follow `RecordState` workflow states (ready, pending_mapping, mapping_conflict, skipped, conflict, pending_review, parse_failed, postprocess_failed)
+- **Manifest/Registry ownership**: Download tasks use `DownloadTaskManifest` and `DownloadTaskRegistrySettings` for explicit configuration
+- **Deletion of compatibility runtime surfaces**: `peap/compat_payload.py` has been removed; use explicit projection APIs instead
+
 ## Workspace Layout
 
 By default the product uses `~/Documents/PEAP/` as its workspace root, unless overridden by `PEAP_APP_HOME`, `PEAP_WORKSPACE_ROOT`, or `PEAP_DOCUMENTS_HOME`.

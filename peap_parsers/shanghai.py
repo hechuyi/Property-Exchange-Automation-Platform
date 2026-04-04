@@ -5,7 +5,8 @@
 import re
 from typing import Any, Dict
 
-from .base import ParserOutput, WebPageParser
+from .base import ParserOutput, ParserVariantBinding, WebPageParser
+from .parser_registry import ParserFamilyBinding
 from .shanghai_special import ShanghaiSpecialParser
 from .shanghai_standard import ShanghaiStandardParser
 
@@ -22,6 +23,34 @@ class ShanghaiParser(WebPageParser):
         return False
 
     def parse(self) -> Dict[str, Any] | ParserOutput:
-        parser_cls = ShanghaiSpecialParser if self._is_special_template() else ShanghaiStandardParser
-        parser = self.spawn_child_parser(parser_cls)
+        binding = select_shanghai_variant_binding_from_parser(self)
+        parser = self.spawn_child_parser(binding.parser_cls)
         return parser.parse()
+
+
+def select_shanghai_variant_binding(document) -> ParserFamilyBinding:
+    parser = ShanghaiParser(str(document.dom) if document is not None else "<html></html>")
+    return _binding_from_parser(parser, binding_cls=ParserFamilyBinding)
+
+
+def select_shanghai_variant_binding_from_parser(parser: ShanghaiParser) -> ParserVariantBinding:
+    return _binding_from_parser(parser, binding_cls=ParserVariantBinding)
+
+
+def _binding_from_parser(parser: ShanghaiParser, *, binding_cls):
+    is_special = parser._is_special_template()
+    parser_cls = ShanghaiSpecialParser if is_special else ShanghaiStandardParser
+    variant_id = "special" if is_special else "standard"
+    variant_version = f"builtin/shanghai/{variant_id}/v1"
+    kwargs = {
+        "variant_id": variant_id,
+        "variant_version": variant_version,
+        "parser_cls": parser_cls,
+    }
+    if binding_cls is ParserFamilyBinding:
+        kwargs.update(
+            family_id="shanghai",
+            family_version="builtin/shanghai/v1",
+            page_kind="listing",
+        )
+    return binding_cls(**kwargs)

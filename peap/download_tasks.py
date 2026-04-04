@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Type
 
 from peap_core.source_catalog import get_source_descriptor, list_source_descriptors
 
+from .download_capabilities import DownloadDriverCapabilities, DownloadTaskManifest
 from .downloaders import (
     CbexCapitalIncreaseDownloader,
     CbexEquityTransferDownloader,
@@ -34,6 +35,47 @@ class DownloadTaskSpec:
     display_name: str
     downloader_cls: Type
     default_page_size: int
+    manifest_list_endpoint: str | None = None
+    manifest_detail_route: str | None = None
+    manifest_date_field_candidates: tuple[str, ...] | None = None
+    manifest: DownloadTaskManifest = field(init=False)
+    capabilities: DownloadDriverCapabilities = field(
+        default_factory=lambda: DownloadDriverCapabilities(
+            supports_list_only=True,
+            supports_prefetched_candidates=True,
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        list_endpoint = self.manifest_list_endpoint
+        if list_endpoint is None:
+            list_endpoint = str(getattr(self.downloader_cls, "manifest_list_endpoint", "") or "")
+
+        detail_route = self.manifest_detail_route
+        if detail_route is None:
+            detail_route = str(getattr(self.downloader_cls, "manifest_detail_route", "") or "")
+
+        date_field_candidates = self.manifest_date_field_candidates
+        if date_field_candidates is None:
+            date_field_candidates = tuple(
+                str(value)
+                for value in getattr(self.downloader_cls, "manifest_date_field_candidates", ())
+                if str(value)
+            )
+
+        object.__setattr__(
+            self,
+            "manifest",
+            DownloadTaskManifest(
+                source_id=self.exchange_code,
+                project_type=self.project_type,
+                task_id=self.task_id,
+                display_name=self.display_name,
+                list_endpoint=str(list_endpoint or ""),
+                detail_route=str(detail_route or ""),
+                date_field_candidates=tuple(str(value) for value in date_field_candidates if str(value)),
+            ),
+        )
 
     @property
     def task_id(self) -> str:
@@ -123,10 +165,10 @@ def _resolve_task_registry_settings(
 
 _TASK_BINDINGS: tuple[tuple[str, str, Type], ...] = (
     ("sse", "physical_asset", ShanghaiPhysicalAssetDownloader),
-    ("cbex", "physical_asset", CbexPhysicalAssetDownloader),
     ("sse", "equity_transfer", ShanghaiEquityTransferDownloader),
     ("sse", "capital_increase", ShanghaiCapitalIncreaseDownloader),
     ("sse", "pre_disclosure", ShanghaiPreDisclosureDownloader),
+    ("cbex", "physical_asset", CbexPhysicalAssetDownloader),
     ("cbex", "equity_transfer", CbexEquityTransferDownloader),
     ("cbex", "capital_increase", CbexCapitalIncreaseDownloader),
     ("cbex", "pre_disclosure", CbexPreDisclosureDownloader),
@@ -139,6 +181,19 @@ _TASK_BINDINGS: tuple[tuple[str, str, Type], ...] = (
     ("cquae", "capital_increase", ChongqingCapitalIncreaseDownloader),
     ("cquae", "pre_disclosure", ChongqingPreDisclosureDownloader),
 )
+
+
+_TASK_MANIFEST_OVERRIDES: dict[str, dict[str, str]] = {
+    "sse:equity_transfer": {"detail_route": "jymhchanquan"},
+    "sse:capital_increase": {"detail_route": "jymhzengzi"},
+    "sse:pre_disclosure": {"detail_route": "jymhchanquanyu"},
+    "cbex:equity_transfer": {"detail_route": "/xm/cqzr/"},
+    "cbex:capital_increase": {"detail_route": "/xm/qyzz/"},
+}
+
+
+def _manifest_overrides(task_id: str) -> dict[str, str]:
+    return _TASK_MANIFEST_OVERRIDES.get(task_id, {})
 
 
 def _task_display_name(exchange_code: str, project_type: str) -> str:
@@ -155,12 +210,19 @@ def build_task_registry(
     registry: Dict[str, DownloadTaskSpec] = {}
     for exchange_code, project_type, downloader_cls in _TASK_BINDINGS:
         task_id = f"{exchange_code}:{project_type}"
+        manifest_overrides = _manifest_overrides(task_id)
         registry[task_id] = DownloadTaskSpec(
             exchange_code=exchange_code,
             project_type=project_type,
             display_name=_task_display_name(exchange_code, project_type),
             downloader_cls=downloader_cls,
             default_page_size=page_size[task_id],
+            manifest_list_endpoint=manifest_overrides.get("list_endpoint"),
+            manifest_detail_route=manifest_overrides.get("detail_route"),
+            capabilities=DownloadDriverCapabilities(
+                supports_list_only=True,
+                supports_prefetched_candidates=True,
+            ),
         )
     return registry
 

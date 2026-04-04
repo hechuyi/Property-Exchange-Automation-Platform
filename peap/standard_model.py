@@ -3,7 +3,6 @@
 from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Mapping, Optional
 
-from .compat_payload import COMPAT_PAYLOAD_KEYS, build_compat_payload
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_LISTING_TIMES, KEY_PROJECT_TYPE, KEY_STATUS
 
 FIELD_ALIASES = {
@@ -95,15 +94,11 @@ class StandardProject:
     def to_standard_dict(self) -> Dict[str, Any]:
         return {field_name: getattr(self, field_name) for field_name in STANDARD_PROJECT_FIELD_NAMES}
 
-    def to_legacy_payload(self, *, include_raw: bool = False) -> Dict[str, Any]:
-        return build_compat_payload(self, raw_payload=self.raw if include_raw else None)
-
 
 STANDARD_PROJECT_FIELD_NAMES = frozenset(
     field.name for field in fields(StandardProject) if field.name != "raw"
 )
 STANDARD_ROUTING_FIELDS = frozenset({"project_type", "status", "is_pre_disclosure"})
-LEGACY_PAYLOAD_KEYS = COMPAT_PAYLOAD_KEYS
 
 
 def hydrate_standard_project(
