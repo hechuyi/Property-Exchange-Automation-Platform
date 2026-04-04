@@ -241,11 +241,21 @@ def assign_entries_to_chunks(
     return assigned
 
 
-def load_split_plan_file(path: str) -> dict[str, TaskSplitPlan]:
+def load_split_plan_file(path: str, *, scope: dict[str, object] | None = None) -> dict[str, TaskSplitPlan]:
     payload = load_json_file(path, encoding="utf-8-sig")
-    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid split plan format: {path}")
+    tasks = payload.get("tasks")
     if not isinstance(tasks, dict):
         raise ValueError(f"invalid split plan format: {path}")
+    # Validate scope if provided
+    if scope is not None:
+        saved_scope = payload.get("scope")
+        if not isinstance(saved_scope, dict):
+            raise ValueError(f"split plan scope is missing from: {path}")
+        saved_scope_clean = {k: v for k, v in saved_scope.items() if k in scope}
+        if saved_scope_clean != scope:
+            raise ValueError(f"split plan scope mismatch: saved={saved_scope_clean} != requested={scope}")
     parsed: dict[str, TaskSplitPlan] = {}
     for task_id, task_raw in tasks.items():
         if not isinstance(task_id, str):

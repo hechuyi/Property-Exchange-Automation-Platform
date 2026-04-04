@@ -124,12 +124,16 @@ def prepare_task_chunk_state(
         prepared["chunks"] = prepared_chunks
 
     for key in expected_keys:
-        prepared_chunks[key] = {
-            "status": "pending",
-            "attempts": 0,
-            "updated_at": None,
-            "last_error": None,
-        }
+        existing = existing_chunks.get(key)
+        if existing is None:
+            prepared_chunks[key] = {
+                "status": "pending",
+                "attempts": 0,
+                "updated_at": None,
+                "last_error": None,
+            }
+        else:
+            prepared_chunks[key] = dict(existing)
 
     tasks[task_id] = prepared
     return prepared
