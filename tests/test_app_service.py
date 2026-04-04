@@ -1859,6 +1859,7 @@ class AppServiceTest(unittest.TestCase):
 
     def test_overview_exposes_latest_progress_summary(self) -> None:
         job_id = self.service.store.create_job("one_click", metadata={"start_date": "2026-03-21"})
+        self.service.store.start_job(job_id)
         self.service.store.update_job_counts(job_id, downloaded_inc=3, persisted_inc=1)
         self.service.store.append_event(
             ItemProgressEvent(
@@ -2137,6 +2138,7 @@ class AppServiceTest(unittest.TestCase):
 
     def test_export_progress_uses_export_semantics_not_archive_semantics(self) -> None:
         job_id = self.service.store.create_job("export_excel", metadata={})
+        self.service.store.start_job(job_id)
         self.service.store.update_job_counts(job_id, downloaded_inc=3, persisted_inc=1)
         self.service.store.append_event(
             ItemProgressEvent(

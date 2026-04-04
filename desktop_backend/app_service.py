@@ -30,6 +30,7 @@ from peap.streaming_postprocess import (
 )
 from peap.streaming_store import StreamingStore
 from peap.streaming_store_maintenance import run_streaming_store_maintenance
+from peap_core.error_contracts import PipelineFailure
 from peap_core.source_catalog import canonical_source_code, canonical_source_label
 
 from .product_errors import UserInputError
@@ -1811,6 +1812,8 @@ class AppService:
 
                 def _run_manual_import_wrapper() -> None:
                     try:
+                        # Transition job from STARTING to RUNNING before processing.
+                        self.store.start_job(job_id)
                         self._run_manual_import_job(job_id=job_id, files=files, ingest_file=ingest_file)
                     finally:
                         self._release_mutating_job("manual_import")
@@ -2143,6 +2146,13 @@ class AppService:
 
             def _run() -> None:
                 try:
+                    # Transition pre-created job from STARTING to RUNNING.
+                    # The job was created on the API thread but the pipeline
+                    # has not started yet, so the worker thread calls start_job().
+                    self.store.start_job(job_id)
+                except Exception:
+                    pass  # start_job is best-effort; job may already be running via pipeline path
+                try:
                     with playwright_env(str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))):
                         run_streaming_daily_pipeline(
                             args,
@@ -2154,6 +2164,24 @@ class AppService:
                             export_root=basic["export_root"],
                             auto_export=auto_export,
                         )
+                except Exception as exc:
+                    # Crash before entering pipeline (e.g. playwright_env init failure).
+                    # Job was pre-created on API thread but never entered pipeline -> stuck in starting.
+                    # Mark it failed so it is not left as a zombie starting job.
+                    try:
+                        self.store.fail_job(
+                            job_id=str(job_id),
+                            failure=PipelineFailure(
+                                code="job_startup_failed",
+                                component="desktop_app_service",
+                                stage="startup",
+                                recoverability="retryable",
+                                message=str(exc),
+                                context={"exception_type": exc.__class__.__name__},
+                            ),
+                        )
+                    except Exception:
+                        pass  # Best-effort; store may be closed
                 finally:
                     self._release_mutating_job(job_type)
 

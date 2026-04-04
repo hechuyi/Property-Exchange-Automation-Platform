@@ -500,9 +500,75 @@ class StreamingStore:
                     job_id, job_type, status, metadata_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, str(job_type), "running", _json_dumps(metadata or {}), now, now),
+                (job_id, str(job_type), "starting", _json_dumps(metadata or {}), now, now),
             )
         return job_id
+
+    def start_job(self, job_id: str) -> None:
+        """Transition a job from STARTING to RUNNING.
+
+        Called by the worker thread when it actually begins pipeline execution.
+        """
+        now = _utcnow()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                ("running", now, str(job_id)),
+            )
+            if cursor.rowcount == 0:
+                raise RuntimeError(f"start_job: no job found with job_id={job_id!r}")
+
+    def fail_job(
+        self,
+        job_id: str,
+        *,
+        failure,  # PipelineFailure
+        event_payload: Dict[str, Any] | None = None,
+        exception_inc: int = 1,
+    ) -> None:
+        """Atomically fail a job: updates status + appends failure event.
+
+        This is the single authoritative method for recording startup failures.
+        It replaces any ad-hoc finish_job(failed) patching in service code.
+        """
+        now = _utcnow()
+        failure_dict = failure.to_dict() if hasattr(failure, "to_dict") else {
+            "code": getattr(failure, "code", "unknown"),
+            "component": getattr(failure, "component", "unknown"),
+            "stage": getattr(failure, "stage", "unknown"),
+            "recoverability": getattr(failure, "recoverability", "permanent"),
+            "message": str(failure),
+            "context": getattr(failure, "context", {}),
+        }
+        with self._connect() as conn:
+            # Update job to failed
+            cursor = conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                ("failed", now, str(job_id)),
+            )
+            if cursor.rowcount == 0:
+                raise RuntimeError(f"fail_job: no job found with job_id={job_id!r}")
+
+            # Append failure event with stage=startup
+            conn.execute(
+                """
+                INSERT INTO job_events (
+                    job_id, event_ts, stage, status, project_code, archive_path,
+                    error_type, error_message, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(job_id),
+                    now,
+                    "startup",
+                    "failed",
+                    "",
+                    "",
+                    failure_dict.get("code", "unknown"),
+                    failure_dict.get("message", ""),
+                    _json_dumps(event_payload or {}),
+                ),
+            )
 
     def update_job_counts(
         self,

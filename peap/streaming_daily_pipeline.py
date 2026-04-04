@@ -297,6 +297,10 @@ def run_streaming_daily_pipeline(
                     job_created_callback(job_id, db_path)
                 except Exception:
                     pass
+            # Transition job from STARTING to RUNNING. Both paths (pipeline-created
+            # and pre-created jobs) must go through this transition before any
+            # pipeline work begins.
+            store.start_job(job_id)
             started_at = time.monotonic()
             callback = service.build_callback(job_id=job_id)
 
