@@ -326,8 +326,173 @@ class CompatProfileDimensionTest(unittest.TestCase):
         )
 
 
+class ParseCacheArchiveStabilityTest(unittest.TestCase):
+    """Tests for archive-stable document identity in parse cache."""
+
+    def test_parse_cache_identity_survives_pre_disclosure_archive_move(self) -> None:
+        """A pre-disclosure file parsed before and after archive move maps to same identity.
+
+        When a file is parsed, then moved to an archive location, the cache must
+        still recognize it as the same document (same content = same identity).
+        """
+        import shutil
+        from peap.parse_cache import build_parser_signature
+        from peap.parsing import build_parsed_project
+
+        sig = build_parser_signature()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Create original pre-disclosure HTML file
+            original_dir = os.path.join(tmp_dir, "original")
+            os.makedirs(original_dir, exist_ok=True)
+            html_file = os.path.join(original_dir, "test_pre_disclosure.html")
+            with open(html_file, "w", encoding="utf-8") as f:
+                f.write("<html><body>pre-disclosure content with unique id: ARCHIVE_STABILITY_TEST_001</body></html>")
+
+            # Create cache store
+            store = ParseCacheStore(
+                db_path=os.path.join(tmp_dir, "cache.sqlite3"),
+                run_signature=sig,
+                commit_interval=1,
+            )
+
+            # Build parsed project and cache at original location
+            parsed_original = build_parsed_project(
+                file_path=html_file,
+                exchange="shenzhen",
+                encoding="utf-8",
+                data={
+                    KEY_PROJECT_CODE: "P_ARCHIVE_001",
+                    "项目名称": "预披露归档测试项目",
+                    KEY_STATUS: STATUS_LISTED,
+                    KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+                },
+            )
+            store.put(parsed_original)
+            store.flush()
+
+            # Verify we can get from cache
+            cached_original = store.get(html_file)
+            self.assertIsNotNone(cached_original, "Should cache at original location")
+            self.assertEqual(cached_original.project_code, "P_ARCHIVE_001")
+
+            # Simulate archive move: copy file to archive location (same content)
+            archive_dir = os.path.join(tmp_dir, "archive", "预披露_archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            archived_file = os.path.join(archive_dir, "test_pre_disclosure.html")
+            shutil.copy2(html_file, archived_file)
+
+            # Delete original to simulate the move
+            os.remove(html_file)
+
+            # Now look up using the archived path
+            # The cache should still find it because the content is the same
+            cached_archived = store.get(archived_file)
+
+            # The cache currently misses because it uses path-only identity
+            # This test asserts the DESIRED behavior: same content = same identity
+            self.assertIsNotNone(
+                cached_archived,
+                "Cache should recognize same document at new location (archive-stable identity). "
+                "Currently fails because cache uses path-only identity."
+            )
+            if cached_archived is not None:
+                self.assertEqual(
+                    cached_archived.project_code,
+                    "P_ARCHIVE_001",
+                    "Should return same parsed result for same document content"
+                )
+
+            store.close()
+
+    def test_source_fingerprint_is_stable_across_path_change(self) -> None:
+        """Source fingerprint (content-based) should be stable even when file moves.
+
+        This tests that the cache can use content-based fingerprint as identity
+        that survives file moves.
+        """
+        import shutil
+        from peap.parse_cache import build_parser_signature
+        from peap.parsing import build_parsed_project
+
+        sig = build_parser_signature()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Create original file
+            original_file = os.path.join(tmp_dir, "original.html")
+            with open(original_file, "w", encoding="utf-8") as f:
+                f.write("<html><body>stable fingerprint test CONTENT_ABC123</body></html>")
+
+            # Parse and cache
+            store = ParseCacheStore(
+                db_path=os.path.join(tmp_dir, "cache.sqlite3"),
+                run_signature=sig,
+                commit_interval=1,
+            )
+
+            parsed = build_parsed_project(
+                file_path=original_file,
+                exchange="shenzhen",
+                encoding="utf-8",
+                data={
+                    KEY_PROJECT_CODE: "P_FINGERPRINT_001",
+                    "项目名称": "指纹稳定测试项目",
+                    KEY_STATUS: STATUS_LISTED,
+                    KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+                },
+            )
+            store.put(parsed)
+            store.flush()
+
+            # Copy file to new location
+            new_file = os.path.join(tmp_dir, "moved", "new_location.html")
+            os.makedirs(os.path.dirname(new_file), exist_ok=True)
+            shutil.copy2(original_file, new_file)
+
+            # Both should map to same content-based identity
+            cached_at_original = store.get(original_file)
+            cached_at_new = store.get(new_file)
+
+            self.assertIsNotNone(cached_at_original, "Should cache at original location")
+            # This currently fails - the same content at different paths gives different cache entries
+            self.assertIsNotNone(
+                cached_at_new,
+                "Content-based fingerprint should make cache work at new path too"
+            )
+
+
 class ParseCacheRegressionTest(unittest.TestCase):
     """Additional parse cache regression tests."""
+
+    def test_parse_cache_invalidate_on_io_utils_change(self) -> None:
+        """Parse cache must invalidate when peap/io_utils.py changes.
+
+        io_utils.py contains read_text_with_fallback which affects encoding
+        detection and text reading - changes here should invalidate cache.
+        """
+        import tempfile
+        import time
+
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        io_utils_path = os.path.join(root_dir, "peap", "io_utils.py")
+
+        if not os.path.isfile(io_utils_path):
+            self.skipTest("peap/io_utils.py not found")
+
+        sig_before = build_parser_signature()
+
+        # Touch the file to update its mtime
+        time.sleep(0.01)
+        os.utime(io_utils_path, None)
+
+        sig_after = build_parser_signature()
+
+        self.assertNotEqual(
+            sig_before,
+            sig_after,
+            "build_parser_signature must change when io_utils.py is modified. "
+            "io_utils.py affects text reading and encoding detection."
+        )
 
     def test_parse_cache_invalidate_on_parser_subsystem_change(self) -> None:
         """Parse cache must invalidate when peap/parser_subsystem.py changes."""

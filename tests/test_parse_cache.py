@@ -321,6 +321,92 @@ class ParseCacheContractTest(unittest.TestCase):
         self.assertIn("policy=", captured["run_signature"])
 
 
+class ParseCacheSignatureRegressionTest(unittest.TestCase):
+    """Regression tests for build_parser_signature correctness."""
+
+    def test_build_parser_signature_changes_on_parser_subsystem_touch(self) -> None:
+        """Touching peap/parser_subsystem.py must change the parser signature."""
+        import time
+
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        subsystem_path = os.path.join(root_dir, "peap", "parser_subsystem.py")
+
+        if not os.path.isfile(subsystem_path):
+            self.skipTest("peap/parser_subsystem.py not found")
+
+        from peap.parse_cache import build_parser_signature
+
+        sig_before = build_parser_signature()
+        time.sleep(0.01)
+        os.utime(subsystem_path, None)
+        sig_after = build_parser_signature()
+
+        self.assertNotEqual(
+            sig_before,
+            sig_after,
+            "Parser signature must change when parser_subsystem.py is modified"
+        )
+
+    def test_build_parser_signature_changes_on_io_utils_touch(self) -> None:
+        """Touching peap/io_utils.py must change the parser signature."""
+        import time
+
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        io_utils_path = os.path.join(root_dir, "peap", "io_utils.py")
+
+        if not os.path.isfile(io_utils_path):
+            self.skipTest("peap/io_utils.py not found")
+
+        from peap.parse_cache import build_parser_signature
+
+        sig_before = build_parser_signature()
+        time.sleep(0.01)
+        os.utime(io_utils_path, None)
+        sig_after = build_parser_signature()
+
+        self.assertNotEqual(
+            sig_before,
+            sig_after,
+            "Parser signature must change when io_utils.py is modified"
+        )
+
+    def test_build_parser_signature_changes_on_peap_parsers_touch(self) -> None:
+        """Touching any peap_parsers/*.py file must change the parser signature."""
+        import glob
+        import time
+
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        peap_parsers_dir = os.path.join(root_dir, "peap_parsers")
+
+        if not os.path.isdir(peap_parsers_dir):
+            self.skipTest("peap_parsers directory not found")
+
+        # Find a non-init parser file
+        parser_files = [
+            f for f in glob.glob(os.path.join(peap_parsers_dir, "*.py"))
+            if not os.path.basename(f).startswith("__")
+        ]
+
+        if not parser_files:
+            self.skipTest("No peap_parsers/*.py files found")
+
+        # Pick the first parser file
+        test_file = parser_files[0]
+
+        from peap.parse_cache import build_parser_signature
+
+        sig_before = build_parser_signature()
+        time.sleep(0.01)
+        os.utime(test_file, None)
+        sig_after = build_parser_signature()
+
+        self.assertNotEqual(
+            sig_before,
+            sig_after,
+            f"Parser signature must change when {os.path.basename(test_file)} is modified"
+        )
+
+
 class ParseCacheRegressionTest(unittest.TestCase):
     """Regression tests for parse cache contract violations."""
 
