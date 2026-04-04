@@ -27,6 +27,9 @@ def normalize_assembled_record(assembled: AssembledRecordCandidate) -> Canonical
         "status": str(business_object.get("status") or "").strip(),
         "start_date": _normalize_date(business_object.get("start_date") or business_object.get("listing_date")),
         "price": business_object.get("price"),
+        "seller": str(business_object.get("seller") or "").strip(),
+        "source_type": str(business_object.get("source_type") or "").strip(),
+        "group_name": str(business_object.get("group_name") or "").strip(),
     }
     return CanonicalRecord(
         record_id=assembled.assembly_id,

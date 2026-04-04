@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from peap_core import AssembledRecordCandidate, PageParseResult
 
@@ -23,6 +23,16 @@ def _project_name(result: PageParseResult) -> str:
     tokens = result.page_identity.get("candidate_tokens") or ()
     if len(tokens) >= 2:
         return str(tokens[1] or "").strip()
+    return ""
+
+
+def _fact_field(result: PageParseResult, *field_names: str) -> str:
+    """Extract a field value from result facts, returning empty string if not found."""
+    for fact in result.facts:
+        if not isinstance(fact, Mapping):
+            continue
+        if str(fact.get("field") or "").strip() in field_names:
+            return str(fact.get("value") or "").strip()
     return ""
 
 
@@ -73,9 +83,24 @@ def _business_object(results: tuple[PageParseResult, ...]) -> dict[str, object]:
     page_kinds = [_page_kind(result) for result in results]
     project_code = next((value for value in (_project_code(result) for result in results) if value), "")
     project_name = next((value for value in (_project_name(result) for result in results) if value), "")
+    # Extract business fields from facts
+    project_type = next((value for value in (_fact_field(r, "project_type", "项目类型") for r in results) if value), "")
+    status = next((value for value in (_fact_field(r, "status", "状态") for r in results) if value), "")
+    start_date = next((value for value in (_fact_field(r, "start_date", "listing_date", "挂牌日期", "开始日期") for r in results) if value), "")
+    price = next((value for value in (_fact_field(r, "price", "价格", "挂牌价格") for r in results) if value), "")
+    seller = next((value for value in (_fact_field(r, "seller", "转让方", "融资方") for r in results) if value), "")
+    source_type = next((value for value in (_fact_field(r, "source_type", "类型") for r in results) if value), "")
+    group_name = next((value for value in (_fact_field(r, "group_name", "隶属集团", "集团名称") for r in results) if value), "")
     return {
         "project_code": project_code,
         "project_name": project_name,
+        "project_type": project_type,
+        "status": status,
+        "start_date": start_date,
+        "price": price,
+        "seller": seller,
+        "source_type": source_type,
+        "group_name": group_name,
         "page_kinds": page_kinds,
         "page_urls": [_page_url(result) for result in results if _page_url(result)],
     }
