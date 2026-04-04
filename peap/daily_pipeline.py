@@ -198,8 +198,6 @@ def _build_parser_request(args: object, *, config_obj: object, html_root: str) -
         html_root=str(html_root),
         log_dir=str(config_obj.LOG_DIR),
         log_file=None,
-        compat_profile=parser_defaults["compat_profile"],
-        dual_run_compare=False,
         compare_report_file=None,
         compare_fields=list(parser_defaults["compare_fields"]),
         parse_cache_enabled=bool(parser_defaults["parse_cache_enabled"]),

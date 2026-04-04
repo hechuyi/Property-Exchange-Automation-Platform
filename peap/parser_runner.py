@@ -25,8 +25,6 @@ class ParserRunRequest:
     html_root: str = ""
     log_dir: str = ""
     log_file: str | None = None
-    compat_profile: str = COMPAT_PROFILE_FULL
-    dual_run_compare: bool = False
     compare_report_file: str | None = None
     compare_fields: list[str] = field(default_factory=list)
     parse_cache_enabled: bool = True
@@ -136,8 +134,6 @@ def build_parser_run_request(
         html_root=str(getattr(args, "html_root", None) or default_parser_html_root(config_obj)),
         log_dir=str(getattr(args, "log_dir", config_obj.LOG_DIR)),
         log_file=getattr(args, "log_file", None),
-        compat_profile=str(getattr(args, "parser_compat_profile", parser_defaults.get("compat_profile", COMPAT_PROFILE_FULL))),
-        dual_run_compare=bool(getattr(args, "dual_run_compare", False)),
         compare_report_file=getattr(args, "compare_report_file", None),
         compare_fields=_parse_compare_fields(getattr(args, "compare_fields", None), config_obj),
         parse_cache_enabled=parse_cache_enabled,
@@ -214,8 +210,6 @@ def run_parser_request(
             dry_run=bool(request.dry_run),
             limit=request.limit,
             batch_flush_interval=int(request.batch_flush_interval),
-            compat_profile=str(request.compat_profile or COMPAT_PROFILE_FULL),
-            dual_run_compare=bool(request.dual_run_compare),
             compare_report_file=request.compare_report_file,
             compare_fields=compare_fields,
             parse_cache_enabled=bool(request.parse_cache_enabled),
