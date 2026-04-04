@@ -103,9 +103,6 @@ ROUTING_FIELD_MAP = {
     KEY_IS_PRE_DISCLOSURE: "is_pre_disclosure",
 }
 
-# No output columns should rely on implicit raw passthrough now.
-LEGACY_RAW_FALLBACK_FIELDS: Dict[str, FrozenSet[str]] = {}
-
 
 def validate_output_field_map() -> List[str]:
     errors: List[str] = []
@@ -121,9 +118,6 @@ def validate_output_field_map() -> List[str]:
                     f"unknown standard field in output map: kind={kind}, field={output_field}, standard={standard_field}"
                 )
 
-    unknown_raw_fallback_kinds = sorted(set(LEGACY_RAW_FALLBACK_FIELDS) - set(OUTPUT_FIELD_MAP))
-    if unknown_raw_fallback_kinds:
-        errors.append(f"raw fallback declared for unknown kinds: {unknown_raw_fallback_kinds}")
     return errors
 
 
@@ -134,13 +128,6 @@ if _OUTPUT_FIELD_MAP_ERRORS:
 
 def get_output_mapping_contract() -> Dict[str, Dict[str, str]]:
     return {kind: dict(field_map) for kind, field_map in OUTPUT_FIELD_MAP.items()}
-
-
-def get_raw_fallback_contract() -> Dict[str, List[str]]:
-    return {
-        kind: sorted(field_names)
-        for kind, field_names in LEGACY_RAW_FALLBACK_FIELDS.items()
-    }
 
 
 def _resolve_standard_project(project: StandardProject | ParsedProject) -> StandardProject:

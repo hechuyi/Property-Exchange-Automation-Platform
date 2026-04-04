@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Optional
 
-from .parsing import ParsedProject
+from .parsing import PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY, ParsedProject
 
 CACHE_SCHEMA_VERSION = "v2"
 DECODER_VERSION = "snapshot_decoder/v1"
@@ -303,33 +303,33 @@ class ParseCacheStore:
         return None
 
     def _deserialize_cached(self, row: tuple, file_path: str) -> Optional[ParsedProject]:
-        """Deserialize a cache row into ParsedProject."""
+        """Deserialize a cache row into ParsedProject from parsed_json."""
         # Handle both 6-column (legacy) and 7-column (with fingerprint) rows
         if len(row) >= 7:
             cached_mtime_ns, cached_size, exchange, encoding, data_json, parsed_json = row[1:7]
         else:
             cached_mtime_ns, cached_size, exchange, encoding, data_json, parsed_json = row
 
-        for raw_json in (str(parsed_json or ""), str(data_json or "")):
-            if not raw_json:
-                continue
-            try:
-                payload = json.loads(raw_json)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            try:
-                parsed = ParsedProject.from_cache_payload(
-                    file_path=file_path,
-                    exchange=str(exchange),
-                    encoding=str(encoding),
-                    payload=payload,
-                )
-            except Exception:
-                continue
-            return parsed
-        return None
+        raw_json = str(parsed_json or "")
+        if not raw_json:
+            return None
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY not in payload:
+            return None
+        try:
+            return ParsedProject.from_cache_payload(
+                file_path=file_path,
+                exchange=str(exchange),
+                encoding=str(encoding),
+                payload=payload,
+            )
+        except Exception:
+            return None
 
     def put(self, parsed: ParsedProject) -> None:
         abs_path = os.path.abspath(parsed.file_path)
@@ -341,7 +341,6 @@ class ParseCacheStore:
         # Compute content-based fingerprint for archive-stable identity
         source_fingerprint = _compute_source_fingerprint(abs_path) or ""
 
-        legacy_payload = json.dumps(parsed.data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         parsed_payload = json.dumps(
             parsed.to_cache_payload(),
             ensure_ascii=False,
@@ -371,7 +370,7 @@ class ParseCacheStore:
                 int(stat.st_size),
                 parsed.exchange,
                 parsed.encoding,
-                legacy_payload,
+                "",
                 parsed_payload,
                 source_fingerprint,
                 dt.datetime.now().isoformat(timespec="seconds"),

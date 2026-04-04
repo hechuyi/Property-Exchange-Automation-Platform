@@ -76,7 +76,7 @@ class ParseCacheContractTest(unittest.TestCase):
         )
         self.addCleanup(store.close)
 
-        compat_payload = {
+        raw_data = {
             KEY_PROJECT_CODE: "P002",
             "项目名称": "兼容名称",
             KEY_STATUS: STATUS_LISTED,
@@ -86,7 +86,7 @@ class ParseCacheContractTest(unittest.TestCase):
             file_path=html_file,
             exchange="shenzhen",
             encoding="utf-8",
-            data=compat_payload,
+            data=raw_data,
         ).to_cache_payload()
         structured_payload["standard_record"]["project_name"] = "结构化名称"
 
@@ -113,7 +113,7 @@ class ParseCacheContractTest(unittest.TestCase):
                 int(stat.st_size),
                 "shenzhen",
                 "utf-8",
-                json.dumps(compat_payload, ensure_ascii=False, sort_keys=True),
+                json.dumps(raw_data, ensure_ascii=False, sort_keys=True),
                 json.dumps(structured_payload, ensure_ascii=False, sort_keys=True),
                 "2026-03-19T00:00:00",
             ),
@@ -123,12 +123,10 @@ class ParseCacheContractTest(unittest.TestCase):
         cached = store.get(html_file)
 
         self.assertIsNotNone(cached)
-        self.assertEqual(cached.data["项目名称"], "兼容名称")
         self.assertEqual(cached.standard_record.project_name, "结构化名称")
         self.assertEqual(cached.project_name, "结构化名称")
-        self.assertEqual(cached.standard_record.to_legacy_payload(include_raw=True)["项目名称"], "结构化名称")
 
-    def test_parse_cache_merges_partial_structured_payload_with_compat_payload(self) -> None:
+    def test_parse_cache_standard_record_fields_from_parsed_json(self) -> None:
         html_file = os.path.join(self.temp_dir.name, "partial-structured.html")
         with open(html_file, "w", encoding="utf-8") as handle:
             handle.write("<html></html>")
@@ -140,16 +138,18 @@ class ParseCacheContractTest(unittest.TestCase):
         )
         self.addCleanup(store.close)
 
-        compat_payload = {
+        legacy_data = {
             KEY_PROJECT_CODE: "P004",
             "项目名称": "兼容名称",
             KEY_STATUS: STATUS_LISTED,
             KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
         }
         structured_payload = {
-            "compat_payload": compat_payload,
             "standard_record": {
                 "project_name": "结构化名称",
+                "project_code": "P004",
+                "status": STATUS_LISTED,
+                "project_type": TYPE_EQUITY_TRANSFER,
             },
         }
 
@@ -176,7 +176,7 @@ class ParseCacheContractTest(unittest.TestCase):
                 int(stat.st_size),
                 "shenzhen",
                 "utf-8",
-                json.dumps(compat_payload, ensure_ascii=False, sort_keys=True),
+                json.dumps(legacy_data, ensure_ascii=False, sort_keys=True),
                 json.dumps(structured_payload, ensure_ascii=False, sort_keys=True),
                 "2026-03-19T00:00:00",
             ),
@@ -190,7 +190,7 @@ class ParseCacheContractTest(unittest.TestCase):
         self.assertEqual(cached.project_name, "结构化名称")
         self.assertEqual(cached.standard_record.project_type, TYPE_EQUITY_TRANSFER)
 
-    def test_parse_cache_supports_legacy_payload_rows(self) -> None:
+    def test_parse_cache_standard_record_in_parsed_json(self) -> None:
         html_file = os.path.join(self.temp_dir.name, "legacy.html")
         with open(html_file, "w", encoding="utf-8") as handle:
             handle.write("<html></html>")
@@ -202,11 +202,13 @@ class ParseCacheContractTest(unittest.TestCase):
         )
         self.addCleanup(store.close)
 
-        legacy_payload = {
-            KEY_PROJECT_CODE: "P003",
-            "项目名称": "旧缓存项目",
-            KEY_STATUS: STATUS_LISTED,
-            KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+        standard_record_payload = {
+            "standard_record": {
+                "project_code": "P003",
+                "project_name": "旧缓存项目",
+                "status": STATUS_LISTED,
+                "project_type": TYPE_EQUITY_TRANSFER,
+            },
         }
         stat = os.stat(html_file)
         store._conn.execute(
@@ -231,8 +233,8 @@ class ParseCacheContractTest(unittest.TestCase):
                 int(stat.st_size),
                 "shenzhen",
                 "utf-8",
-                json.dumps(legacy_payload, ensure_ascii=False, sort_keys=True),
                 "",
+                json.dumps(standard_record_payload, ensure_ascii=False, sort_keys=True),
                 "2026-03-19T00:00:00",
             ),
         )
@@ -410,6 +412,10 @@ class ParseCacheSignatureRegressionTest(unittest.TestCase):
 class ParseCacheRegressionTest(unittest.TestCase):
     """Regression tests for parse cache contract violations."""
 
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+
     def test_parse_cache_store_stats_returns_proper_cache_stats_type(self) -> None:
         """Regression: ParseCacheStore.stats must return a proper CacheStats type.
 
@@ -503,3 +509,166 @@ class ParseCacheRegressionTest(unittest.TestCase):
                 f"build_parser_signature does not include peap_parsers/*.py. "
                 f"Found {len(peap_parsers_files)} files in peap_parsers/ that are not being tracked."
             )
+
+    def test_parse_cache_rejects_compat_payload_without_standard_record(self) -> None:
+        """Regression: parsed_json={"compat_payload": {...}} rows must be safe miss.
+
+        Before the fix, rows with only compat_payload (no standard_record) would
+        return a ParsedProject with all-empty fields instead of None, causing
+        dangerous false cache hits.
+        """
+        html_file = os.path.join(self.temp_dir.name, "compat_only.html")
+        with open(html_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        store = ParseCacheStore(
+            db_path=os.path.join(self.temp_dir.name, "parse_cache_compat.sqlite3"),
+            run_signature="test-signature-compat",
+            commit_interval=1,
+        )
+        self.addCleanup(store.close)
+
+        compat_payload = {
+            "compat_payload": {
+                KEY_PROJECT_CODE: "POLD001",
+                "项目名称": "旧格式项目",
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+            }
+        }
+        stat = os.stat(html_file)
+        store._conn.execute(
+            """
+            INSERT OR REPLACE INTO parse_cache (
+                file_path, run_signature, file_mtime_ns, file_size,
+                exchange, encoding, data_json, parsed_json, source_fingerprint, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                os.path.abspath(html_file),
+                "test-signature-compat",
+                int(stat.st_mtime_ns),
+                int(stat.st_size),
+                "shenzhen",
+                "utf-8",
+                "",
+                json.dumps(compat_payload, ensure_ascii=False, sort_keys=True),
+                "",
+                "2025-01-01T00:00:00",
+            ),
+        )
+        store._conn.commit()
+
+        cached = store.get(html_file)
+
+        self.assertIsNone(
+            cached,
+            "parsed_json with compat_payload (no standard_record) must return None, "
+            "not a ParsedProject with empty fields"
+        )
+
+    def test_parse_cache_empty_parsed_json_returns_none(self) -> None:
+        """Legacy rows with data_json but empty parsed_json must be safe miss."""
+        html_file = os.path.join(self.temp_dir.name, "empty_parsed.html")
+        with open(html_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        store = ParseCacheStore(
+            db_path=os.path.join(self.temp_dir.name, "parse_cache_empty.sqlite3"),
+            run_signature="test-signature-empty",
+            commit_interval=1,
+        )
+        self.addCleanup(store.close)
+
+        legacy_data = {
+            KEY_PROJECT_CODE: "POLD002",
+            "项目名称": "旧数据项目",
+            KEY_STATUS: STATUS_LISTED,
+            KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+        }
+        stat = os.stat(html_file)
+        store._conn.execute(
+            """
+            INSERT OR REPLACE INTO parse_cache (
+                file_path, run_signature, file_mtime_ns, file_size,
+                exchange, encoding, data_json, parsed_json, source_fingerprint, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                os.path.abspath(html_file),
+                "test-signature-empty",
+                int(stat.st_mtime_ns),
+                int(stat.st_size),
+                "shenzhen",
+                "utf-8",
+                json.dumps(legacy_data, ensure_ascii=False, sort_keys=True),
+                "",
+                "",
+                "2025-01-01T00:00:00",
+            ),
+        )
+        store._conn.commit()
+
+        cached = store.get(html_file)
+
+        self.assertIsNone(
+            cached,
+            "parsed_json='' with legacy data_json must return None"
+        )
+
+    def test_parse_cache_standard_record_payload_returns_valid_project(self) -> None:
+        """New-format rows with standard_record must deserialize correctly."""
+        html_file = os.path.join(self.temp_dir.name, "standard_record.html")
+        with open(html_file, "w", encoding="utf-8") as handle:
+            handle.write("<html></html>")
+
+        store = ParseCacheStore(
+            db_path=os.path.join(self.temp_dir.name, "parse_cache_standard.sqlite3"),
+            run_signature="test-signature-standard",
+            commit_interval=1,
+        )
+        self.addCleanup(store.close)
+
+        standard_payload = {
+            "standard_record": {
+                "project_code": "PNEW001",
+                "project_name": "新格式项目",
+                "status": STATUS_LISTED,
+                "project_type": TYPE_EQUITY_TRANSFER,
+            }
+        }
+        stat = os.stat(html_file)
+        store._conn.execute(
+            """
+            INSERT OR REPLACE INTO parse_cache (
+                file_path, run_signature, file_mtime_ns, file_size,
+                exchange, encoding, data_json, parsed_json, source_fingerprint, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                os.path.abspath(html_file),
+                "test-signature-standard",
+                int(stat.st_mtime_ns),
+                int(stat.st_size),
+                "shenzhen",
+                "utf-8",
+                "",
+                json.dumps(standard_payload, ensure_ascii=False, sort_keys=True),
+                "",
+                "2025-01-01T00:00:00",
+            ),
+        )
+        store._conn.commit()
+
+        cached = store.get(html_file)
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached.project_code, "PNEW001")
+        self.assertEqual(cached.project_name, "新格式项目")
+        self.assertEqual(cached.status, STATUS_LISTED)
+        self.assertEqual(cached.project_type, TYPE_EQUITY_TRANSFER)
+        self.assertEqual(cached.standard_record.project_code, "PNEW001")
+        self.assertEqual(cached.standard_record.project_name, "新格式项目")

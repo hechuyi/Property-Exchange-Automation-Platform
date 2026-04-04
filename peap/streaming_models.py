@@ -5,14 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
-from peap_core.pipeline_state_contracts import JobStage as JobStageEnum
+from peap_core.pipeline_state_contracts import JobStage
 from peap_core.pipeline_state_contracts import JobStatus
 from peap_core.pipeline_state_contracts import RecordState
 
 RecordFamily = Literal["listing", "deal"]
 
 JobType = Literal["one_click", "download_ingest", "export_excel", "manual_import", "mapping_refresh"]
-ItemStage = JobStageEnum  # ItemStage is an alias for backward compatibility
 Severity = Literal["info", "warn", "error"]
 
 
@@ -39,7 +38,7 @@ class ItemSavedPayload:
 @dataclass(frozen=True)
 class ItemProgressEvent:
     job_id: str
-    stage: ItemStage
+    stage: JobStage
     status: str
     project_code: str = ""
     archive_path: str = ""

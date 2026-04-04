@@ -34,9 +34,12 @@ class ParserRegistryContractTest(unittest.TestCase):
 
         class FakeParser(WebPageParser):
             def parse(self):
-                self.data["项目编号"] = "P001"
-                self.data["项目名称"] = "示例项目"
-                return self.data
+                return self.build_parser_output(
+                    standard_payload={
+                        "project_code": "P001",
+                        "project_name": "示例项目",
+                    },
+                )
 
         registry = ParserRegistry(
             {
@@ -80,8 +83,10 @@ class ParserRegistryContractTest(unittest.TestCase):
         self.assertEqual(result.variant_id, "detail")
         self.assertEqual(result.page_identity["project_code"], "P001")
         self.assertEqual(result.page_identity["page_url"], "https://example.invalid/detail/1")
-        self.assertEqual(result.facts[0]["field"], "项目名称")
-        self.assertEqual(result.facts[0]["value"], "示例项目")
+        self.assertEqual(result.facts[0]["field"], "project_code")
+        self.assertEqual(result.facts[0]["value"], "P001")
+        self.assertEqual(result.facts[1]["field"], "project_name")
+        self.assertEqual(result.facts[1]["value"], "示例项目")
         self.assertEqual(result.recoverability, "none")
         self.assertEqual(result.diagnostics, ())
 
@@ -91,8 +96,11 @@ class ParserRegistryContractTest(unittest.TestCase):
 
         class MissingIdentityParser(WebPageParser):
             def parse(self):
-                self.data["项目名称"] = "只有名称"
-                return self.data
+                return self.build_parser_output(
+                    standard_payload={
+                        "project_name": "只有名称",
+                    },
+                )
 
         registry = ParserRegistry(
             {
@@ -138,6 +146,7 @@ class ParserRegistryContractTest(unittest.TestCase):
     def test_runtime_selects_special_beijing_variant_from_document_content(self) -> None:
         from peap_parsers.builtin_registry import build_builtin_registry
         from peap_parsers.family_runtime import parse_document_with_registry
+        from peap_parsers.base import ParserOutput
 
         document = DecodedDocument(
             snapshot_id="snap-beijing-runtime-special",
@@ -162,7 +171,7 @@ class ParserRegistryContractTest(unittest.TestCase):
             classifier_version="source_classifier/v1",
         )
 
-        with patch("peap_parsers.beijing_special.BeijingSpecialParser.parse", return_value={"项目编号": "CP2026BJ0001"}):
+        with patch("peap_parsers.beijing_special.BeijingSpecialParser.parse", return_value=ParserOutput(standard_payload={"project_code": "CP2026BJ0001"})):
             result = parse_document_with_registry(
                 document=document,
                 source_match=match,
@@ -180,7 +189,7 @@ class ParserRegistryContractTest(unittest.TestCase):
 
         class EmptyParser(WebPageParser):
             def parse(self):
-                return {}
+                return self.build_parser_output(standard_payload={})
 
         registry = ParserRegistry(
             {

@@ -7,7 +7,6 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .standard_model import LEGACY_PAYLOAD_KEYS
 from .constants import KEY_IS_PRE_DISCLOSURE, KEY_PROJECT_TYPE, KEY_STATUS
 from .excel_handler import (
     build_excel_schema_settings,
@@ -19,7 +18,6 @@ from .excel_handler import (
 )
 from .output_mapping import (
     get_output_mapping_contract,
-    get_raw_fallback_contract,
     map_standard_to_excel_payload,
     validate_output_field_map,
 )
@@ -121,36 +119,11 @@ def _validate_mapping_writer_contract(
     errors: List[str] = []
     schema = schema_snapshot if schema_snapshot is not None else get_output_schema_snapshot()
     mapping_contract = get_output_mapping_contract()
-    raw_fallback_contract = {
-        kind: set(field_names)
-        for kind, field_names in get_raw_fallback_contract().items()
-    }
-    compat_keys = set(LEGACY_PAYLOAD_KEYS)
 
     required_internal_keys = {KEY_STATUS, KEY_PROJECT_TYPE, KEY_IS_PRE_DISCLOSURE}
     missing_internal_keys = sorted(required_internal_keys - set(schema["internal_keys"]))
     if missing_internal_keys:
         errors.append(f"missing writer internal keys: {missing_internal_keys}")
-
-    for kind, columns in schema["output_columns"].items():
-        field_candidates = schema["field_candidates"].get(kind, {})
-        raw_fallback_fields = raw_fallback_contract.get(kind, set())
-        mapped_fields = set(mapping_contract.get(kind, {}))
-        available_payload_fields = compat_keys | raw_fallback_fields | mapped_fields
-
-        for column_name in columns:
-            if column_name == "ID":
-                continue
-            candidate_fields = field_candidates.get(column_name, [])
-            if not candidate_fields:
-                errors.append(f"writer column has no candidates: kind={kind}, column={column_name}")
-                continue
-            if any(candidate in available_payload_fields for candidate in candidate_fields):
-                continue
-            errors.append(
-                f"writer column is not satisfiable by compatibility payload: "
-                f"kind={kind}, column={column_name}, candidates={candidate_fields}"
-            )
 
     return errors
 

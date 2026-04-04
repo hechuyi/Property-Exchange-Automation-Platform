@@ -30,7 +30,6 @@ class ProductProfileTest(unittest.TestCase):
         self.assertEqual(profile.profile_id, "desktop_listing")
         self.assertEqual(profile.record_family, "listing")
         self.assertEqual(profile.source_ids, expected_source_ids)
-        self.assertEqual(profile.parser_compat, "listing_v1")
         self.assertEqual(profile.postprocess_profile, "postprocess_external")
         self.assertEqual(profile.export_profile, "ready_export")
         self.assertEqual(profile.readiness_policy, "browser_runtime_required")

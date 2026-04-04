@@ -59,15 +59,10 @@ class ParserSubsystemError(RuntimeError):
 
 def _coerce_parser_output(*, file_path: str, parse_result: object) -> tuple[dict[str, Any], Mapping[str, Any] | None]:
     if isinstance(parse_result, ParserOutput):
-        compat_payload = parse_result.compat_payload
-        if not isinstance(compat_payload, Mapping):
-            raise ParserSubsystemError(f"invalid-parser-output: {file_path}")
         standard_payload = parse_result.standard_payload
-        if standard_payload is None:
-            return dict(compat_payload), None
         if not isinstance(standard_payload, Mapping):
             raise ParserSubsystemError(f"invalid-parser-output: {file_path}")
-        return dict(compat_payload), dict(standard_payload)
+        return dict(standard_payload), dict(standard_payload)
 
     if isinstance(parse_result, Mapping):
         return dict(parse_result), None

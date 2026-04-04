@@ -22,7 +22,6 @@ from .standard_model import (
 COMPAT_PROFILE_FULL = "full"
 COMPAT_PROFILE_PPE_READY = "ppe_ready"
 VALID_COMPAT_PROFILES = {COMPAT_PROFILE_FULL, COMPAT_PROFILE_PPE_READY}
-PARSED_PROJECT_CACHE_COMPAT_PAYLOAD_KEY = "compat_payload"
 PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY = "standard_record"
 
 
@@ -44,7 +43,6 @@ class ParsedProject:
 
     def to_cache_payload(self) -> Dict[str, Any]:
         return {
-            PARSED_PROJECT_CACHE_COMPAT_PAYLOAD_KEY: dict(self.data),
             PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY: self.standard_record.to_standard_dict(),
         }
 
@@ -60,19 +58,16 @@ class ParsedProject:
         if not isinstance(payload, Mapping):
             raise TypeError("cache payload must be a mapping")
 
-        compat_payload = payload
-        standard_payload: Mapping[str, Any] | None = None
-        compat_candidate = payload.get(PARSED_PROJECT_CACHE_COMPAT_PAYLOAD_KEY)
         standard_candidate = payload.get(PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY)
-        if isinstance(compat_candidate, Mapping) and isinstance(standard_candidate, Mapping):
-            compat_payload = compat_candidate
-            standard_payload = standard_candidate
+        standard_payload: Mapping[str, Any] | None = (
+            standard_candidate if isinstance(standard_candidate, Mapping) else None
+        )
 
         return build_parsed_project(
             file_path=file_path,
             exchange=exchange,
             encoding=encoding,
-            data=dict(compat_payload),
+            data={},
             standard_payload=standard_payload,
         )
 
@@ -142,7 +137,6 @@ def parse_file(file_path: str) -> ParsedProject:
 
 
 __all__ = [
-    "PARSED_PROJECT_CACHE_COMPAT_PAYLOAD_KEY",
     "PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY",
     "ParseError",
     "ParsedProject",

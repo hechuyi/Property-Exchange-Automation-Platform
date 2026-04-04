@@ -14,7 +14,7 @@ from .export_projection import ExportProjectionError, project_canonical_record_t
 from .output_contract import clone_field_candidates, detect_output_kind, get_output_columns_for_kind
 from .standard_model import build_standard_project, hydrate_standard_project
 from .streaming_models import ExportArtifact, ExportRequest, ExportRunResult
-from .streaming_postprocess import derive_listing_times_from_project_code, merge_record_payloads
+from .streaming_postprocess import derive_listing_times_from_project_code
 from .streaming_store import StreamingStore
 
 BUSINESS_TYPE_LABELS = {
@@ -162,13 +162,6 @@ def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
                 canonical_record,
                 fail_on_missing=False,  # Return findings instead of raising
             )
-            # Derive listing times if missing
-            if payload.get("挂牌次数") in (None, ""):
-                derived_listing_times = derive_listing_times_from_project_code(
-                    str(payload.get("项目编号") or "")
-                )
-                if derived_listing_times:
-                    payload["挂牌次数"] = derived_listing_times
             return payload
         except Exception:
             # Fall back to canonical_projection if available
@@ -177,12 +170,6 @@ def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     # Fall back to canonical_projection if canonical_record is not available
     if canonical_projection:
         payload = dict(canonical_projection)
-        if payload.get("挂牌次数") in (None, ""):
-            derived_listing_times = derive_listing_times_from_project_code(
-                str(payload.get("项目编号") or "")
-            )
-            if derived_listing_times:
-                payload["挂牌次数"] = derived_listing_times
         return payload
 
     # NO raw payload fallback - fail if we get here without canonical data

@@ -39,7 +39,6 @@ class CliConfigInjectionTest(unittest.TestCase):
 
         self.assertEqual(args.limit, 7)
         self.assertEqual(args.batch_flush_interval, 11)
-        self.assertEqual(args.parser_compat_profile, "ppe_ready")
         self.assertEqual(args.progress_interval, 13)
         self.assertEqual(args.log_dir, "C:\\temp\\logs")
         self.assertEqual(args.parse_cache_db, "C:\\temp\\parse_cache.sqlite3")

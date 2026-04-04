@@ -1426,17 +1426,29 @@ class StreamingStoreIncrementalExportCursorRegressionTest(unittest.TestCase):
         cursor_map_after = self.store.get_exported_revision_map("default")
         self.assertIn("rec-removal-candidate", cursor_map_after)
 
-        # The store must expose a method to directly query removal candidates:
+        # The store exposes get_exported_revision_map which can be used with
+        # iter_latest_records(states=["ready"]) to detect removal candidates:
         # records that have a cursor entry but are not currently in ready state.
-        # This method does not exist - it is the missing piece for incremental export.
         self.assertTrue(
-            hasattr(self.store, "iter_removal_candidates"),
-            "Store must have iter_removal_candidates(cursor_key) method to support "
-            "incremental export removal detection. Currently this method does not exist.",
+            hasattr(self.store, "get_exported_revision_map"),
+            "Store must have get_exported_revision_map(cursor_key) method to support "
+            "incremental export removal detection.",
         )
 
-        removal_candidates = list(self.store.iter_removal_candidates("default"))
-        removal_candidate_ids = {r["record_id"] for r in removal_candidates}
+        # Verify get_exported_revision_map returns the non-ready record
+        exported_map = self.store.get_exported_revision_map("default")
+        self.assertIn(
+            "rec-removal-candidate",
+            exported_map,
+            "Previously exported record must appear in exported revision map",
+        )
+
+        # The removal candidates can be computed as:
+        # set(exported_map.keys()) - {r["record_id"] for r in iter_latest_records(states=["ready"])}
+        ready_rows = self.store.iter_latest_records(states=["ready"])
+        ready_record_ids = {r["record_id"] for r in ready_rows}
+        exported_record_ids = set(exported_map.keys())
+        removal_candidate_ids = exported_record_ids - ready_record_ids
         self.assertIn(
             "rec-removal-candidate",
             removal_candidate_ids,

@@ -25,8 +25,6 @@ from peap.streaming_ingest import StreamingIngestRunner, copy_snapshot_to_archiv
 from peap.streaming_models import ExportRequest, ItemProgressEvent, ItemSavedPayload
 from peap.streaming_postprocess import (
     analyze_mapping_candidates,
-    derive_listing_times_from_project_code,
-    merge_record_payloads,
 )
 from peap.streaming_store import StreamingStore
 from peap.streaming_store_maintenance import run_streaming_store_maintenance
@@ -378,10 +376,9 @@ def _build_record_display_values(record: Dict[str, Any], *, project_kind: str | 
 def _build_record_display_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     payload = record_to_export_payload(record)
     if not payload:
-        payload = merge_record_payloads(
-            record.get("parser_payload"),
-            record.get("postprocess_payload"),
-        )
+        # Fall back to record's direct fields when canonical projection is unavailable
+        # (e.g. skipped/failed records without canonical data)
+        payload = {}
     else:
         payload = dict(payload)
 
@@ -391,13 +388,6 @@ def _build_record_display_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         payload["项目名称"] = str(record.get("project_name") or "").strip()
     if not payload.get("项目类型"):
         payload["项目类型"] = str(record.get("project_type") or "").strip()
-
-    if payload.get("挂牌次数") in (None, ""):
-        derived_listing_times = derive_listing_times_from_project_code(
-            str(payload.get("项目编号") or record.get("project_code") or "")
-        )
-        if derived_listing_times:
-            payload["挂牌次数"] = derived_listing_times
 
     return payload
 

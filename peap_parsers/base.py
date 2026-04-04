@@ -21,8 +21,7 @@ class ParserContext:
 
 @dataclass(frozen=True)
 class ParserOutput:
-    compat_payload: Dict[str, Any]
-    standard_payload: Optional[Dict[str, Any]] = None
+    standard_payload: Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -34,7 +33,6 @@ class ParserVariantBinding:
 
 @dataclass(frozen=True)
 class ParserExecutionResult:
-    compat_payload: Dict[str, Any]
     page_parse_result: PageParseResult
 
 
@@ -108,13 +106,9 @@ class WebPageParser:
     def build_parser_output(
         self,
         *,
-        compat_payload: Optional[Dict[str, Any]] = None,
-        standard_payload: Optional[Dict[str, Any]] = None,
+        standard_payload: Dict[str, Any],
     ) -> ParserOutput:
-        return ParserOutput(
-            compat_payload=dict(self.data if compat_payload is None else compat_payload),
-            standard_payload=None if standard_payload is None else dict(standard_payload),
-        )
+        return ParserOutput(standard_payload=dict(standard_payload))
 
     def build_page_parse_result(
         self,

@@ -15,7 +15,6 @@ class ProductProfile:
     profile_id: str
     record_family: str
     source_ids: tuple[str, ...]
-    parser_compat: str
     postprocess_profile: str
     export_profile: str
     readiness_policy: str
@@ -34,7 +33,6 @@ _PRODUCT_PROFILES: Dict[str, ProductProfile] = {
         profile_id=DEFAULT_PRODUCT_PROFILE_ID,
         record_family="listing",
         source_ids=_DESKTOP_LISTING_SOURCE_IDS,
-        parser_compat="listing_v1",
         postprocess_profile="postprocess_external",
         export_profile="ready_export",
         readiness_policy="browser_runtime_required",

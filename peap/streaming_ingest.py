@@ -19,7 +19,6 @@ from .streaming_postprocess import (
     normalize_record_payload,
     run_record_postprocess,
 )
-from .export_projection import project_canonical_record_to_compat_payload
 from .streaming_store import StreamingStore
 from .submission_layout import resolve_submission_snapshot_target
 
@@ -45,15 +44,15 @@ def _first_non_empty(payload: Dict[str, Any], fields: Iterable[str]) -> str:
 
 def _default_parse_file(file_path: str) -> Dict[str, Any]:
     from peap.parsing import parse_file
-
     parsed = parse_file(file_path)
-    payload = parsed.standard_record.to_legacy_payload(include_raw=True)
+    # Use standard (English) field names directly - no legacy conversion
+    payload = parsed.standard_record.to_standard_dict()
     payload["项目编号"] = parsed.project_code
     payload["项目名称"] = parsed.project_name
     payload["项目类型"] = parsed.project_type
     payload["项目状态"] = parsed.status
     payload["交易所"] = parsed.exchange
-    if "类型" not in payload and parsed.standard_record.source_type:
+    if parsed.standard_record.source_type:
         payload["类型"] = parsed.standard_record.source_type
     return payload
 
@@ -485,8 +484,6 @@ class StreamingIngestRunner:
             findings=findings,
         )
         canonical_projection = dict(postprocess_payload.get("canonical_projection") or {})
-        if not canonical_projection:
-            canonical_projection = project_canonical_record_to_compat_payload(canonical_record)
         record = IngestedRecord(
             record_id=uuid.uuid4().hex,
             revision_hash=_compute_revision_hash(postprocess_payload),

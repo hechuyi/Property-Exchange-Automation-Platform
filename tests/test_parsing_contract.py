@@ -6,7 +6,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from peap.compat_compare import compare_data_fields
 from peap.constants import (
     KEY_LISTING_TIMES,
     KEY_PROJECT_CODE,
@@ -98,7 +97,6 @@ class ParsingContractTest(unittest.TestCase):
         class FakeParser(WebPageParser):
             def parse(self) -> ParserOutput:
                 return self.build_parser_output(
-                    compat_payload={},
                     standard_payload={
                         "project_code": "GR2026BJ2999001",
                         "project_name": "仅结构化字段项目",
@@ -142,7 +140,6 @@ class ParsingContractTest(unittest.TestCase):
         class FakeParser(WebPageParser):
             def parse(self) -> ParserOutput:
                 return self.build_parser_output(
-                    compat_payload={},
                     standard_payload={},
                 )
 
@@ -231,7 +228,6 @@ class ParsingContractTest(unittest.TestCase):
         class FakeParser(WebPageParser):
             def parse(self) -> ParserOutput:
                 return self.build_parser_output(
-                    compat_payload={},
                     standard_payload={},
                 )
 
@@ -393,12 +389,12 @@ class ParsingContractTest(unittest.TestCase):
         with patch("peap.parsing.run_parser_subsystem", return_value=subsystem_result):
             parsed = parse_file(file_path)
 
-        compat_payload = parsed.standard_record.to_legacy_payload(include_raw=True)
+        standard_dict = parsed.standard_record.to_standard_dict()
         self.assertEqual(parsed.data["项目名称"], "原始兼容名称")
         self.assertEqual(parsed.standard_record.project_name, "结构化名称")
-        self.assertEqual(compat_payload["项目名称"], "结构化名称")
-        self.assertEqual(compat_payload["转让方"], "结构化转让方")
-        self.assertNotIn("神秘字段", compat_payload)
+        self.assertEqual(standard_dict["project_name"], "结构化名称")
+        self.assertEqual(standard_dict["seller"], "结构化转让方")
+        self.assertNotIn("神秘字段", standard_dict)
 
     def test_parse_file_accepts_explicit_parser_output_contract(self) -> None:
         file_path = r"C:\temp\detail.html"
@@ -423,7 +419,7 @@ class ParsingContractTest(unittest.TestCase):
         with patch("peap.parsing.run_parser_subsystem", return_value=subsystem_result):
             parsed = parse_file(file_path)
 
-        compat_payload = parsed.standard_record.to_legacy_payload(include_raw=True)
+        standard_dict = parsed.standard_record.to_standard_dict()
         self.assertEqual(parsed.data["项目名称"], "兼容名称")
         self.assertEqual(parsed.standard_record.project_code, "P010")
         self.assertEqual(parsed.standard_record.project_name, "结构化名称")
@@ -434,8 +430,8 @@ class ParsingContractTest(unittest.TestCase):
         self.assertEqual(parsed.project_name, "结构化名称")
         self.assertEqual(parsed.status, STATUS_LISTED)
         self.assertEqual(parsed.project_type, TYPE_EQUITY_TRANSFER)
-        self.assertEqual(compat_payload["项目名称"], "结构化名称")
-        self.assertEqual(compat_payload["转让方"], "结构化转让方")
+        self.assertEqual(standard_dict["project_name"], "结构化名称")
+        self.assertEqual(standard_dict["seller"], "结构化转让方")
 
     def test_beijing_router_preserves_context_for_delegated_parser(self) -> None:
         file_path = "C:\\temp\\beijing_detail.html"
@@ -560,7 +556,7 @@ class ParsingContractTest(unittest.TestCase):
             result = parser.parse()
 
         self.assertIsInstance(result, ParserOutput)
-        self.assertEqual(result.compat_payload["交易所"], "北交所")
+        self.assertEqual(result.standard_payload.get("exchange"), "北交所")
         self.assertEqual(result.standard_payload["project_code"], "P020")
         self.assertEqual(result.standard_payload["project_name"], "北京项目")
         self.assertEqual(result.standard_payload["seller"], "北京转让方")
@@ -594,59 +590,11 @@ class ParsingContractTest(unittest.TestCase):
             result = parser.parse()
 
         self.assertIsInstance(result, ParserOutput)
-        self.assertEqual(result.compat_payload["交易所"], parser.EXCHANGE_NAME)
+        self.assertEqual(result.standard_payload.get("exchange"), parser.EXCHANGE_NAME)
         self.assertEqual(result.standard_payload["project_code"], "G32026GD0001")
         self.assertEqual(result.standard_payload["project_name"], "广州项目")
         self.assertEqual(result.standard_payload["seller"], "广州转让方")
         self.assertEqual(result.standard_payload["exchange"], parser.EXCHANGE_NAME)
-
-    def test_parsed_project_drives_compare_and_output_mapping(self) -> None:
-        baseline = build_parsed_project(
-            file_path="C:\\temp\\baseline.html",
-            exchange="shenzhen",
-            encoding="utf-8",
-            data={
-                KEY_PROJECT_CODE: "P001",
-                "项目名称": "示例项目",
-                "类型": "旧类型",
-                "挂牌价格": "88.00",
-                KEY_LISTING_TIMES: 1,
-                KEY_STATUS: STATUS_LISTED,
-                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
-            },
-        )
-        primary = build_parsed_project(
-            file_path="C:\\temp\\primary.html",
-            exchange="shenzhen",
-            encoding="utf-8",
-            data={
-                KEY_PROJECT_CODE: "P001",
-                "项目名称": "示例项目",
-                "类型": "新类型",
-                "挂牌价格": "108.00",
-                KEY_LISTING_TIMES: 2,
-                KEY_STATUS: STATUS_LISTED,
-                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
-            },
-        )
-
-        diffs = compare_data_fields(
-            file_path=primary.file_path,
-            compare_fields=["类型", KEY_LISTING_TIMES],
-            primary_profile="full",
-            baseline_profile="ppe_ready",
-            primary_data=primary,
-            baseline_data=baseline,
-        )
-        mapped = map_standard_to_excel_payload(primary, "挂牌_股权转让.xlsx")
-
-        self.assertEqual({diff["field"] for diff in diffs}, {"类型", KEY_LISTING_TIMES})
-        self.assertTrue(all(diff["project_code"] == "P001" for diff in diffs))
-        self.assertEqual(primary.standard_record.to_legacy_payload(include_raw=True)["挂牌价格"], "108.00")
-        self.assertEqual(mapped["项目编号"], "P001")
-        self.assertEqual(mapped["挂牌价格"], "108.00")
-        self.assertEqual(mapped["挂牌次数"], 2)
-        self.assertEqual(mapped["项目状态"], STATUS_LISTED)
 
     def test_build_standard_project_prefers_financing_amount_for_capital_projects(self) -> None:
         standard = build_standard_project(
@@ -713,20 +661,6 @@ class StatusKeyContractTest(unittest.TestCase):
         self.assertIn("项目状态", mapped, "output mapping must emit 项目状态")
         self.assertNotIn("状态", mapped, "output mapping must NOT emit 状态")
         self.assertEqual(mapped["项目状态"], STATUS_LISTED)
-
-    def test_standard_to_legacy_payload_emits_项目状态(self) -> None:
-        """Standard model to_legacy_payload must emit 项目状态."""
-        standard = build_standard_project({
-            KEY_PROJECT_CODE: "P002",
-            "项目名称": "legacy状态测试",
-            KEY_STATUS: STATUS_LISTED,
-        })
-        legacy = standard.to_legacy_payload()
-
-        # Must emit 项目状态, NOT 状态
-        self.assertIn("项目状态", legacy, "legacy payload must emit 项目状态")
-        self.assertNotIn("状态", legacy, "legacy payload must NOT emit 状态")
-        self.assertEqual(legacy["项目状态"], STATUS_LISTED)
 
     def test_export_projection_emits_项目状态(self) -> None:
         """Export projection must emit 项目状态 for status field."""

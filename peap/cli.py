@@ -7,8 +7,6 @@ from typing import Iterable, Optional
 from peap_core.cli_support import write_summary_json
 
 from .parser_runner import (
-    COMPAT_PROFILE_FULL,
-    COMPAT_PROFILE_PPE_READY,
     default_parser_html_root,
     parser_result_to_summary_payload,
     run_parser_cli_args,
@@ -47,37 +45,6 @@ def _build_parser(config_obj: object | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-dir", default=resolved_config.LOG_DIR, help="Directory for parser log files")
     parser.add_argument("--log-file", default=None, help="Explicit parser log file path")
-    parser.add_argument(
-        "--parser-compat-profile",
-        choices=[COMPAT_PROFILE_FULL, COMPAT_PROFILE_PPE_READY],
-        default=parser_defaults["compat_profile"],
-        help=(
-            "Parser compatibility profile. "
-            "full=keep legacy normalization/derivation, "
-            "ppe_ready=disable parser-side source_type/listing_times legacy enhancement."
-        ),
-    )
-    parser.add_argument(
-        "--dual-run-compare",
-        action="store_true",
-        help=(
-            "Run one extra parse pass with alternate compatibility profile and "
-            "emit field-level diff report."
-        ),
-    )
-    parser.add_argument(
-        "--compare-report-file",
-        default=None,
-        help="Optional jsonl path for dual-run compare report",
-    )
-    parser.add_argument(
-        "--compare-fields",
-        default=compare_fields_default,
-        help=(
-            "Comma-separated fields to compare in dual-run mode. "
-            f"Default: {compare_fields_default}"
-        ),
-    )
     parser.add_argument(
         "--no-parse-cache",
         action="store_true",

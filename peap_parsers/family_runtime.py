@@ -73,10 +73,7 @@ def parse_document_with_registry(*, document, source_match: SourceMatch, registr
     binding = registry.resolve(source_match, document=document)
     parser: WebPageParser = binding.parser_cls(str(document.dom), context=context)
     parse_result = parser.parse()
-    if hasattr(parse_result, "compat_payload"):
-        data = dict(parse_result.compat_payload)
-    else:
-        data = dict(parse_result)
+    data = dict(parse_result.standard_payload)
 
     diagnostics, recoverability = _build_diagnostics(data)
     return parser.build_page_parse_result(

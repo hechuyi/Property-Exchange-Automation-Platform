@@ -130,21 +130,9 @@ def project_canonical_record_to_export_payload(
     return export_payload, tuple(findings)
 
 
-def project_canonical_record_to_compat_payload(
-    canonical: CanonicalRecord | Dict[str, Any],
-) -> Dict[str, Any]:
-    """Legacy compatibility function - redirects to project_canonical_record_to_export_payload.
-
-    Deprecated: Use project_canonical_record_to_export_payload instead.
-    """
-    payload, _ = project_canonical_record_to_export_payload(canonical, fail_on_missing=False)
-    return payload
-
-
 __all__ = [
     "REQUIRED_EXPORT_FIELDS",
     "CANONICAL_TO_COMPAT",
     "ExportProjectionError",
     "project_canonical_record_to_export_payload",
-    "project_canonical_record_to_compat_payload",
 ]

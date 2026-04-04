@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .compat_compare import DEFAULT_COMPARE_FIELDS
+from peap_postprocess.compare_regression import DEFAULT_COMPARE_FIELDS
 from .constants import (
     KEY_PROJECT_CODE,
     SKIP_FILE_NAME,

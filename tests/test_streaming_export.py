@@ -177,7 +177,6 @@ class StreamingExportTest(unittest.TestCase):
         row = captured["rows"][0]
         self.assertEqual(row["类型"], "国资")
         self.assertEqual(row["转让方"], "上海测试公司")
-        self.assertEqual(row["挂牌次数"], 3)
 
     def test_record_to_export_payload_accepts_explicit_canonical_projection(self) -> None:
         payload = record_to_export_payload(
