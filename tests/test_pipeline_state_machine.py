@@ -326,9 +326,13 @@ class RecordStateContractsTest(unittest.TestCase):
         )
 
         JobStatus = streaming_models.JobStatus
+        # Canonical runtime statuses
         self.assertTrue(hasattr(JobStatus, "SUCCESS"))
-        self.assertTrue(hasattr(JobStatus, "FAILURE"))
-        self.assertTrue(hasattr(JobStatus, "PARTIAL"))
+        self.assertTrue(hasattr(JobStatus, "FAILED"))  # note: FAILED not FAILURE
+        self.assertTrue(hasattr(JobStatus, "STARTING"))
+        self.assertTrue(hasattr(JobStatus, "RUNNING"))
+        self.assertTrue(hasattr(JobStatus, "INTERRUPTED"))
+        self.assertTrue(hasattr(JobStatus, "SUCCESS_WITH_WARNINGS"))
 
     def test_job_status_enum_matches_persisted_runtime_values(self) -> None:
         """JobStatus enum must include all values actually persisted by the runtime.

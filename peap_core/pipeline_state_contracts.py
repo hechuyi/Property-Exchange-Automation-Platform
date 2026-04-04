@@ -32,16 +32,35 @@ class RecordState(str, Enum):
 
 
 class JobStatus(str, Enum):
-    """Status of a download/ingest job."""
+    """Status of a download/ingest job.
 
+    These values must match exactly what StreamingStore persists.
+    Canonical set:
+      - starting: job created but worker has not yet entered pipeline
+      - running: worker is actively processing the job
+      - success: job completed normally
+      - success_with_warnings: job completed but some items had non-fatal issues
+      - failed: job terminated abnormally (startup crash, exception, etc.)
+      - interrupted: job was explicitly cancelled/interrupted
+    """
+
+    STARTING = "starting"
+    RUNNING = "running"
     SUCCESS = "success"
-    FAILURE = "failure"
-    PARTIAL = "partial"
+    SUCCESS_WITH_WARNINGS = "success_with_warnings"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
 
 
 class JobStage(str, Enum):
-    """Stages in the download/ingest job pipeline."""
+    """Stages in the download/ingest job pipeline.
 
+    STARTUP: thread/bootstrap/runtime-init failures before download/parse/export begins.
+    The rest are actual processing stages.
+    FAILED is a job STATUS, not a stage - use JobStatus.FAILED for terminal failures.
+    """
+
+    STARTUP = "startup"
     DOWNLOADED = "downloaded"
     QUEUED_FOR_PARSE = "queued_for_parse"
     PREPARE_TASKS = "prepare_tasks"
@@ -54,4 +73,3 @@ class JobStage(str, Enum):
     POSTPROCESSED = "postprocessed"
     PERSISTED = "persisted"
     SKIPPED = "skipped"
-    FAILED = "failed"
