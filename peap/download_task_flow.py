@@ -42,7 +42,17 @@ def load_requested_split_plans(args: object, *, logger) -> dict[str, TaskSplitPl
     if not getattr(args, "split_use_plan", False):
         return {}
     try:
-        return load_split_plan_file(str(args.split_plan_file))
+        scope = {
+            "source_id": getattr(args, "exchange", None),
+            "project_type": getattr(args, "project_type", None),
+            "start_date": getattr(args, "start_date", None),
+            "end_date": getattr(args, "end_date", None),
+            "split_candidates": int(getattr(args, "split_candidates", 0)),
+            "split_min_days": int(getattr(args, "split_min_days", 0)),
+            "split_max_depth": int(getattr(args, "split_max_depth", 0)),
+            "split_mode": str(getattr(args, "split_mode", "")),
+        }
+        return load_split_plan_file(str(args.split_plan_file), scope=scope)
     except Exception as exc:  # noqa: BLE001
         print(f"Failed to load split plan file: {args.split_plan_file} ({exc})")
         logger.exception("Failed to load split plan file: %s", args.split_plan_file)
