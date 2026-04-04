@@ -7,9 +7,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from peap.daily_pipeline import run_daily_pipeline
+from peap.daily_pipeline import _resolve_archive_root, run_daily_pipeline
 from peap.download_oneclick import DownloadOneClickRunResult
-from peap.parser_runner import ParserRunRequest, ParserRunResult
+from peap.parser_runner import ParserRunRequest, ParserRunResult, default_parser_html_root
 from peap_postprocess.postprocess_engine.runner import PostProcessRunRequest, PostProcessRunResult
 
 
@@ -158,6 +158,69 @@ class DailyPipelineTest(unittest.TestCase):
         run_download_oneclick.assert_not_called()
         run_parser_request.assert_not_called()
         run_postprocess_request.assert_not_called()
+
+    def test_parser_runner_and_daily_pipeline_derive_same_html_root(self) -> None:
+        """daily_pipeline and parser_runner must use the same resolved HTML root.
+
+        When ARCHIVE_ROOT is not explicitly set, both _resolve_archive_root (used by
+        daily_pipeline for download output) and default_parser_html_root (used by
+        parser_runner for parse input) must return the same path, otherwise the
+        parser will scan a different directory than where files were downloaded.
+        """
+        # Case 1: ARCHIVE_ROOT explicitly set - both should use it
+        config_with_archive = SimpleNamespace(
+            LOG_DIR=self.temp_dir.name,
+            DATA_ROOT=self.temp_dir.name,
+            HTML_FOLDER=os.path.join(self.temp_dir.name, "html"),
+            ARCHIVE_ROOT=self.archive_root,
+        )
+        args_with_archive = argparse.Namespace(archive_root=self.archive_root)
+
+        resolved_with = _resolve_archive_root(config_with_archive, args_with_archive)
+        default_with = default_parser_html_root(config_with_archive)
+        self.assertEqual(
+            resolved_with,
+            default_with,
+            "When ARCHIVE_ROOT is set, both should return ARCHIVE_ROOT",
+        )
+
+        # Case 2: ARCHIVE_ROOT not set, DATA_ROOT/raw does NOT exist
+        # Both should fall back to DATA_ROOT/outputs/submission
+        config_no_archive = SimpleNamespace(
+            LOG_DIR=self.temp_dir.name,
+            DATA_ROOT=self.temp_dir.name,
+            HTML_FOLDER=os.path.join(self.temp_dir.name, "html"),
+            ARCHIVE_ROOT="",  # Empty, not set
+        )
+        args_no_archive = argparse.Namespace(archive_root=None)
+
+        # Ensure DATA_ROOT/raw does NOT exist (it shouldn't in this temp config)
+        raw_dir = os.path.join(self.temp_dir.name, "raw")
+        if os.path.exists(raw_dir):
+            os.rmdir(raw_dir)
+
+        resolved_no = _resolve_archive_root(config_no_archive, args_no_archive)
+        default_no = default_parser_html_root(config_no_archive)
+
+        # Both should now fall back to the same path
+        expected_fallback = os.path.abspath(
+            os.path.join(self.temp_dir.name, "outputs", "submission")
+        )
+        self.assertEqual(
+            resolved_no,
+            expected_fallback,
+            "_resolve_archive_root should fall back to DATA_ROOT/outputs/submission",
+        )
+        self.assertEqual(
+            default_no,
+            expected_fallback,
+            "default_parser_html_root should fall back to DATA_ROOT/outputs/submission",
+        )
+        self.assertEqual(
+            resolved_no,
+            default_no,
+            "Both functions should return the same path when ARCHIVE_ROOT is not set",
+        )
 
 
 if __name__ == "__main__":

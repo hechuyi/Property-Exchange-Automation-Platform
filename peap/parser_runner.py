@@ -45,10 +45,24 @@ class ParserRunResult:
 
 
 def default_parser_html_root(config_obj: object) -> str:
+    """Return the default HTML root for the parser.
+
+    This function must remain consistent with _resolve_archive_root in daily_pipeline.py.
+    Both must derive the same path so the parser scans the same directory where
+    files were downloaded.
+
+    Resolution order:
+    1. ARCHIVE_ROOT if explicitly set
+    2. DATA_ROOT/raw if that directory exists (legacy parser behavior)
+    3. DATA_ROOT/outputs/submission (same fallback as _resolve_archive_root)
+    """
+    archive_root = str(getattr(config_obj, "ARCHIVE_ROOT", "") or "").strip()
+    if archive_root:
+        return os.path.abspath(archive_root)
     raw_root = os.path.abspath(os.path.join(str(config_obj.DATA_ROOT), "raw"))
     if os.path.isdir(raw_root):
         return raw_root
-    return str(config_obj.HTML_FOLDER)
+    return os.path.abspath(os.path.join(str(config_obj.DATA_ROOT), "outputs", "submission"))
 
 
 def setup_parser_logger(

@@ -839,6 +839,167 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertEqual(self.store.count_pending_mappings(), 0)
 
 
+class StreamingStoreDeduplicationTest(unittest.TestCase):
+    """Tests for intra-run page deduplication."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = StreamingStore(f"{self.temp_dir.name}/streaming_dedup.sqlite3")
+
+    def test_upsert_record_same_revision_hash_does_not_create_new_revision(self) -> None:
+        """Duplicate pages in one run with same content hash must not create new revision.
+
+        This verifies that when the same page is ingested twice within a run with
+        identical content, only one revision is created (not an invisible rewrite).
+        """
+        source_file = os.path.join(self.temp_dir.name, "dup.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>duplicate test</body></html>")
+
+        payload = {
+            "项目编号": "G32025SH1000194",
+            "项目名称": "重复测试项目",
+            "项目类型": "股权转让",
+            "转让方": "测试公司",
+        }
+        record_first = IngestedRecord(
+            record_id="rec-dedup-1",
+            revision_hash="hash-dedup-same",
+            project_code="G32025SH1000194",
+            project_name="重复测试项目",
+            project_type="股权转让",
+            exchange="shanghai",
+            listing_date="2026-03-21",
+            state="ready",
+            source_file=source_file,
+            archive_path=source_file,
+            parser_payload=payload,
+            postprocess_payload=payload,
+            findings=[],
+        )
+        result_first = self.store.upsert_record(record_first)
+        self.assertTrue(result_first["changed"])
+        first_revision_id = result_first["revision_id"]
+
+        # Same content, same source file - should NOT create new revision
+        result_second = self.store.upsert_record(record_first)
+        self.assertFalse(result_second["changed"])
+        self.assertEqual(result_second["revision_id"], first_revision_id)
+
+        # Verify only one revision exists
+        record = self.store.get_record(result_first["record_id"])
+        self.assertEqual(record["revision_id"], first_revision_id)
+
+    def test_upsert_record_export_cursor_reflects_unchanged_revision(self) -> None:
+        """Export cursor must observe genuine changes, not lost rewrites.
+
+        When a page is re-ingested with unchanged content, the export cursor
+        should reflect the original revision, not create a false delta.
+        """
+        source_file = os.path.join(self.temp_dir.name, "cursor_dup.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>cursor test</body></html>")
+
+        payload = {
+            "项目编号": "G32026SH1000001",
+            "项目名称": "游标测试项目",
+            "项目类型": "股权转让",
+        }
+        record = IngestedRecord(
+            record_id="rec-cursor-test",
+            revision_hash="hash-cursor-original",
+            project_code="G32026SH1000001",
+            project_name="游标测试项目",
+            project_type="股权转让",
+            exchange="shanghai",
+            listing_date="2026-03-21",
+            state="ready",
+            source_file=source_file,
+            archive_path=source_file,
+            parser_payload=payload,
+            postprocess_payload=payload,
+            findings=[],
+        )
+
+        first = self.store.upsert_record(record)
+        self.store.mark_exported(
+            export_id="exp-cursor-1",
+            cursor_key="default",
+            mode="incremental",
+            date_from="2026-03-01",
+            date_to="2026-03-31",
+            project_type="股权转让",
+            output_dir=f"{self.temp_dir.name}/exports",
+            summary={"new_records": 1},
+            records=[self.store.get_record(first["record_id"])],
+        )
+
+        # Re-ingest same content
+        second = self.store.upsert_record(record)
+        self.assertFalse(second["changed"])
+
+        # Export cursor should still reference the original revision
+        cursor_map = self.store.get_exported_revision_map("default")
+        self.assertEqual(
+            cursor_map[first["record_id"]]["revision_hash"],
+            "hash-cursor-original",
+        )
+
+    def test_upsert_record_different_content_creates_new_revision(self) -> None:
+        """A page with genuinely changed content must create a new revision."""
+        source_file = os.path.join(self.temp_dir.name, "changed.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>version 1</body></html>")
+
+        payload_v1 = {
+            "项目编号": "G32026SH1000002",
+            "项目名称": "变更测试项目v1",
+            "项目类型": "股权转让",
+        }
+        payload_v2 = {
+            **payload_v1,
+            "项目名称": "变更测试项目v2",  # Content changed
+        }
+
+        record_v1 = IngestedRecord(
+            record_id="rec-changed",
+            revision_hash="hash-v1",
+            project_code="G32026SH1000002",
+            project_name="变更测试项目v1",
+            project_type="股权转让",
+            exchange="shanghai",
+            listing_date="2026-03-21",
+            state="ready",
+            source_file=source_file,
+            archive_path=source_file,
+            parser_payload=payload_v1,
+            postprocess_payload=payload_v1,
+            findings=[],
+        )
+        first = self.store.upsert_record(record_v1)
+        self.assertTrue(first["changed"])
+
+        record_v2 = IngestedRecord(
+            record_id="rec-changed",
+            revision_hash="hash-v2",  # Different hash due to content change
+            project_code="G32026SH1000002",
+            project_name="变更测试项目v2",
+            project_type="股权转让",
+            exchange="shanghai",
+            listing_date="2026-03-21",
+            state="ready",
+            source_file=source_file,
+            archive_path=source_file,
+            parser_payload=payload_v2,
+            postprocess_payload=payload_v2,
+            findings=[],
+        )
+        second = self.store.upsert_record(record_v2)
+        self.assertTrue(second["changed"])
+        self.assertNotEqual(second["revision_id"], first["revision_id"])
+
+
 class StreamingStoreStateMachineRegressionTest(unittest.TestCase):
     """Regression tests for streaming store state machine contracts."""
 
