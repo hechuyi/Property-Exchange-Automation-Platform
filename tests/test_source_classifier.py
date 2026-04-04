@@ -37,8 +37,9 @@ class SourceClassifierTest(unittest.TestCase):
         self.assertTrue(match.reasons)
         self.assertEqual(match.classifier_version, "source_classifier/v1")
 
-    def test_classifier_returns_ambiguous_for_conflicting_markers(self) -> None:
+    def test_classifier_raises_ambiguous_for_conflicting_markers(self) -> None:
         from peap_core import DecodedDocument
+        from peap_core.error_contracts import PipelineFailure
         from peap_parsers.source_classifier import classify_decoded_document
 
         document = DecodedDocument(
@@ -50,14 +51,16 @@ class SourceClassifierTest(unittest.TestCase):
             decoder_version="snapshot_decoder/v1",
         )
 
-        match = classify_decoded_document(document)
+        with self.assertRaises(PipelineFailure) as ctx:
+            classify_decoded_document(document)
 
-        self.assertEqual(match.status, "ambiguous")
-        self.assertEqual(match.source_id, "")
-        self.assertGreaterEqual(len(match.reasons), 2)
+        self.assertEqual(ctx.exception.code, "ambiguous_source_match")
+        self.assertEqual(ctx.exception.recoverability, "permanent")
+        self.assertIn("conflicting_sources", ctx.exception.context)
 
-    def test_classifier_returns_unknown_for_unmatched_html(self) -> None:
+    def test_classifier_raises_no_match_for_unmatched_html(self) -> None:
         from peap_core import DecodedDocument
+        from peap_core.error_contracts import PipelineFailure
         from peap_parsers.source_classifier import classify_decoded_document
 
         document = DecodedDocument(
@@ -69,10 +72,11 @@ class SourceClassifierTest(unittest.TestCase):
             decoder_version="snapshot_decoder/v1",
         )
 
-        match = classify_decoded_document(document)
+        with self.assertRaises(PipelineFailure) as ctx:
+            classify_decoded_document(document)
 
-        self.assertEqual(match.status, "unknown")
-        self.assertEqual(match.source_id, "")
+        self.assertEqual(ctx.exception.code, "no_source_match")
+        self.assertEqual(ctx.exception.recoverability, "permanent")
 
     def test_classifier_recognizes_public_resource_mhtml_by_rules(self) -> None:
         from peap_parsers.snapshot_decoder import decode_snapshot

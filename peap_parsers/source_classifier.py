@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from peap_core import DecodedDocument, SourceMatch
+from peap_core.error_contracts import PipelineFailure
 
 from .source_detection_rules import RuleMatch, collect_source_rule_matches
 
@@ -20,13 +21,13 @@ def _group_reasons(matches: list[RuleMatch], source_id: str) -> tuple[str, ...]:
 def classify_decoded_document(document: DecodedDocument) -> SourceMatch:
     matches = collect_source_rule_matches(document)
     if not matches:
-        return SourceMatch(
-            source_id="",
-            page_kind="listing",
-            confidence=0.0,
-            status="unknown",
-            reasons=("no source markers matched",),
-            classifier_version=CLASSIFIER_VERSION,
+        raise PipelineFailure(
+            code="no_source_match",
+            component="source_classifier",
+            stage="classification",
+            recoverability="permanent",
+            message="No source markers matched the document",
+            context={"snapshot_id": document.snapshot_id},
         )
 
     unique_sources: list[str] = []
@@ -35,13 +36,13 @@ def classify_decoded_document(document: DecodedDocument) -> SourceMatch:
             unique_sources.append(match.source_id)
 
     if len(unique_sources) > 1:
-        return SourceMatch(
-            source_id="",
-            page_kind=matches[0].page_kind,
-            confidence=max(match.confidence for match in matches),
-            status="ambiguous",
-            reasons=tuple(match.reason for match in matches),
-            classifier_version=CLASSIFIER_VERSION,
+        raise PipelineFailure(
+            code="ambiguous_source_match",
+            component="source_classifier",
+            stage="classification",
+            recoverability="permanent",
+            message="Multiple source markers matched the document",
+            context={"snapshot_id": document.snapshot_id, "conflicting_sources": unique_sources},
         )
 
     source_id = unique_sources[0]
@@ -58,18 +59,21 @@ def classify_decoded_document(document: DecodedDocument) -> SourceMatch:
 
 def detect_source_from_content(raw_content: str) -> str | None:
     document_kind = "mhtml" if "content-type: multipart/related" in raw_content.lower() else "html"
-    match = classify_decoded_document(
-        DecodedDocument(
-            snapshot_id="compat-detect",
-            document_kind=document_kind,
-            primary_text=raw_content,
-            dom=raw_content,
-            metadata={},
-            decoder_version=CLASSIFIER_VERSION,
+    try:
+        match = classify_decoded_document(
+            DecodedDocument(
+                snapshot_id="compat-detect",
+                document_kind=document_kind,
+                primary_text=raw_content,
+                dom=raw_content,
+                metadata={},
+                decoder_version=CLASSIFIER_VERSION,
+            )
         )
-    )
-    if match.status == "matched":
-        return match.source_id
+        if match.status == "matched":
+            return match.source_id
+    except PipelineFailure:
+        pass
     matches = collect_source_rule_matches(
         DecodedDocument(
             snapshot_id="compat-detect",

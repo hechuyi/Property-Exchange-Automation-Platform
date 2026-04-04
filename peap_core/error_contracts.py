@@ -18,7 +18,7 @@ Recoverability = Literal["retryable", "permanent", "blocked"]
 
 
 @dataclass(frozen=True)
-class PipelineFailure:
+class PipelineFailure(Exception):
     """Typed runtime failure contract.
 
     All pipeline failures (downloader, parser, normalizer, etc.) must expose
@@ -42,3 +42,6 @@ class PipelineFailure:
             "message": self.message,
             "context": self.context,
         }
+
+    def __str__(self) -> str:
+        return self.message
