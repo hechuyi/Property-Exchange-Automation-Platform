@@ -184,8 +184,8 @@ class DailyPipelineTest(unittest.TestCase):
             "When ARCHIVE_ROOT is set, both should return ARCHIVE_ROOT",
         )
 
-        # Case 2: ARCHIVE_ROOT not set, DATA_ROOT/raw does NOT exist
-        # Both should fall back to DATA_ROOT/outputs/submission
+        # Case 2: ARCHIVE_ROOT not set, DATA_ROOT/raw DOES exist
+        # Both should use DATA_ROOT/raw (the intermediate fallback)
         config_no_archive = SimpleNamespace(
             LOG_DIR=self.temp_dir.name,
             DATA_ROOT=self.temp_dir.name,
@@ -194,32 +194,54 @@ class DailyPipelineTest(unittest.TestCase):
         )
         args_no_archive = argparse.Namespace(archive_root=None)
 
-        # Ensure DATA_ROOT/raw does NOT exist (it shouldn't in this temp config)
+        # Ensure DATA_ROOT/raw EXISTS so the intermediate fallback is used
         raw_dir = os.path.join(self.temp_dir.name, "raw")
-        if os.path.exists(raw_dir):
-            os.rmdir(raw_dir)
+        os.makedirs(raw_dir, exist_ok=True)
 
         resolved_no = _resolve_archive_root(config_no_archive, args_no_archive)
         default_no = default_parser_html_root(config_no_archive)
 
-        # Both should now fall back to the same path
+        # Both should use DATA_ROOT/raw as the intermediate fallback
+        expected_raw = os.path.abspath(raw_dir)
+        self.assertEqual(
+            resolved_no,
+            expected_raw,
+            "_resolve_archive_root should use DATA_ROOT/raw when it exists",
+        )
+        self.assertEqual(
+            default_no,
+            expected_raw,
+            "default_parser_html_root should use DATA_ROOT/raw when it exists",
+        )
+        self.assertEqual(
+            resolved_no,
+            default_no,
+            "Both functions should return the same path when ARCHIVE_ROOT is not set and DATA_ROOT/raw exists",
+        )
+
+        # Case 3: ARCHIVE_ROOT not set, DATA_ROOT/raw does NOT exist
+        # Both should fall back to DATA_ROOT/outputs/submission
+        os.rmdir(raw_dir)  # Remove raw_dir so we test the final fallback
+        resolved_final = _resolve_archive_root(config_no_archive, args_no_archive)
+        default_final = default_parser_html_root(config_no_archive)
+
         expected_fallback = os.path.abspath(
             os.path.join(self.temp_dir.name, "outputs", "submission")
         )
         self.assertEqual(
-            resolved_no,
+            resolved_final,
             expected_fallback,
             "_resolve_archive_root should fall back to DATA_ROOT/outputs/submission",
         )
         self.assertEqual(
-            default_no,
+            default_final,
             expected_fallback,
             "default_parser_html_root should fall back to DATA_ROOT/outputs/submission",
         )
         self.assertEqual(
-            resolved_no,
-            default_no,
-            "Both functions should return the same path when ARCHIVE_ROOT is not set",
+            resolved_final,
+            default_final,
+            "Both functions should return the same path when ARCHIVE_ROOT is not set and DATA_ROOT/raw does not exist",
         )
 
 

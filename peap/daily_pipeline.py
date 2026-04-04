@@ -143,10 +143,20 @@ def print_final_summary(
 
 
 def _resolve_archive_root(config_obj: object, args: object) -> str:
-    """Resolve the download output root using the same policy as streaming_daily_pipeline."""
-    archive_root = getattr(args, "archive_root", None) or getattr(config_obj, "ARCHIVE_ROOT", "")
-    fallback = os.path.join(str(config_obj.DATA_ROOT), "outputs", "submission")
-    return os.path.abspath(str(archive_root or fallback))
+    """Resolve the download output root using the same policy as parser_runner.
+
+    Resolution order:
+    1. ARCHIVE_ROOT if explicitly set
+    2. DATA_ROOT/raw if that directory exists (legacy parser behavior)
+    3. DATA_ROOT/outputs/submission (same fallback as default_parser_html_root)
+    """
+    archive_root = str(getattr(args, "archive_root", None) or getattr(config_obj, "ARCHIVE_ROOT", "") or "").strip()
+    if archive_root:
+        return os.path.abspath(archive_root)
+    raw_root = os.path.abspath(os.path.join(str(config_obj.DATA_ROOT), "raw"))
+    if os.path.isdir(raw_root):
+        return raw_root
+    return os.path.abspath(os.path.join(str(config_obj.DATA_ROOT), "outputs", "submission"))
 
 
 def _build_download_request(
