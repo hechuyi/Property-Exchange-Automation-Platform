@@ -1079,5 +1079,451 @@ class StreamingStoreStateMachineRegressionTest(unittest.TestCase):
         self.assertIsInstance(RecordState.PENDING_MAPPING.value, str)
 
 
+class StreamingStoreIncrementalExportCursorRegressionTest(unittest.TestCase):
+    """Regression tests for incremental export cursor bookkeeping with non-ready transitions.
+
+    These tests verify the store-level behavior that underpins the export contract:
+    when a record was previously exported as "ready" and later transitions to a
+    non-ready state, the store must support emitting and acknowledging removal signals.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = StreamingStore(f"{self.temp_dir.name}/streaming_export_cursor.sqlite3")
+
+    def test_cursor_contains_exported_ready_record_and_tracks_revision(self) -> None:
+        """Baseline: cursor correctly tracks a record exported while ready."""
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-cursor-baseline",
+                revision_hash="hash-baseline-v1",
+                project_code="G32025SH1000194",
+                project_name="基线游标测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/baseline.html",
+                archive_path=f"{self.temp_dir.name}/archive/baseline.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000194",
+                    "项目名称": "基线游标测试",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "108.00",
+                    "转让方": "基线卖方",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000194",
+                    "项目名称": "基线游标测试",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "108.00",
+                    "转让方": "基线卖方",
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000194",
+                        "project_name": "基线游标测试",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "基线卖方",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000194",
+                    "项目名称": "基线游标测试",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "108.00",
+                    "转让方": "基线卖方",
+                },
+                findings=[],
+            )
+        )
+
+        ready_rows = self.store.iter_latest_records(states=["ready"])
+        self.assertEqual(len(ready_rows), 1)
+
+        # Mark as exported
+        self.store.mark_exported(
+            export_id="exp-baseline-1",
+            cursor_key="default",
+            mode="incremental",
+            date_from="2026-03-01",
+            date_to="2026-03-31",
+            project_type="股权转让",
+            output_dir=f"{self.temp_dir.name}/exports",
+            summary={"new_records": 1, "changed_records": 0},
+            records=ready_rows,
+        )
+
+        cursor_map = self.store.get_exported_revision_map("default")
+        self.assertIn("rec-cursor-baseline", cursor_map)
+        self.assertEqual(cursor_map["rec-cursor-baseline"]["revision_hash"], "hash-baseline-v1")
+
+    def test_cursor_does_not_silently_clear_for_non_ready_transition(self) -> None:
+        """Regression: cursor must NOT silently clear entries when record transitions
+        to non-ready state.
+
+        The store must NOT auto-clear cursor entries when a record becomes non-ready.
+        The removal must be explicitly signaled and acknowledged through the export
+        contract, not silently handled by clearing the cursor row.
+        """
+        # Setup: create and export record in ready state
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-no-silent-clear",
+                revision_hash="hash-clear-v1",
+                project_code="G32025SH1000195",
+                project_name="不清除游标测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/no_clear.html",
+                archive_path=f"{self.temp_dir.name}/archive/no_clear.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "不清除游标测试",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "88.00",
+                    "转让方": "清除测试卖方",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "不清除游标测试",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "88.00",
+                    "转让方": "清除测试卖方",
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000195",
+                        "project_name": "不清除游标测试",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "88.00",
+                        "seller": "清除测试卖方",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "不清除游标测试",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "88.00",
+                    "转让方": "清除测试卖方",
+                },
+                findings=[],
+            )
+        )
+
+        ready_rows = self.store.iter_latest_records(states=["ready"])
+        self.store.mark_exported(
+            export_id="exp-no-clear-1",
+            cursor_key="default",
+            mode="incremental",
+            date_from="2026-03-01",
+            date_to="2026-03-31",
+            project_type="股权转让",
+            output_dir=f"{self.temp_dir.name}/exports",
+            summary={"new_records": 1, "changed_records": 0},
+            records=ready_rows,
+        )
+
+        # Verify cursor entry exists
+        cursor_before = self.store.get_exported_revision_map("default")
+        self.assertIn("rec-no-silent-clear", cursor_before)
+
+        # Transition to non-ready state
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-no-silent-clear",
+                revision_hash="hash-clear-v2",
+                project_code="G32025SH1000195",
+                project_name="不清除游标测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="pending_mapping",
+                source_file=f"{self.temp_dir.name}/raw/no_clear.html",
+                archive_path=f"{self.temp_dir.name}/archive/no_clear.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "不清除游标测试",
+                    "项目类型": "股权转让",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "不清除游标测试",
+                    "项目类型": "股权转让",
+                },
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="mapping_gap",
+                        message="缺少类型",
+                        evidence={"missing_fields": ["类型"]},
+                    )
+                ],
+            )
+        )
+
+        # Run store maintenance (which might be called by the store)
+        from peap.streaming_store_maintenance import run_streaming_store_maintenance
+        run_streaming_store_maintenance(self.store)
+
+        # Cursor must NOT be silently cleared
+        cursor_after = self.store.get_exported_revision_map("default")
+        self.assertIn(
+            "rec-no-silent-clear",
+            cursor_after,
+            "Cursor entry must NOT be silently cleared when record becomes non-ready. "
+            "Removal must be explicitly signaled through the export contract.",
+        )
+
+    def test_non_ready_record_with_cursor_entry_appears_in_removal_candidate_set(self) -> None:
+        """Regression: store must provide a way to query previously-exported records
+        that are now non-ready (removal candidates).
+
+        The incremental export needs to detect when a previously-exported record
+        is now non-ready. This requires the store to support querying records
+        that: (a) have a cursor entry, AND (b) are not in "ready" state.
+
+        The store must provide an `iter_removal_candidates(cursor_key)` method
+        or equivalent that returns records that have a cursor entry but are
+        not in ready state. Currently this intersection is not directly queryable.
+        """
+        # Setup: create and export record in ready state
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-removal-candidate",
+                revision_hash="hash-rc-v1",
+                project_code="G32025SH1000196",
+                project_name="移除候选测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/rem_cand.html",
+                archive_path=f"{self.temp_dir.name}/archive/rem_cand.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000196",
+                    "项目名称": "移除候选测试",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "77.00",
+                    "转让方": "候选卖方",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000196",
+                    "项目名称": "移除候选测试",
+                    "项目类型": "股权转让",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "77.00",
+                    "转让方": "候选卖方",
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000196",
+                        "project_name": "移除候选测试",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "77.00",
+                        "seller": "候选卖方",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000196",
+                    "项目名称": "移除候选测试",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "77.00",
+                    "转让方": "候选卖方",
+                },
+                findings=[],
+            )
+        )
+
+        ready_rows = self.store.iter_latest_records(states=["ready"])
+        self.assertEqual(len(ready_rows), 1)
+        self.store.mark_exported(
+            export_id="exp-rem-cand-1",
+            cursor_key="default",
+            mode="incremental",
+            date_from="2026-03-01",
+            date_to="2026-03-31",
+            project_type="股权转让",
+            output_dir=f"{self.temp_dir.name}/exports",
+            summary={"new_records": 1, "changed_records": 0},
+            records=ready_rows,
+        )
+
+        # Verify cursor entry
+        cursor_map = self.store.get_exported_revision_map("default")
+        self.assertIn("rec-removal-candidate", cursor_map)
+
+        # Transition to non-ready state
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-removal-candidate",
+                revision_hash="hash-rc-v2",
+                project_code="G32025SH1000196",
+                project_name="移除候选测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="parse_failed",
+                source_file=f"{self.temp_dir.name}/raw/rem_cand.html",
+                archive_path=f"{self.temp_dir.name}/archive/rem_cand.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000196",
+                    "项目名称": "移除候选测试",
+                    "项目类型": "股权转让",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000196",
+                    "项目名称": "移除候选测试",
+                    "项目类型": "股权转让",
+                },
+                findings=[
+                    PostProcessFinding(
+                        severity="error",
+                        type="parse_failed",
+                        message="解析失败",
+                    )
+                ],
+            )
+        )
+
+        # Record is now non-ready and should NOT appear in ready rows
+        ready_rows_after = self.store.iter_latest_records(states=["ready"])
+        ready_record_ids = {r["record_id"] for r in ready_rows_after}
+        self.assertNotIn(
+            "rec-removal-candidate",
+            ready_record_ids,
+            "Non-ready record must not appear in ready set",
+        )
+
+        # Cursor entry still exists (not silently cleared)
+        cursor_map_after = self.store.get_exported_revision_map("default")
+        self.assertIn("rec-removal-candidate", cursor_map_after)
+
+        # The store must expose a method to directly query removal candidates:
+        # records that have a cursor entry but are not currently in ready state.
+        # This method does not exist - it is the missing piece for incremental export.
+        self.assertTrue(
+            hasattr(self.store, "iter_removal_candidates"),
+            "Store must have iter_removal_candidates(cursor_key) method to support "
+            "incremental export removal detection. Currently this method does not exist.",
+        )
+
+        removal_candidates = list(self.store.iter_removal_candidates("default"))
+        removal_candidate_ids = {r["record_id"] for r in removal_candidates}
+        self.assertIn(
+            "rec-removal-candidate",
+            removal_candidate_ids,
+            "Previously exported record that is now non-ready must appear in removal candidates",
+        )
+
+
+class StreamingStoreJobLifecycleTest(unittest.TestCase):
+    """Regression tests for job lifecycle APIs in StreamingStore."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = StreamingStore(f"{self.temp_dir.name}/streaming_job_lifecycle.sqlite3")
+
+    def test_store_has_start_job_lifecycle_apis(self) -> None:
+        """StreamingStore must provide job lifecycle transition APIs.
+
+        Currently missing: start_job(job_id), mark_job_running(job_id),
+        fail_job_with_startup_failure(job_id, failure) atomically.
+        """
+        # Must have: start_job (transitions from starting to running)
+        self.assertTrue(
+            hasattr(self.store, "start_job") or hasattr(self.store, "mark_job_running"),
+            "StreamingStore must have start_job() or mark_job_running() method"
+        )
+        # Must have: fail_job atomically
+        self.assertTrue(
+            hasattr(self.store, "fail_job"),
+            "StreamingStore must have fail_job() for atomic startup failure persistence"
+        )
+
+    def test_create_job_then_start_job_produces_running_job(self) -> None:
+        """Job lifecycle: create(starting) -> start() -> running."""
+        job_id = self.store.create_job("one_click", metadata={})
+        # After creation, job should be in starting state (not running directly)
+        job = self.store.get_job(job_id)
+        self.assertEqual(job["status"], "starting")
+
+        # Must have start_job or mark_job_running
+        if hasattr(self.store, "start_job"):
+            self.store.start_job(job_id)
+        elif hasattr(self.store, "mark_job_running"):
+            self.store.mark_job_running(job_id)
+        else:
+            self.fail("No start_job or mark_job_running method found")
+
+        job = self.store.get_job(job_id)
+        self.assertEqual(job["status"], "running")
+
+    def test_fail_job_atomically_creates_startup_failure_event(self) -> None:
+        """fail_job() must atomically: update status to failed + append failure event."""
+        from peap_core.error_contracts import PipelineFailure
+
+        job_id = self.store.create_job("one_click", metadata={})
+
+        if hasattr(self.store, "start_job"):
+            self.store.start_job(job_id)
+        elif hasattr(self.store, "mark_job_running"):
+            self.store.mark_job_running(job_id)
+
+        failure = PipelineFailure(
+            code="job_startup_failed",
+            component="desktop_app_service",
+            stage="startup",
+            recoverability="retryable",
+            message="playwright env init failed",
+            context={"exception": "RuntimeError", "original": "playwright env init failed"},
+        )
+
+        # Must have fail_job
+        self.assertTrue(hasattr(self.store, "fail_job"))
+        self.store.fail_job(job_id, failure=failure)
+
+        # Job status must be failed
+        job = self.store.get_job(job_id)
+        self.assertEqual(job["status"], "failed")
+
+        # Must have a failure event with stage="startup"
+        events = self.store.list_job_events(job_id)
+        startup_events = [e for e in events if e.get("stage") == "startup" and e.get("status") == "failed"]
+        self.assertTrue(
+            len(startup_events) > 0,
+            f"Job must have a startup-failure event. Events: {events}"
+        )
+        self.assertEqual(startup_events[0].get("error_type"), "job_startup_failed")
+
+
 if __name__ == "__main__":
     unittest.main()

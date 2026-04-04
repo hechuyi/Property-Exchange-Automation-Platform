@@ -1622,5 +1622,195 @@ class StreamingPipelineReviewStateTest(unittest.TestCase):
         self.assertIn("project_code:G32026BJ1000888", captured["existing_candidate_tokens"])
 
 
+class StreamingDailyPipelineJobLifecycleTest(unittest.TestCase):
+    """Tests for job lifecycle in streaming daily pipeline.
+
+    These tests verify that the pipeline correctly handles job creation states:
+    - When no job_id is provided, the pipeline creates its own job in 'starting' state
+    - When a pre-created job_id is provided, the pipeline uses it without creating a new job
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.config = SimpleNamespace(
+            LOG_DIR=self.temp_dir.name,
+            DATA_ROOT=self.temp_dir.name,
+            OUTPUT_EXCEL_DIR=os.path.join(self.temp_dir.name, "exports"),
+            LOG_LEVEL="INFO",
+            LOG_TO_FILE=False,
+            DOWNLOADER_DEFAULTS={
+                "concurrency": 2,
+                "resume": True,
+                "save_json": False,
+                "auto_split": True,
+                "split_candidates": 10,
+                "split_min_days": 1,
+                "split_max_depth": 3,
+                "split_mode": "fast",
+                "sse_ssl_verify": True,
+                "sse_ssl_fallback_insecure": True,
+                "sse_ca_bundle": None,
+            },
+        )
+
+    def test_run_streaming_daily_pipeline_creates_starting_job_when_no_job_id(self) -> None:
+        """Without pre-created job_id, pipeline must create its own job in starting state.
+
+        The job lifecycle should be: starting -> running -> terminal.
+        Currently it goes directly to running (missing starting state).
+        """
+        args = argparse.Namespace(
+            start_date="2026-03-20",
+            end_date="2026-03-21",
+            exchange="all",
+            project_type="all",
+            concurrency=2,
+            page_size=None,
+            max_pages=None,
+            with_refresh=False,
+            no_resume=False,
+            save_json=False,
+            postprocess_config=None,
+            verbose=False,
+            streaming_db=None,
+            no_auto_export=True,
+        )
+
+        fake_download_runner = types.ModuleType("peap.download_runner")
+        fake_download_runner.DownloadRunRequest = _FakeDownloadRunRequest
+
+        fake_download_oneclick = types.ModuleType("peap.download_oneclick")
+        fake_download_oneclick.DownloadOneClickRequest = _FakeDownloadOneClickRequest
+
+        def _fake_run_download_oneclick(request, *, config_obj, emit_console):
+            return _FakeDownloadOneClickRunResult(
+                exit_code=0,
+                log_file="download.log",
+                plan_file=request.plan_file,
+                plan_file_exists=False,
+                plan_file_removed=True,
+                start="2026-03-20 00:00:00",
+                end="2026-03-20 00:01:00",
+                duration_sec=60.0,
+                aggregate_summary={"saved": 0, "errors": 0},
+                task_summaries={},
+                errors=[],
+            )
+
+        fake_download_oneclick.run_download_oneclick = _fake_run_download_oneclick
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "peap.download_runner": fake_download_runner,
+                    "peap.download_oneclick": fake_download_oneclick,
+                },
+            ),
+            patch("peap.streaming_daily_pipeline.StreamingIngestRunner", _FakeRunner),
+        ):
+            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False)
+
+        # The pipeline creates its own job when none is pre-created
+        store = StreamingStore(result.db_path)
+        job = store.get_job(result.job_id)
+
+        # Job should go through 'starting' state first, then 'running'
+        # Current bug: job goes directly to 'running' without 'starting' state
+        events = store.list_job_events(result.job_id, limit=20)
+        event_statuses = [e.get("status") for e in events]
+
+        # There should be a 'starting' stage event before 'running'
+        # Currently this assertion should FAIL because 'starting' is missing
+        has_starting = any(e.get("stage") == "startup" or e.get("status") == "starting" for e in events)
+        self.assertTrue(
+            has_starting,
+            f"Pipeline-created job must have 'startup' or 'starting' stage event. "
+            f"Current bug: job goes directly to 'running'. Events: {events}"
+        )
+
+    def test_run_streaming_daily_pipeline_with_precreated_job_skips_create(self) -> None:
+        """With pre-created job_id, pipeline must NOT create a new job row.
+
+        The pre-created job must be used as-is.
+        Currently a second job row might be created (duplicate job bug).
+        """
+        # Pre-create a job in the store
+        db_path = os.path.join(self.temp_dir.name, "streaming_precreated.sqlite3")
+        store = StreamingStore(db_path)
+        precreated_job_id = store.create_job("one_click", metadata={"precreated": True})
+
+        args = argparse.Namespace(
+            start_date="2026-03-20",
+            end_date="2026-03-21",
+            exchange="all",
+            project_type="all",
+            concurrency=2,
+            page_size=None,
+            max_pages=None,
+            with_refresh=False,
+            no_resume=False,
+            save_json=False,
+            postprocess_config=None,
+            verbose=False,
+            streaming_db=db_path,
+            no_auto_export=True,
+        )
+
+        fake_download_runner = types.ModuleType("peap.download_runner")
+        fake_download_runner.DownloadRunRequest = _FakeDownloadRunRequest
+
+        fake_download_oneclick = types.ModuleType("peap.download_oneclick")
+        fake_download_oneclick.DownloadOneClickRequest = _FakeDownloadOneClickRequest
+
+        def _fake_run_download_oneclick(request, *, config_obj, emit_console):
+            return _FakeDownloadOneClickRunResult(
+                exit_code=0,
+                log_file="download.log",
+                plan_file=request.plan_file,
+                plan_file_exists=False,
+                plan_file_removed=True,
+                start="2026-03-20 00:00:00",
+                end="2026-03-20 00:01:00",
+                duration_sec=60.0,
+                aggregate_summary={"saved": 0, "errors": 0},
+                task_summaries={},
+                errors=[],
+            )
+
+        fake_download_oneclick.run_download_oneclick = _fake_run_download_oneclick
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "peap.download_runner": fake_download_runner,
+                    "peap.download_oneclick": fake_download_oneclick,
+                },
+            ),
+            patch("peap.streaming_daily_pipeline.StreamingIngestRunner", _FakeRunner),
+        ):
+            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False)
+
+        # The returned job_id should be the pre-created one
+        self.assertEqual(
+            result.job_id, precreated_job_id,
+            f"Pipeline must use pre-created job_id, not create a new one. "
+            f"Expected: {precreated_job_id}, Got: {result.job_id}"
+        )
+
+        # There should be exactly ONE job in the store
+        all_jobs = store.list_jobs(limit=10)
+        self.assertEqual(
+            len(all_jobs), 1,
+            f"Pipeline must NOT create a new job when pre-created job_id is provided. "
+            f"Current bug: a second job row may be created. Jobs found: {len(all_jobs)}"
+        )
+
+        # The single job should be the pre-created one
+        self.assertEqual(all_jobs[0]["job_id"], precreated_job_id)
+
+
 if __name__ == "__main__":
     unittest.main()

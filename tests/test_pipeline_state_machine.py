@@ -330,6 +330,44 @@ class RecordStateContractsTest(unittest.TestCase):
         self.assertTrue(hasattr(JobStatus, "FAILURE"))
         self.assertTrue(hasattr(JobStatus, "PARTIAL"))
 
+    def test_job_status_enum_matches_persisted_runtime_values(self) -> None:
+        """JobStatus enum must include all values actually persisted by the runtime.
+
+        Runtime persists: running, success, failed, interrupted, success_with_warnings
+        Current enum has: SUCCESS=success, FAILURE=failure, PARTIAL=partial
+        FAILURE is wrong ("failure" vs "failed"), PARTIAL is unused, running/starting missing.
+        """
+        from peap_core.pipeline_state_contracts import JobStatus
+        persisted_values = {"running", "success", "failed", "interrupted", "success_with_warnings", "starting"}
+        enum_values = {s.value for s in JobStatus}
+        # The canonical enum MUST contain all persisted runtime values
+        self.assertTrue(
+            persisted_values.issubset(enum_values),
+            f"JobStatus enum is missing persisted runtime values. "
+            f"Persisted={persisted_values}, Enum={enum_values}"
+        )
+
+    def test_job_stage_enum_includes_startup(self) -> None:
+        """JobStage enum must include 'startup' for bootstrap/thread-init failures."""
+        from peap_core.pipeline_state_contracts import JobStage
+        # Startup stage is required for the startup failure event contract
+        self.assertTrue(
+            hasattr(JobStage, "STARTUP"),
+            "JobStage must have STARTUP member for startup bootstrap failures. "
+            "Currently it is missing - startup failures cannot be properly typed."
+        )
+        self.assertEqual(JobStage.STARTUP.value, "startup")
+
+    def test_job_stage_failed_is_not_a_stage(self) -> None:
+        """FAILED is a job status, not a stage. It must not be in JobStage."""
+        from peap_core.pipeline_state_contracts import JobStage
+        # JobStage should NOT contain FAILED - FAILED is a status
+        self.assertFalse(
+            hasattr(JobStage, "FAILED"),
+            "JobStage should not contain FAILED - it is a status, not a stage. "
+            "Use JobStatus.FAILED for terminal failed state."
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
