@@ -228,6 +228,7 @@ def run_streaming_daily_pipeline(
     archive_root: str | None = None,
     export_root: str | None = None,
     auto_export: bool | None = None,
+    job_id: str | None = None,
 ) -> StreamingDailyPipelineRunResult:
     logger, log_file = _setup_logger(
         verbose=bool(getattr(args, "verbose", False)),
@@ -279,24 +280,25 @@ def run_streaming_daily_pipeline(
         service.start()
 
         try:
-            job_id = store.create_job(
-                str(job_type),
-                metadata={
-                    "start_date": start_text,
-                    "end_date": end_text,
-                    "exchange": getattr(args, "exchange", "all"),
-                    "project_type": getattr(args, "project_type", "all"),
-                    "archive_root": resolved_archive_root,
-                    "export_root": resolved_export_root,
-                },
-            )
             if not str(job_id or "").strip():
-                raise RuntimeError(f"{job_type} job did not provide job_id")
-            if job_created_callback is not None:
-                try:
-                    job_created_callback(job_id, db_path)
-                except Exception:
-                    pass
+                job_id = store.create_job(
+                    str(job_type),
+                    metadata={
+                        "start_date": start_text,
+                        "end_date": end_text,
+                        "exchange": getattr(args, "exchange", "all"),
+                        "project_type": getattr(args, "project_type", "all"),
+                        "archive_root": resolved_archive_root,
+                        "export_root": resolved_export_root,
+                    },
+                )
+                if not str(job_id or "").strip():
+                    raise RuntimeError(f"{job_type} job did not provide job_id")
+                if job_created_callback is not None:
+                    try:
+                        job_created_callback(job_id, db_path)
+                    except Exception:
+                        pass
             # Transition job from STARTING to RUNNING. Both paths (pipeline-created
             # and pre-created jobs) must go through this transition before any
             # pipeline work begins.

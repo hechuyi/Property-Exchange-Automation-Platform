@@ -1802,6 +1802,7 @@ class AppServiceTest(unittest.TestCase):
 
     def test_service_startup_interrupts_stale_running_jobs(self) -> None:
         job_id = self.service.store.create_job("one_click", metadata={"start_date": "2026-03-22"})
+        self.service.store.start_job(job_id)
         self.service.store.append_event(
             ItemProgressEvent(
                 job_id=job_id,

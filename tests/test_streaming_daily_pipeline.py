@@ -1791,7 +1791,7 @@ class StreamingDailyPipelineJobLifecycleTest(unittest.TestCase):
             ),
             patch("peap.streaming_daily_pipeline.StreamingIngestRunner", _FakeRunner),
         ):
-            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False)
+            result = run_streaming_daily_pipeline(args, config_obj=self.config, emit_console=False, job_id=precreated_job_id)
 
         # The returned job_id should be the pre-created one
         self.assertEqual(

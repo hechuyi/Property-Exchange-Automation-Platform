@@ -505,7 +505,7 @@ class StreamingStore:
         return job_id
 
     def start_job(self, job_id: str) -> None:
-        """Transition a job from STARTING to RUNNING.
+        """Transition a job from STARTING to RUNNING and emit a startup stage event.
 
         Called by the worker thread when it actually begins pipeline execution.
         """
@@ -517,6 +517,28 @@ class StreamingStore:
             )
             if cursor.rowcount == 0:
                 raise RuntimeError(f"start_job: no job found with job_id={job_id!r}")
+
+            # Emit a startup stage event to record that pipeline execution has begun.
+            # This marks the bootstrap/thread-init phase as complete.
+            conn.execute(
+                """
+                INSERT INTO job_events (
+                    job_id, event_ts, stage, status, project_code, archive_path,
+                    error_type, error_message, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(job_id),
+                    now,
+                    "startup",
+                    "running",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "{}",
+                ),
+            )
 
     def fail_job(
         self,
@@ -658,6 +680,26 @@ class StreamingStore:
                 """,
                 (str(state), str(record_id)),
             )
+
+    def transition_record_to_failed(
+        self,
+        record_id: str,
+        *,
+        state: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Transition an existing record to a failed state.
+
+        This updates the record in-place (no sibling created) and records
+        the failure on the latest revision.
+        """
+        self.update_record_state(
+            record_id=record_id,
+            state=state,
+            error_type=error_type,
+            error_message=error_message,
+        )
 
     def interrupt_running_jobs(self, *, reason: str) -> list[str]:
         now = _utcnow()

@@ -1453,6 +1453,10 @@ class AppService:
         }
 
     def _run_mapping_refresh_job(self, *, job_id: str, record_ids: list[str], reprocess_fn=None) -> None:
+        # Ensure job is in running state (handles direct test calls that bypass wrapper)
+        current = str(self.store.get_job(job_id).get("status") or "")
+        if current == "starting":
+            self.store.start_job(job_id)
         refreshed = 0
         pending = 0
         skipped = 0
@@ -1685,6 +1689,10 @@ class AppService:
         files: list[str],
         ingest_file: Callable[[str], Dict[str, Any]] | None = None,
     ) -> None:
+        # Ensure job is in running state (handles direct test calls that bypass wrapper)
+        current = str(self.store.get_job(job_id).get("status") or "")
+        if current == "starting":
+            self.store.start_job(job_id)
         imported = 0
         pending = 0
         skipped = 0
@@ -1896,20 +1904,46 @@ class AppService:
         runner = self._build_ingest_runner(archive_root=archive_root)
         state = str(record.get("state") or "").strip()
         if state in FAILED_RECORD_STATES:
+            # Parse source_identity_json to dict for pick_reprocess_evidence_path
+            source_identity_raw = record.get("source_identity_json")
+            if isinstance(source_identity_raw, dict):
+                source_identity = source_identity_raw
+            elif isinstance(source_identity_raw, str) and source_identity_raw.strip():
+                import json as _json
+                try:
+                    source_identity = _json.loads(source_identity_raw)
+                except Exception:
+                    source_identity = {}
+            else:
+                source_identity = {}
             preferred_source = pick_reprocess_evidence_path(
                 {
                     **record,
-                    "source_identity": record.get("source_identity_json"),
+                    "source_identity": source_identity,
                 }
             )
             if not preferred_source or not os.path.isfile(preferred_source):
-                raise FileNotFoundError(f"original evidence missing for failed record: {record_id}")
+                # Source/archive lookup failure - transition to failed
+                self.store.transition_record_to_failed(
+                    record_id=record_id,
+                    state="parse_failed",
+                    error_type="source_missing",
+                    error_message=f"original evidence missing for failed record: {record_id}",
+                )
+                return {"state": "parse_failed", "record_id": record_id}
         else:
             preferred_source = str(record.get("archive_path") or "").strip()
             if not preferred_source or not os.path.isfile(preferred_source):
                 preferred_source = str(record["source_file"])
             if not preferred_source or not os.path.isfile(preferred_source):
-                raise FileNotFoundError(f"source file missing for record: {record_id}")
+                # Source/archive lookup failure - transition to failed
+                self.store.transition_record_to_failed(
+                    record_id=record_id,
+                    state="parse_failed",
+                    error_type="source_missing",
+                    error_message=f"source file missing for record: {record_id}",
+                )
+                return {"state": "parse_failed", "record_id": record_id}
         try:
             result = runner.ingest(
                 ItemSavedPayload(
@@ -1931,16 +1965,16 @@ class AppService:
                 )
             )
         except Exception as exc:
-            # Reprocess failure must transition the original record to a failed state.
-            # We update the original record's state here instead of letting the
-            # exception propagate without updating anything.
-            self.store.update_record_state(
-                record_id,
+            # Exception from runner.ingest() - transition to failed
+            self.store.transition_record_to_failed(
+                record_id=record_id,
                 state="parse_failed",
                 error_type="reprocess_failed",
                 error_message=str(exc),
             )
             raise
+        # ingest() already called upsert_failed_record() if it returned failed state.
+        # The authoritative failure record is the sibling; nothing extra needed.
         self.store.add_audit_entry("record_reprocessed", {"record_id": record_id, "result": result})
         return result
 
@@ -2113,8 +2147,27 @@ class AppService:
             response: dict[str, Any] = {"job_id": "", "db_path": self.db_path}
             ready = threading.Event()
 
+            # Pre-create job on API thread to eliminate ghost-job race.
+            # With pre-created job, API can return durable job_id even if
+            # background thread bootstrap fails before entering pipeline.
+            job_id = self.store.create_job(
+                str(job_type),
+                metadata={
+                    "start_date": str(payload.get("start_date") or ""),
+                    "end_date": str(payload.get("end_date") or ""),
+                    "exchange": _normalize_exchange_code(payload.get("exchange") or basic["default_exchange"]),
+                    "project_type": str(payload.get("project_type") or basic["default_project_type"]),
+                    "archive_root": basic["archive_root"],
+                    "export_root": basic["export_root"],
+                },
+            )
+            response["job_id"] = job_id
+            response["db_path"] = self.db_path
+            ready.set()
+
             def _job_created(job_id: str, db_path: str) -> None:
-                response["job_id"] = job_id
+                # Informational only: pre-created job already set response["job_id"].
+                # Not used for lifecycle truth.
                 response["db_path"] = db_path
                 ready.set()
 
@@ -2146,13 +2199,6 @@ class AppService:
 
             def _run() -> None:
                 try:
-                    # Transition pre-created job from STARTING to RUNNING.
-                    # The job was created on the API thread but the pipeline
-                    # has not started yet, so the worker thread calls start_job().
-                    self.store.start_job(job_id)
-                except Exception:
-                    pass  # start_job is best-effort; job may already be running via pipeline path
-                try:
                     with playwright_env(str(getattr(self.config, "PLAYWRIGHT_BROWSERS_PATH", ""))):
                         run_streaming_daily_pipeline(
                             args,
@@ -2163,6 +2209,7 @@ class AppService:
                             archive_root=basic["archive_root"],
                             export_root=basic["export_root"],
                             auto_export=auto_export,
+                            job_id=job_id,
                         )
                 except Exception as exc:
                     # Crash before entering pipeline (e.g. playwright_env init failure).
