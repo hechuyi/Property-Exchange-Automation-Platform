@@ -544,6 +544,53 @@ class StreamingStore:
                 (str(status), _json_dumps(summary or {}), now, job_id),
             )
 
+    def update_record_state(
+        self,
+        record_id: str,
+        *,
+        state: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Update just the state of an existing record.
+
+        This is used when reprocess fails to transition the original record
+        to a failed state instead of creating a new sibling failed record.
+        """
+        now = _utcnow()
+        if error_type is not None:
+            last_error_type = str(error_type)
+        else:
+            last_error_type = ""
+        if error_message is not None:
+            last_error_message = str(error_message)
+        else:
+            last_error_message = ""
+        with self._connect() as conn:
+            # First update the record
+            conn.execute(
+                """
+                UPDATE records
+                SET state = ?,
+                    last_error_type = ?,
+                    last_error_message = ?,
+                    updated_at = ?
+                WHERE record_id = ?
+                """,
+                (str(state), last_error_type, last_error_message, now, str(record_id)),
+            )
+            # Also update the latest revision
+            conn.execute(
+                """
+                UPDATE record_revisions
+                SET state = ?
+                WHERE revision_id = (
+                    SELECT latest_revision_id FROM records WHERE record_id = ?
+                )
+                """,
+                (str(state), str(record_id)),
+            )
+
     def interrupt_running_jobs(self, *, reason: str) -> list[str]:
         now = _utcnow()
         interrupted: list[str] = []
