@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime as _REAL_DATETIME
 from unittest.mock import patch
 
+from peap.export_projection import ExportProjectionError
 from peap.streaming_export import record_to_export_payload, run_ready_export
 from peap.streaming_models import ExportRequest, IngestedRecord
 from peap.streaming_store import StreamingStore
@@ -37,6 +38,34 @@ class StreamingExportTest(unittest.TestCase):
                     "挂牌开始日期": "2026-03-21",
                 },
                 postprocess_payload={"项目编号": "G32025SH1000194", "项目名称": "测试项目", "项目类型": "股权转让"},
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000194",
+                        "project_name": "测试项目",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "上海测试公司",
+                        "source_type": "国资",
+                        "group_name": "上海电气集团",
+                        "listing_times": 3,
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000194",
+                    "项目名称": "测试项目",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "类型": "国资",
+                    "转让方": "上海测试公司",
+                    "隶属集团": "上海电气集团",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "108.00",
+                    "挂牌次数": 3,
+                },
                 findings=[],
             )
         )
@@ -82,6 +111,28 @@ class StreamingExportTest(unittest.TestCase):
                 archive_path=f"{self.temp_dir.name}/archive/b.html",
                 parser_payload={"项目编号": "G32025SH1000999", "项目名称": "斜杠日期项目"},
                 postprocess_payload={"项目编号": "G32025SH1000999", "项目名称": "斜杠日期项目", "项目类型": "股权转让"},
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000999",
+                        "project_name": "斜杠日期项目",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-20",
+                        "price": "88.00",
+                        "seller": "测试转让方",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000999",
+                    "项目名称": "斜杠日期项目",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-20",
+                    "挂牌价格": "88.00",
+                    "转让方": "测试转让方",
+                },
                 findings=[],
             )
         )
@@ -202,6 +253,9 @@ class StreamingExportTest(unittest.TestCase):
                         "project_code": "G32025SH1000998",
                         "project_name": "规范化项目名",
                         "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
                         "seller": "规范化卖方",
                     },
                 },
@@ -209,6 +263,9 @@ class StreamingExportTest(unittest.TestCase):
                     "项目编号": "G32025SH1000998",
                     "项目名称": "规范化项目名",
                     "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "108.00",
                     "转让方": "规范化卖方",
                 },
                 findings=[],
@@ -239,6 +296,13 @@ class StreamingExportTest(unittest.TestCase):
                 "project_name": "测试项目",
                 "project_type": "股权转让",
                 "exchange": "shanghai",
+                "canonical_projection": {
+                    "项目编号": "G32025SH1000194",
+                    "项目名称": "测试项目",
+                    "项目类型": "股权转让",
+                    "挂牌价格": "108.00",
+                    "转让方": "上海测试公司",
+                },
                 "parser_payload": {
                     "项目编号": "G32025SH1000194",
                     "项目名称": "测试项目",
@@ -266,6 +330,16 @@ class StreamingExportTest(unittest.TestCase):
                 "project_name": "成交样例项目",
                 "project_type": "股权转让",
                 "exchange": "北交所",
+                "canonical_projection": {
+                    "交易所": "北交所",
+                    "项目编号": "GR20260001",
+                    "项目名称": "成交样例项目",
+                    "交易方式": "网络竞价",
+                    "受让方名称": "样例受让方",
+                    "转让标的评估值": "88.00",
+                    "成交金额": "108.00",
+                    "成交日期": "2026/03/01",
+                },
                 "parser_payload": {
                     "交易所": "北交所",
                     "项目编号": "GR20260001",
@@ -309,6 +383,28 @@ class StreamingExportTest(unittest.TestCase):
                     "项目编号": "G32025SH1000195",
                     "项目名称": "测试项目二",
                     "项目类型": "股权转让",
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000195",
+                        "project_name": "测试项目二",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "66.00",
+                        "seller": "测试卖方二",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000195",
+                    "项目名称": "测试项目二",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "66.00",
+                    "转让方": "测试卖方二",
                 },
                 findings=[],
             )
@@ -505,25 +601,8 @@ class StreamingExportRegressionTest(unittest.TestCase):
         def fake_writer(file_path: str, rows: list[dict]) -> None:
             captured_rows.extend(rows)
 
-        run_ready_export(store, request, writer=fake_writer)
-
-        # Export must NOT fall back to raw payload merge
-        exported_row = next(r for r in captured_rows if r.get("项目编号") == "G32025SH1000999")
-
-        # The project_name should be from canonical_projection, NOT parser_payload or postprocess_payload
-        self.assertEqual(
-            exported_row["项目名称"],
-            "规范化名称",
-            "Export must use canonical_projection, not fall back to raw payload merge"
-        )
-
-        # If price is missing from canonical_projection, export should fail or use PipelineFailure
-        # It must NOT silently merge from parser_payload
-        self.assertNotIn(
-            "挂牌价格",
-            exported_row,
-            "streaming_export fell back to raw payload merge when canonical_projection was incomplete"
-        )
+        with self.assertRaises(ExportProjectionError):
+            run_ready_export(store, request, writer=fake_writer)
 
     def test_assemble_normalize_export_preserves_required_canonical_fields(self) -> None:
         """Regression: assemble -> normalize -> export must preserve required canonical fields.

@@ -51,7 +51,7 @@ def _default_parse_file(file_path: str) -> Dict[str, Any]:
     payload["项目编号"] = parsed.project_code
     payload["项目名称"] = parsed.project_name
     payload["项目类型"] = parsed.project_type
-    payload["状态"] = parsed.status
+    payload["项目状态"] = parsed.status
     payload["交易所"] = parsed.exchange
     if "类型" not in payload and parsed.standard_record.source_type:
         payload["类型"] = parsed.standard_record.source_type
@@ -101,6 +101,9 @@ def _build_canonical_record_payload(
     group_name = str(postprocess_payload.get("隶属集团") or parser_payload.get("隶属集团") or "").strip()
     status = str(postprocess_payload.get("项目状态") or parser_payload.get("项目状态") or "").strip()
     price = postprocess_payload.get("挂牌价格") or parser_payload.get("挂牌价格")
+    listing_times = postprocess_payload.get("挂牌次数")
+    if listing_times in (None, ""):
+        listing_times = parser_payload.get("挂牌次数")
     diagnostic_payload = [
         {
             "severity": str(item.severity),
@@ -126,6 +129,7 @@ def _build_canonical_record_payload(
             "seller": seller,
             "source_type": source_type,
             "group_name": group_name,
+            "listing_times": listing_times,
         },
         "field_provenance": {},
         "diagnostics": diagnostic_payload,

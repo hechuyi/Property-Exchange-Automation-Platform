@@ -85,7 +85,7 @@ def _business_object(results: tuple[PageParseResult, ...]) -> dict[str, object]:
     project_name = next((value for value in (_project_name(result) for result in results) if value), "")
     # Extract business fields from facts
     project_type = next((value for value in (_fact_field(r, "project_type", "项目类型") for r in results) if value), "")
-    status = next((value for value in (_fact_field(r, "status", "状态") for r in results) if value), "")
+    status = next((value for value in (_fact_field(r, "status", "项目状态") for r in results) if value), "")
     start_date = next((value for value in (_fact_field(r, "start_date", "listing_date", "挂牌日期", "开始日期") for r in results) if value), "")
     price = next((value for value in (_fact_field(r, "price", "价格", "挂牌价格") for r in results) if value), "")
     seller = next((value for value in (_fact_field(r, "seller", "转让方", "融资方") for r in results) if value), "")

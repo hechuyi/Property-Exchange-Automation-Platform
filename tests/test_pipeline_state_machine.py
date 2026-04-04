@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
+from peap.export_projection import ExportProjectionError
 from peap.streaming_export import record_to_export_payload, run_ready_export
 from peap.streaming_models import (
     ExportRequest,
@@ -89,17 +90,19 @@ class PipelineStateMachineContractsTest(unittest.TestCase):
             "project_name": "测试项目",
             "project_type": "股权转让",
             "exchange": "shanghai",
-            "canonical_record": {
-                "canonical_fields": {
-                    "project_code": "G32025SH1000194",
-                    "project_name": "测试项目",
-                    "project_type": "股权转让",
-                    "status": "listed",
-                    "start_date": "2026-03-21",
-                    "price": "108.00",
-                    "seller": "上海测试公司",
-                }
-            },
+                "canonical_record": {
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000194",
+                        "project_name": "测试项目",
+                        "project_type": "股权转让",
+                        "status": "listed",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "上海测试公司",
+                        "source_type": "国资",
+                        "group_name": "上海电气集团",
+                    }
+                },
             "canonical_projection": {
                 "项目编号": "G32025SH1000194",
                 "项目名称": "测试项目",
@@ -118,9 +121,9 @@ class PipelineStateMachineContractsTest(unittest.TestCase):
 
         payload = record_to_export_payload(record)
 
-        # status must be preserved - currently may not be in projection
-        # The regression is that canonical_projection may not include status
-        self.assertIn("status", payload)
+        # status must be preserved in the export projection payload
+        self.assertIn("项目状态", payload)
+        self.assertEqual(payload["项目状态"], "listed")
 
     def test_assemble_normalize_export_preserves_start_date(self) -> None:
         """Regression: assemble -> normalize -> export projection must preserve start_date.
@@ -297,32 +300,8 @@ class PipelineStateMachineContractsTest(unittest.TestCase):
                 mode="rebuild",
                 output_dir=f"{tmp_dir}/exports",
             )
-            captured_rows = []
-
-            def fake_writer(file_path: str, rows: list[dict]) -> None:
-                captured_rows.extend(rows)
-
-            run_ready_export(store, request, writer=fake_writer)
-
-            # Export must NOT fall back to raw payload merge
-            # The project_name should be from canonical_projection, NOT parser_payload or postprocess_payload
-            exported_row = next(r for r in captured_rows if r.get("项目编号") == "G32025SH1000999")
-
-            # The regression is that when canonical_projection is incomplete,
-            # export currently falls back to merging raw payloads instead of failing
-            # This assertion checks that we get ONLY canonical data
-            self.assertEqual(exported_row["项目名称"], "规范化名称")
-
-            # If price is missing from canonical_projection, export should fail or use PipelineFailure
-            # It must NOT silently merge from parser_payload
-            # Currently this test documents the regression
-            if "挂牌价格" not in exported_row:
-                # This is the regression - price should be required in canonical_projection
-                # or the export should fail with a PipelineFailure
-                self.fail(
-                    "streaming_export fell back to raw payload merge when canonical_projection was incomplete. "
-                    "Export must use only canonical_projection data."
-                )
+            with self.assertRaises(ExportProjectionError):
+                run_ready_export(store, request, writer=lambda *_args, **_kwargs: None)
 
 
 class RecordStateContractsTest(unittest.TestCase):

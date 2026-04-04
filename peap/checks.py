@@ -205,7 +205,7 @@ def _check_standard_mapping_layer() -> CheckResult:
         "项目编号": "G32026BJ1000001",
         "项目名称": "样例项目",
         "项目类型": "股权转让",
-        "状态": "挂牌",
+        "项目状态": "挂牌",
         "挂牌开始日期": "2026/02/24",
         "挂牌截止日期": "2026/03/24",
         "近一年净利润": "1.23",
@@ -229,7 +229,7 @@ def _check_standard_mapping_layer() -> CheckResult:
             data=equity_sample_raw,
         )
         equity_mapped = map_standard_to_excel_payload(equity_parsed, "挂牌_股权转让.xlsx")
-        if equity_mapped.get("项目编号") != "G32026BJ1000001" or equity_mapped.get("状态") != "挂牌":
+        if equity_mapped.get("项目编号") != "G32026BJ1000001" or equity_mapped.get("项目状态") != "挂牌":
             return CheckResult("standard-mapping-layer", False, "equity output mapping returned invalid payload")
 
         public_resource_parsed = build_parsed_project(

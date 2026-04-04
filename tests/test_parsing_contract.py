@@ -646,7 +646,7 @@ class ParsingContractTest(unittest.TestCase):
         self.assertEqual(mapped["项目编号"], "P001")
         self.assertEqual(mapped["挂牌价格"], "108.00")
         self.assertEqual(mapped["挂牌次数"], 2)
-        self.assertEqual(mapped["状态"], STATUS_LISTED)
+        self.assertEqual(mapped["项目状态"], STATUS_LISTED)
 
     def test_build_standard_project_prefers_financing_amount_for_capital_projects(self) -> None:
         standard = build_standard_project(
@@ -686,6 +686,69 @@ class ParsingContractTest(unittest.TestCase):
             "上海松江交通投资运营集团有限公司(50%) 上海锦江汽车服务有限公司(50%)",
         )
         self.assertIn("多转让方未明确各转让方拟转让比例，请人工复核", parsed["备注"])
+
+
+class StatusKeyContractTest(unittest.TestCase):
+    """Tests to verify 项目状态 is the single flat status key."""
+
+    def test_map_standard_to_excel_payload_emits_项目状态_not_状态(self) -> None:
+        """Output mapping must emit 项目状态, not 状态."""
+        parsed = build_parsed_project(
+            file_path="C:\\temp\\status_key_test.html",
+            exchange="shenzhen",
+            encoding="utf-8",
+            data={
+                KEY_PROJECT_CODE: "P001",
+                "项目名称": "状态键测试项目",
+                "类型": "国资",
+                "挂牌价格": "88.00",
+                KEY_LISTING_TIMES: 1,
+                KEY_STATUS: STATUS_LISTED,
+                KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+            },
+        )
+        mapped = map_standard_to_excel_payload(parsed, "挂牌_股权转让.xlsx")
+
+        # Must emit 项目状态, NOT 状态
+        self.assertIn("项目状态", mapped, "output mapping must emit 项目状态")
+        self.assertNotIn("状态", mapped, "output mapping must NOT emit 状态")
+        self.assertEqual(mapped["项目状态"], STATUS_LISTED)
+
+    def test_standard_to_legacy_payload_emits_项目状态(self) -> None:
+        """Standard model to_legacy_payload must emit 项目状态."""
+        standard = build_standard_project({
+            KEY_PROJECT_CODE: "P002",
+            "项目名称": "legacy状态测试",
+            KEY_STATUS: STATUS_LISTED,
+        })
+        legacy = standard.to_legacy_payload()
+
+        # Must emit 项目状态, NOT 状态
+        self.assertIn("项目状态", legacy, "legacy payload must emit 项目状态")
+        self.assertNotIn("状态", legacy, "legacy payload must NOT emit 状态")
+        self.assertEqual(legacy["项目状态"], STATUS_LISTED)
+
+    def test_export_projection_emits_项目状态(self) -> None:
+        """Export projection must emit 项目状态 for status field."""
+        from peap.export_projection import project_canonical_record_to_export_payload
+
+        canonical = {
+            "canonical_fields": {
+                "project_code": "P003",
+                "project_name": "导出状态测试",
+                "project_type": "股权转让",
+                "status": "挂牌中",
+                "start_date": "2026-03-21",
+                "price": "108.00",
+                "seller": "测试卖方",
+            }
+        }
+        payload, _ = project_canonical_record_to_export_payload(canonical, fail_on_missing=False)
+
+        # Must emit 项目状态, NOT 状态
+        self.assertIn("项目状态", payload, "export projection must emit 项目状态")
+        self.assertNotIn("状态", payload, "export projection must NOT emit 状态")
+        self.assertEqual(payload["项目状态"], "挂牌中")
 
 
 if __name__ == "__main__":

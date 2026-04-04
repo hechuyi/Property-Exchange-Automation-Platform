@@ -10,7 +10,7 @@ import uuid
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
-from .export_projection import project_canonical_record_to_export_payload
+from .export_projection import ExportProjectionError, project_canonical_record_to_export_payload
 from .output_contract import clone_field_candidates, detect_output_kind, get_output_columns_for_kind
 from .standard_model import build_standard_project, hydrate_standard_project
 from .streaming_models import ExportArtifact, ExportRequest, ExportRunResult
@@ -28,7 +28,7 @@ HEADER_PRIORITY = [
     "项目编号",
     "项目名称",
     "项目类型",
-    "状态",
+    "项目状态",
     "交易所",
     "类型",
     "转让方",
@@ -43,6 +43,13 @@ HEADER_PRIORITY = [
     "受让方名称",
     "备注",
 ]
+
+LISTING_REQUIRED_CANONICAL_FIELDS = frozenset(
+    {"project_code", "project_name", "project_type", "status", "start_date", "price", "seller"}
+)
+LISTING_REQUIRED_COMPAT_FIELDS = frozenset(
+    {"项目编号", "项目名称", "项目类型", "项目状态", "挂牌开始日期", "挂牌价格", "转让方"}
+)
 
 
 def _safe_suffix(value: str) -> str:
@@ -184,6 +191,38 @@ def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _ensure_exportable_payload(record: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    canonical_record = record.get("canonical_record") or {}
+    canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
+    canonical_projection = record.get("canonical_projection") or {}
+
+    if isinstance(canonical_fields, dict) and canonical_fields:
+        missing = [
+            field_name
+            for field_name in sorted(LISTING_REQUIRED_CANONICAL_FIELDS)
+            if canonical_fields.get(field_name) in (None, "")
+        ]
+        if missing:
+            raise ExportProjectionError(
+                f"incomplete canonical_record for export: missing {', '.join(missing)}"
+            )
+        return payload
+
+    if isinstance(canonical_projection, dict) and canonical_projection:
+        missing = [
+            field_name
+            for field_name in sorted(LISTING_REQUIRED_COMPAT_FIELDS)
+            if canonical_projection.get(field_name) in (None, "")
+        ]
+        if missing:
+            raise ExportProjectionError(
+                f"incomplete canonical_projection for export: missing {', '.join(missing)}"
+            )
+        return payload
+
+    raise ExportProjectionError("record is missing canonical export data")
+
+
 def _write_value_row(row: Dict[str, Any], *, kind: str) -> List[Any]:
     payload = dict(row or {})
     field_candidates = clone_field_candidates().get(kind, {})
@@ -262,7 +301,7 @@ def run_ready_export(
             continue
         if not _record_matches_keyword(record, keyword=keyword):
             continue
-        payload = record_to_export_payload(record)
+        payload = _ensure_exportable_payload(record, record_to_export_payload(record))
         previous = exported.get(record["record_id"])
         bucket = "new"
         if previous is None:

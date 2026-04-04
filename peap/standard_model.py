@@ -101,7 +101,7 @@ class StandardProject:
             "project_code": "项目编号",
             "project_name": "项目名称",
             "project_type": "项目类型",
-            "status": "状态",
+            "status": "项目状态",
             "exchange": "交易所",
             "source_type": "类型",
             "seller": "转让方",
@@ -139,7 +139,7 @@ STANDARD_ROUTING_FIELDS = frozenset({"project_type", "status", "is_pre_disclosur
 # Legacy compat keys - defined directly to avoid compat_payload dependency
 # These are the Chinese field names used in legacy output
 LEGACY_PAYLOAD_KEYS = frozenset({
-    "项目编号", "项目名称", "项目类型", "状态", "交易所", "类型", "转让方",
+    "项目编号", "项目名称", "项目类型", "项目状态", "交易所", "类型", "转让方",
     "交易方式", "受让方名称", "隶属集团", "所属行业", "所在地区", "经办人",
     "受托机构", "挂牌价格", "融资方", "融资金额", "融资金额（万）",
     "转让标的评估值", "成交金额", "挂牌开始日期", "挂牌截止日期",
