@@ -137,7 +137,6 @@ class RunnerRequestAdapterTest(unittest.TestCase):
                 task_count=1,
                 aggregate_summary={},
                 task_summaries={},
-                errors=[],
                 any_failure=False,
             )
 
@@ -179,9 +178,7 @@ class RunnerRequestAdapterTest(unittest.TestCase):
             html_root="C:\\temp\\html",
             log_dir="C:\\temp\\logs",
             log_file="C:\\temp\\logs\\parser.log",
-            parser_compat_profile="ppe_ready",
-            dual_run_compare=True,
-            compare_report_file="C:\\temp\\compare.jsonl",
+                        compare_report_file="C:\\temp\\compare.jsonl",
             compare_fields="project_name, project_id",
             no_parse_cache=True,
             parse_cache_db="C:\\temp\\parse_cache.sqlite3",
@@ -204,7 +201,6 @@ class RunnerRequestAdapterTest(unittest.TestCase):
         self.assertEqual(request.limit, 5)
         self.assertEqual(request.compare_fields, ["project_name", "project_id"])
         self.assertFalse(request.parse_cache_enabled)
-        self.assertEqual(request.compat_profile, "ppe_ready")
 
     def test_run_parser_request_injects_pipeline_settings(self) -> None:
         request = ParserRunRequest(
