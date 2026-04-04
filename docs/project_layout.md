@@ -52,6 +52,32 @@ bash scripts/bootstrap_desktop_env.sh
 - `peap/streaming_store_maintenance.py` 是 legacy store normalization 的显式入口；ordinary read paths 不再偷偷修复记录状态或 listing_date。
 - parser-layer 重构仍未纳入上述 runtime 边界，后续需要单独设计。
 
+## 解析器与流水线决策
+
+### Guangzhou 远程完成例外
+
+Guangzhou 远程完成是当前可接受的临时例外，不作为解析器纯度目标。解析器设计不以 Guangzhou 远程完成作为对标标准。
+
+### 源分类硬失败
+
+ambiguous source classification（源分类模糊）为硬失败， raises `PipelineFailure` with code `ambiguous_source_match`。
+
+### compat_profile 不是 runtime 维度
+
+`compat_profile` 不是 runtime 维度，不作为运行时解析或导出的分类依据。
+
+### 导出状态键
+
+导出使用单一状态键：`项目状态`。
+
+### Split Planning 输入约束
+
+Split planning 仅消费 normalized candidate entries（`disclosure_start` / `disclosure_end`），不接受未规范化的原始记录。
+
+### Streaming Reprocess 行为
+
+Streaming reprocess 会修改原记录状态，而非插入重复的失败记录。
+
 ## 状态机与契约模型
 
 ### 显式状态机 (RecordState)

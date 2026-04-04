@@ -22,6 +22,12 @@ Last updated: 2026-03-30
 8. legacy store 归一化已从读路径移出：`peap/streaming_store_maintenance.py` 负责显式维护，`overview()`、`list_records()`、`list_pending_mappings()`、`get_job()` 等读取路径保持无副作用；启动与 daily pipeline bootstrap 会主动运行 maintenance。
 9. `README.md`、`docs/release_gate.md`、`docs/desktop_product_runbook_2026-03-26.md`、`docs/project_layout.md` 已按当前桌面主线对齐，明确写出 `uv` / Node 前置、首次联网下载前置、repo-root 开发态耦合，以及 `docs/superpowers/` 不属于 release 文档集合。
 10. 额外发布装配脚本、附带运行时入口与已提交 `dist*` 产物已从主仓移除，主线只保留 repo-root 开发态产品路径。
+11. Guangzhou 远程完成是当前可接受的临时例外，不作为解析器纯度目标。
+12. ambiguous source classification 为硬失败， raises `PipelineFailure` with code `ambiguous_source_match`。
+13. `compat_profile` 不是 runtime 维度，不作为运行时解析或导出的分类依据。
+14. 导出使用单一状态键：`项目状态`。
+15. Split planning 仅消费 normalized candidate entries（`disclosure_start` / `disclosure_end`），不接受未规范化的原始记录。
+16. Streaming reprocess 会修改原记录状态，而非插入重复的失败记录。
 
 ## 当前阶段目标
 
