@@ -13,65 +13,6 @@ from .download_reporting import new_totals
 SPLIT_PLAN_UNRESOLVED_POLICY_SKIP = "skip_unresolved"
 
 
-@dataclass(frozen=True)
-class DownloadCandidateEntry:
-    """Normalized downloader row emitted once per candidate during list-stage.
-
-    All date fields use normalized names (disclosure_start, disclosure_end).
-    The raw source-private row is preserved in the `row` field for audit but
-    is never read by split planning or one-click execution.
-    """
-
-    project_code: str
-    project_name: str
-    page_url: str
-    row: dict[str, object]
-    disclosure_start: str | None = None
-    disclosure_end: str | None = None
-
-    @staticmethod
-    def from_dict(data: dict[str, object]) -> "DownloadCandidateEntry":
-        """Construct a normalized entry from a dict that may contain source-private keys."""
-        raw = dict(data)
-        # Extract and remove source-private date keys, map to normalized names
-        # SSE uses plksrq/gpksrq, CBEX uses disclosuretime, etc.
-        normalized = {
-            "project_code": str(raw.get("project_code") or raw.get("xmid") or raw.get("code") or "").strip(),
-            "project_name": str(raw.get("project_name") or raw.get("xmmc") or raw.get("title") or "").strip(),
-            "page_url": str(raw.get("page_url") or raw.get("url") or "").strip(),
-            "row": raw,
-        }
-        # Map source-private date keys to normalized disclosure_start
-        for src_key in ("plksrq", "PLKSRQ", "gpksrq", "GPKSRQ", "disclosuretime", "list_disclosure_start"):
-            if src_key in raw and raw[src_key]:
-                normalized["disclosure_start"] = str(raw[src_key]).strip()
-                break
-        # Map source-private date keys to normalized disclosure_end
-        for src_key in ("pljsrq", "PLJSRQ", "disclosure_end", "list_disclosure_end"):
-            if src_key in raw and raw[src_key]:
-                normalized["disclosure_end"] = str(raw[src_key]).strip()
-                break
-        return DownloadCandidateEntry(
-            project_code=normalized["project_code"],
-            project_name=normalized["project_name"],
-            page_url=normalized["page_url"],
-            row=raw,
-            disclosure_start=normalized.get("disclosure_start"),
-            disclosure_end=normalized.get("disclosure_end"),
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize to dict for storage, preserving normalized fields."""
-        return {
-            "project_code": self.project_code,
-            "project_name": self.project_name,
-            "page_url": self.page_url,
-            "disclosure_start": self.disclosure_start,
-            "disclosure_end": self.disclosure_end,
-            "row": dict(self.row),
-        }
-
-
 class TaskTypedErrorList(list[DownloadError]):
     """Explicit typed downloader error side-channel for task and run models."""
 
