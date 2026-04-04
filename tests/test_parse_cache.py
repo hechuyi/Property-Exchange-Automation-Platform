@@ -14,7 +14,7 @@ from peap.constants import (
     TYPE_EQUITY_TRANSFER,
 )
 from peap.parse_cache import ParseCacheStore
-from peap.parsing import COMPAT_PROFILE_FULL, build_parsed_project
+from peap.parsing import build_parsed_project
 
 
 class ParseCacheContractTest(unittest.TestCase):
@@ -45,10 +45,10 @@ class ParseCacheContractTest(unittest.TestCase):
                 KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
             },
         )
-        store.put(parsed, compat_profile=COMPAT_PROFILE_FULL)
+        store.put(parsed)
         store._conn.commit()
 
-        cached = store.get(html_file, compat_profile=COMPAT_PROFILE_FULL)
+        cached = store.get(html_file)
 
         self.assertIsNotNone(cached)
         self.assertEqual(cached.file_path, html_file)
@@ -95,7 +95,6 @@ class ParseCacheContractTest(unittest.TestCase):
             """
             INSERT OR REPLACE INTO parse_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 file_mtime_ns,
                 file_size,
@@ -105,11 +104,10 @@ class ParseCacheContractTest(unittest.TestCase):
                 parsed_json,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 os.path.abspath(html_file),
-                COMPAT_PROFILE_FULL,
                 "test-signature",
                 int(stat.st_mtime_ns),
                 int(stat.st_size),
@@ -122,7 +120,7 @@ class ParseCacheContractTest(unittest.TestCase):
         )
         store._conn.commit()
 
-        cached = store.get(html_file, compat_profile=COMPAT_PROFILE_FULL)
+        cached = store.get(html_file)
 
         self.assertIsNotNone(cached)
         self.assertEqual(cached.data["项目名称"], "兼容名称")
@@ -160,7 +158,6 @@ class ParseCacheContractTest(unittest.TestCase):
             """
             INSERT OR REPLACE INTO parse_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 file_mtime_ns,
                 file_size,
@@ -170,11 +167,10 @@ class ParseCacheContractTest(unittest.TestCase):
                 parsed_json,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 os.path.abspath(html_file),
-                COMPAT_PROFILE_FULL,
                 "test-signature",
                 int(stat.st_mtime_ns),
                 int(stat.st_size),
@@ -187,7 +183,7 @@ class ParseCacheContractTest(unittest.TestCase):
         )
         store._conn.commit()
 
-        cached = store.get(html_file, compat_profile=COMPAT_PROFILE_FULL)
+        cached = store.get(html_file)
 
         self.assertIsNotNone(cached)
         self.assertEqual(cached.project_code, "P004")
@@ -217,7 +213,6 @@ class ParseCacheContractTest(unittest.TestCase):
             """
             INSERT OR REPLACE INTO parse_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 file_mtime_ns,
                 file_size,
@@ -227,11 +222,10 @@ class ParseCacheContractTest(unittest.TestCase):
                 parsed_json,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 os.path.abspath(html_file),
-                COMPAT_PROFILE_FULL,
                 "test-signature",
                 int(stat.st_mtime_ns),
                 int(stat.st_size),
@@ -244,7 +238,7 @@ class ParseCacheContractTest(unittest.TestCase):
         )
         store.flush()
 
-        cached = store.get(html_file, compat_profile=COMPAT_PROFILE_FULL)
+        cached = store.get(html_file)
 
         self.assertIsNotNone(cached)
         self.assertEqual(cached.project_code, "P003")
@@ -274,7 +268,7 @@ class ParseCacheContractTest(unittest.TestCase):
             commit_interval=1,
         )
         self.addCleanup(writer.close)
-        writer.put(parsed, compat_profile=COMPAT_PROFILE_FULL)
+        writer.put(parsed)
         writer.flush()
 
         reader = ParseCacheStore(

@@ -354,39 +354,20 @@ class ParsingContractTest(unittest.TestCase):
         ) as run_subsystem:
             parsed = parse_file(file_path)
 
-        run_subsystem.assert_called_once_with(file_path, compat_profile="full")
+        run_subsystem.assert_called_once_with(file_path)
         self.assertEqual(parsed.file_path, file_path)
         self.assertEqual(parsed.exchange, "shenzhen")
         self.assertEqual(parsed.encoding, "utf-8")
         self.assertEqual(parsed.project_code, "P200")
         self.assertEqual(parsed.project_name, "子系统项目")
 
-    def test_parse_file_forwards_non_default_compat_profile_to_subsystem(self) -> None:
+    def test_parse_file_does_not_accept_compat_profile(self) -> None:
+        """parse_file no longer accepts compat_profile argument."""
         file_path = r"C:\temp\detail.html"
-        subsystem_result = SimpleNamespace(
-            exchange="shenzhen",
-            encoding="utf-8",
-            data={
-                KEY_PROJECT_CODE: "P202",
-                "项目名称": "PPE 项目",
-                KEY_STATUS: STATUS_LISTED,
-                KEY_PROJECT_TYPE: TYPE_UNKNOWN,
-            },
-            standard_payload={
-                "project_code": "P202",
-                "project_name": "PPE 项目",
-            },
-        )
 
-        with patch(
-            "peap.parsing.run_parser_subsystem",
-            return_value=subsystem_result,
-        ) as run_subsystem:
-            parsed = parse_file(file_path, compat_profile="ppe_ready")
-
-        run_subsystem.assert_called_once_with(file_path, compat_profile="ppe_ready")
-        self.assertEqual(parsed.project_code, "P202")
-        self.assertEqual(parsed.project_name, "PPE 项目")
+        # parse_file should not accept compat_profile - it's been removed
+        with self.assertRaises(TypeError):
+            parse_file(file_path, compat_profile="ppe_ready")
 
     def test_parse_file_projects_compat_payload_from_standard_record_not_raw_parser_data(self) -> None:
         file_path = r"C:\temp\detail.html"

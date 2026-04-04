@@ -126,23 +126,9 @@ def build_parsed_project(
     )
 
 
-def _resolve_compat_profile(raw: str) -> str:
-    profile = str(raw or COMPAT_PROFILE_FULL).strip().lower()
-    if profile in VALID_COMPAT_PROFILES:
-        return profile
-    raise ParseError(
-        f"invalid-compat-profile: {raw!r} (expected one of {sorted(VALID_COMPAT_PROFILES)})"
-    )
-
-
-def parse_file(
-    file_path: str,
-    *,
-    compat_profile: str = COMPAT_PROFILE_FULL,
-) -> ParsedProject:
-    compat_profile = _resolve_compat_profile(compat_profile)
+def parse_file(file_path: str) -> ParsedProject:
     try:
-        result = run_parser_subsystem(file_path, compat_profile=compat_profile)
+        result = run_parser_subsystem(file_path)
     except ParserSubsystemError as exc:
         raise ParseError(str(exc)) from exc
 
@@ -156,8 +142,6 @@ def parse_file(
 
 
 __all__ = [
-    "COMPAT_PROFILE_FULL",
-    "COMPAT_PROFILE_PPE_READY",
     "PARSED_PROJECT_CACHE_COMPAT_PAYLOAD_KEY",
     "PARSED_PROJECT_CACHE_STANDARD_RECORD_KEY",
     "ParseError",

@@ -129,7 +129,6 @@ def _can_recover_cbex_otc_page(html_text: str) -> bool:
 def run_parser_subsystem(
     file_path: str,
     *,
-    compat_profile: str = "full",
     read_text_with_fallback_override=None,
     detect_exchange_override=None,
     parser_map_override: Mapping[str, type] | None = None,

@@ -17,7 +17,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from peap.parse_cache import ParseCacheStore, build_parser_signature
-from peap.parsing import build_parsed_project, COMPAT_PROFILE_FULL
+from peap.parsing import build_parsed_project
 from peap.constants import KEY_PROJECT_CODE, KEY_PROJECT_TYPE, KEY_STATUS, STATUS_LISTED, TYPE_EQUITY_TRANSFER
 
 
@@ -251,6 +251,81 @@ class ParserMainlineContractsTest(unittest.TestCase):
                 )
 
 
+class CompatProfileDimensionTest(unittest.TestCase):
+    """Tests that compat_profile is NOT a runtime partition dimension.
+
+    These tests verify that compat_profile does not affect:
+    - Parser identity (signature)
+    - Cache namespace
+    - Compare logic
+    """
+
+    def test_compat_profile_does_not_affect_parser_signature(self) -> None:
+        """Parser signature must be identical regardless of compat_profile."""
+        from peap.pipeline import build_parser_signature
+
+        sig1 = build_parser_signature()
+        sig2 = build_parser_signature()
+
+        # Signature must be stable and not include compat_profile
+        self.assertEqual(sig1, sig2)
+
+    def test_compat_profile_does_not_affect_cache_key(self) -> None:
+        """Cache entries are shared - compat_profile no longer exists as a dimension."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            html_file = os.path.join(tmp_dir, "sample.html")
+            with open(html_file, "w", encoding="utf-8") as handle:
+                handle.write("<html></html>")
+
+            store = ParseCacheStore(
+                db_path=os.path.join(tmp_dir, "parse_cache.sqlite3"),
+                run_signature="test-signature",
+                commit_interval=1,
+            )
+            self.addCleanup(store.close)
+
+            parsed = build_parsed_project(
+                file_path=html_file,
+                exchange="shenzhen",
+                encoding="utf-8",
+                data={
+                    KEY_PROJECT_CODE: "P001",
+                    "项目名称": "测试项目",
+                    KEY_STATUS: STATUS_LISTED,
+                    KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
+                },
+            )
+
+            # Put - compat_profile no longer exists as a parameter
+            store.put(parsed)
+            store.flush()
+
+            # Get - compat_profile no longer exists as a parameter
+            cached = store.get(html_file)
+            self.assertIsNotNone(cached, "Cache must be shared (no compat_profile dimension)")
+            self.assertEqual(cached.project_code, "P001")
+
+    def test_compat_profile_does_not_affect_dual_run_compare(self) -> None:
+        """Dual-run compare has been removed - compat_profile is no longer relevant."""
+        from peap.pipeline import ParserPipeline
+
+        # Verify that dual_run_compare feature and compat_profile have been removed
+        import inspect
+        source = inspect.getsource(ParserPipeline)
+
+        # COMPAT_PROFILE constants should not appear in the pipeline module
+        self.assertNotIn(
+            "COMPAT_PROFILE_PPE_READY",
+            source,
+            "COMPAT_PROFILE_PPE_READY must not appear in pipeline.py"
+        )
+        self.assertNotIn(
+            "COMPAT_PROFILE_FULL",
+            source,
+            "COMPAT_PROFILE_FULL must not appear in pipeline.py"
+        )
+
+
 class ParseCacheRegressionTest(unittest.TestCase):
     """Additional parse cache regression tests."""
 
@@ -280,11 +355,11 @@ class ParseCacheRegressionTest(unittest.TestCase):
                     KEY_PROJECT_TYPE: TYPE_EQUITY_TRANSFER,
                 },
             )
-            store1.put(parsed, compat_profile=COMPAT_PROFILE_FULL)
+            store1.put(parsed)
             store1.flush()
 
             # Verify cache hit
-            cached = store1.get(html_file, compat_profile=COMPAT_PROFILE_FULL)
+            cached = store1.get(html_file)
             self.assertIsNotNone(cached)
 
             # New store with different signature (simulating parser_subsystem.py change)
@@ -297,7 +372,7 @@ class ParseCacheRegressionTest(unittest.TestCase):
             self.addCleanup(store2.close)
 
             # Should be a miss because signature changed
-            cached2 = store2.get(html_file, compat_profile=COMPAT_PROFILE_FULL)
+            cached2 = store2.get(html_file)
             # The regression is that this currently returns a hit when it should miss
             # because parser_subsystem.py changes aren't tracked
             self.assertIsNone(cached2)

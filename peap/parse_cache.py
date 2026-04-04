@@ -102,7 +102,6 @@ class ParseCacheStore:
             """
             CREATE TABLE IF NOT EXISTS parse_cache (
                 file_path TEXT NOT NULL,
-                compat_profile TEXT NOT NULL,
                 run_signature TEXT NOT NULL,
                 file_mtime_ns INTEGER NOT NULL,
                 file_size INTEGER NOT NULL,
@@ -111,7 +110,7 @@ class ParseCacheStore:
                 data_json TEXT NOT NULL,
                 parsed_json TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (file_path, compat_profile, run_signature)
+                PRIMARY KEY (file_path, run_signature)
             )
             """
         )
@@ -119,7 +118,6 @@ class ParseCacheStore:
             """
             CREATE TABLE IF NOT EXISTS output_cache (
                 file_path TEXT NOT NULL,
-                compat_profile TEXT NOT NULL,
                 run_signature TEXT NOT NULL,
                 target_file TEXT NOT NULL,
                 payload_hash TEXT NOT NULL,
@@ -127,7 +125,7 @@ class ParseCacheStore:
                 target_mtime_ns INTEGER NOT NULL DEFAULT -1,
                 target_size INTEGER NOT NULL DEFAULT -1,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (file_path, compat_profile, run_signature)
+                PRIMARY KEY (file_path, run_signature)
             )
             """
         )
@@ -198,7 +196,7 @@ class ParseCacheStore:
     def stats(self) -> CacheStats:
         return CacheStats(hits=self._hits, misses=self._misses, writes=self._writes)
 
-    def get(self, file_path: str, *, compat_profile: str) -> Optional[ParsedProject]:
+    def get(self, file_path: str) -> Optional[ParsedProject]:
         abs_path = os.path.abspath(file_path)
         try:
             stat = os.stat(abs_path)
@@ -210,9 +208,9 @@ class ParseCacheStore:
             """
             SELECT file_mtime_ns, file_size, exchange, encoding, data_json, parsed_json
             FROM parse_cache
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
-            (abs_path, compat_profile, self.run_signature),
+            (abs_path, self.run_signature),
         ).fetchone()
         if row is None:
             self._misses += 1
@@ -247,15 +245,15 @@ class ParseCacheStore:
         self._conn.execute(
             """
             DELETE FROM parse_cache
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
-            (abs_path, compat_profile, self.run_signature),
+            (abs_path, self.run_signature),
         )
         self._pending_writes += 1
         self._misses += 1
         return None
 
-    def put(self, parsed: ParsedProject, *, compat_profile: str) -> None:
+    def put(self, parsed: ParsedProject) -> None:
         abs_path = os.path.abspath(parsed.file_path)
         try:
             stat = os.stat(abs_path)
@@ -273,7 +271,6 @@ class ParseCacheStore:
             """
             INSERT OR REPLACE INTO parse_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 file_mtime_ns,
                 file_size,
@@ -283,11 +280,10 @@ class ParseCacheStore:
                 parsed_json,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 abs_path,
-                compat_profile,
                 self.run_signature,
                 int(stat.st_mtime_ns),
                 int(stat.st_size),
@@ -307,7 +303,6 @@ class ParseCacheStore:
         self,
         file_path: str,
         *,
-        compat_profile: str,
         target_file: str,
         payload_hash: str,
     ) -> bool:
@@ -323,9 +318,9 @@ class ParseCacheStore:
             """
             SELECT target_file, payload_hash, synced, target_mtime_ns, target_size
             FROM output_cache
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
-            (abs_path, compat_profile, self.run_signature),
+            (abs_path, self.run_signature),
         ).fetchone()
         if row is None:
             return False
@@ -342,7 +337,6 @@ class ParseCacheStore:
         self,
         file_path: str,
         *,
-        compat_profile: str,
         target_file: str,
         payload_hash: str,
     ) -> None:
@@ -359,7 +353,6 @@ class ParseCacheStore:
             """
             INSERT OR REPLACE INTO output_cache (
                 file_path,
-                compat_profile,
                 run_signature,
                 target_file,
                 payload_hash,
@@ -368,11 +361,10 @@ class ParseCacheStore:
                 target_size,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 abs_path,
-                compat_profile,
                 self.run_signature,
                 target_abs,
                 str(payload_hash),
@@ -389,7 +381,6 @@ class ParseCacheStore:
         self,
         file_paths: list[str],
         *,
-        compat_profile: str,
         target_file: str,
     ) -> None:
         if not file_paths:
@@ -407,7 +398,7 @@ class ParseCacheStore:
             """
             UPDATE output_cache
             SET synced = 1, target_mtime_ns = ?, target_size = ?, updated_at = ?
-            WHERE file_path = ? AND compat_profile = ? AND run_signature = ?
+            WHERE file_path = ? AND run_signature = ?
             """,
             [
                 (
@@ -415,7 +406,6 @@ class ParseCacheStore:
                     target_size,
                     dt.datetime.now().isoformat(timespec="seconds"),
                     path,
-                    compat_profile,
                     self.run_signature,
                 )
                 for path in normalized
