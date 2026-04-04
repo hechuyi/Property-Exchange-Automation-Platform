@@ -63,6 +63,19 @@ def entry_date(
     return None
 
 
+def _check_summary_for_typed_errors(summary: object) -> None:
+    """Raise an explicit error if the list-stage summary contains typed errors.
+
+    Split planning must not produce chunks when the list-stage scan itself
+    failed with typed errors.
+    """
+    typed_errors = getattr(summary, "typed_errors", None)
+    if isinstance(typed_errors, list) and typed_errors:
+        first_error = typed_errors[0]
+        error_msg = str(getattr(first_error, "error_message", first_error))
+        raise ValueError(f"list-stage scan failed with typed errors: {error_msg}")
+
+
 def extract_candidate_entries(
     summary: object,
     *,
@@ -307,6 +320,7 @@ def plan_auto_split_chunks(
 
     runtime = build_downloader(spec, args=args, output_root=output_root, logger=logger)
     summary = run_downloader(runtime, start_date=start.isoformat(), end_date=end.isoformat(), list_only=True)
+    _check_summary_for_typed_errors(summary)
     date_fields = candidate_date_fields(spec)
     resolved_basis = SplitPlanResolvedBasis(
         date_fields=date_fields,

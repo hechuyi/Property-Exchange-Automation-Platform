@@ -8,6 +8,7 @@ from typing import Dict, List, Type
 from peap_core.source_catalog import get_source_descriptor, list_source_descriptors
 
 from .download_capabilities import DownloadDriverCapabilities, DownloadTaskManifest
+from .download_models import DownloadCandidateEntry
 from .downloaders import (
     CbexCapitalIncreaseDownloader,
     CbexEquityTransferDownloader,

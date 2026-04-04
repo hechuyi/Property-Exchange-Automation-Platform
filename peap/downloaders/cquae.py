@@ -357,7 +357,7 @@ class ChongqingProjectDownloader:
                 continue
             seen_ids.add(project_id)
 
-            list_disclosure_start = parse_loose_date(row.get("list_disclosure_start"))
+            list_disclosure_start = parse_loose_date(row.get("disclosure_start"))
             if start or end:
                 if list_disclosure_start is None:
                     summary.skipped_by_list_date += 1
@@ -373,14 +373,14 @@ class ChongqingProjectDownloader:
                 archive_root=output_dir,
                 project_code=html_seed,
                 project_name=project_name,
-                listing_date=str(row.get("list_disclosure_start") or ""),
+                listing_date=str(row.get("disclosure_start") or ""),
             )
             resume_html_path = self._resolve_resume_html_path(
                 output_dir=output_dir,
                 project_id=project_id,
                 project_code=project_code,
                 project_name=project_name,
-                listing_date=str(row.get("list_disclosure_start") or ""),
+                listing_date=str(row.get("disclosure_start") or ""),
             )
             if self.resume and resume_html_path and is_snapshot_complete(resume_html_path):
                 summary.skipped_by_resume += 1
@@ -405,11 +405,11 @@ class ChongqingProjectDownloader:
                     "page_url": candidate.page_url,
                     "list_url": candidate.list_url,
                     "row": row_with_source,
-                    "list_disclosure_start": row.get("list_disclosure_start"),
+                    "disclosure_start": row.get("disclosure_start"),
                 }
             )
-            if row.get("list_disclosure_start"):
-                summary.candidate_dates.append(str(row["list_disclosure_start"]))
+            if row.get("disclosure_start"):
+                summary.candidate_dates.append(str(row["disclosure_start"]))
 
     def _build_prefetched_candidates(
         self,
@@ -453,7 +453,7 @@ class ChongqingProjectDownloader:
             row_raw = raw.get("row")
             row = row_raw if isinstance(row_raw, dict) else {}
             list_disclosure_start = parse_loose_date(
-                raw.get("list_disclosure_start") or row.get("list_disclosure_start")
+                raw.get("disclosure_start") or row.get("disclosure_start")
             )
             if start or end:
                 if list_disclosure_start is None:
@@ -496,7 +496,7 @@ class ChongqingProjectDownloader:
                 continue
 
             row_with_source = dict(row)
-            row_with_source["list_disclosure_start"] = (
+            row_with_source["disclosure_start"] = (
                 list_disclosure_start.isoformat() if list_disclosure_start else None
             )
             row_with_source["list_url"] = list_url
@@ -518,7 +518,7 @@ class ChongqingProjectDownloader:
                     "page_url": candidate.page_url,
                     "list_url": candidate.list_url,
                     "row": row_with_source,
-                    "list_disclosure_start": list_disclosure_start.isoformat()
+                    "disclosure_start": list_disclosure_start.isoformat()
                     if list_disclosure_start
                     else None,
                 }
@@ -589,8 +589,8 @@ class ChongqingProjectDownloader:
             "project_name": title,
             "page_url": page_url,
             "list_url": current_url,
-            "list_disclosure_start": start_match.group(1) if start_match else None,
-            "list_disclosure_end": end_match.group(1) if end_match else None,
+            "disclosure_start": start_match.group(1) if start_match else None,
+            "disclosure_end": end_match.group(1) if end_match else None,
             "list_price": raw_price,
             "list_price_value": _parse_price(raw_price),
         }
@@ -721,7 +721,7 @@ class ChongqingProjectDownloader:
             return
 
         disclosure_start = self._extract_disclosure_start_date(rendered_html)
-        list_start = parse_loose_date(candidate.row.get("list_disclosure_start"))
+        list_start = parse_loose_date(candidate.row.get("disclosure_start"))
         final_date = disclosure_start if disclosure_start is not None else list_start
         if start or end:
             if final_date is None:

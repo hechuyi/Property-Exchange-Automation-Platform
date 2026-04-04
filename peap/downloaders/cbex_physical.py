@@ -475,9 +475,9 @@ class CbexPhysicalAssetDownloader:
                 continue
             seen.add(uid)
 
-            d = parse_loose_date(entry.get("list_disclosure_start") or row.get("disclosuretime"))
-            if d and "list_disclosure_start" not in row:
-                row = {**row, "list_disclosure_start": d.isoformat()}
+            d = parse_loose_date(entry.get("disclosure_start") or row.get("disclosuretime"))
+            if d and "disclosure_start" not in row:
+                row = {**row, "disclosure_start": d.isoformat()}
             if start or end:
                 if d is None:
                     summary.skipped_by_list_date += 1
@@ -521,7 +521,7 @@ class CbexPhysicalAssetDownloader:
                     "code": candidate.code,
                     "url": candidate.url,
                     "row": row,
-                    "list_disclosure_start": d.isoformat() if d else None,
+                    "disclosure_start": d.isoformat() if d else None,
                 }
             )
             if d is not None:
@@ -595,7 +595,7 @@ class CbexPhysicalAssetDownloader:
                     "code": candidate.code,
                     "url": candidate.url,
                     "row": row_with_source,
-                    "list_disclosure_start": d.isoformat() if d else None,
+                    "disclosure_start": d.isoformat() if d else None,
                 }
             )
             if d is not None:
@@ -646,7 +646,7 @@ class CbexPhysicalAssetDownloader:
 
         ds = self._extract_disclosure_start_date(html)
         list_ds = parse_loose_date(
-            candidate.row.get("list_disclosure_start")
+            candidate.row.get("disclosure_start")
             or candidate.row.get("disclosuretime")
         )
         final_date = ds if ds is not None else list_ds

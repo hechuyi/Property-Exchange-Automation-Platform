@@ -45,6 +45,7 @@ class DownloadOneClickStageResult:
     label: str
     exit_code: int
     elapsed_sec: float
+    typed_errors: list[DownloadError] = field(default_factory=list)
     summary_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -304,6 +305,7 @@ def _collect_tasks(
             label=label,
             exit_code=2,
             elapsed_sec=elapsed,
+            typed_errors=list(typed_errors),
             summary_payload=final_summary_payload,
         )
 
@@ -324,10 +326,12 @@ def _collect_tasks(
                 "aggregate_summary": totals_to_summary_dict(totals),
             },
         )
+        typed_errors = [no_task_error]
         return [], DownloadOneClickStageResult(
             label=label,
             exit_code=2,
             elapsed_sec=elapsed,
+            typed_errors=typed_errors,
             summary_payload=summary_payload,
         )
 
@@ -486,6 +490,7 @@ def _collect_tasks(
         label=label,
         exit_code=1 if typed_errors else 0,
         elapsed_sec=elapsed,
+        typed_errors=list(typed_errors),
         summary_payload=final_summary_payload,
     )
 
@@ -532,6 +537,7 @@ def _execute_tasks(
             label=label,
             exit_code=0,
             elapsed_sec=time.monotonic() - stage_start,
+            typed_errors=list(typed_errors),
             summary_payload=summary_payload,
         )
 
@@ -644,6 +650,7 @@ def _execute_tasks(
         label=label,
         exit_code=1 if typed_errors else 0,
         elapsed_sec=elapsed,
+        typed_errors=list(typed_errors),
         summary_payload=final_summary_payload,
     )
 
@@ -677,7 +684,7 @@ def run_download_oneclick(
             exit_code = collect_stage.exit_code
             aggregate_summary = dict(collect_stage.summary_payload.get("aggregate_summary") or {})
             task_summaries = dict(collect_stage.summary_payload.get("task_summaries") or {})
-            typed_errors = list(collect_stage.summary_payload.get("typed_errors") or [])
+            typed_errors = list(collect_stage.typed_errors)
         else:
             if sum(len(item.candidate_entries) for item in collected) <= 0:
                 aggregate_summary = dict(collect_stage.summary_payload.get("aggregate_summary") or {})
@@ -686,6 +693,7 @@ def run_download_oneclick(
                     label="Stage 2/2: No Download Needed",
                     exit_code=0,
                     elapsed_sec=0.0,
+                    typed_errors=[],
                     summary_payload={
                         "kind": "download",
                         "aggregate_summary": aggregate_summary,
@@ -717,7 +725,7 @@ def run_download_oneclick(
             exit_code = execute_stage.exit_code
             aggregate_summary = dict(execute_stage.summary_payload.get("aggregate_summary") or {})
             task_summaries = dict(execute_stage.summary_payload.get("task_summaries") or {})
-            typed_errors = list(execute_stage.summary_payload.get("typed_errors") or [])
+            typed_errors = list(execute_stage.typed_errors)
 
         duration_sec = round(time.monotonic() - run_start, 3)
         plan_file = str(request.plan_file or "")

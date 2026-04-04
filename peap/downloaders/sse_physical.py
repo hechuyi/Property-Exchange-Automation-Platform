@@ -442,7 +442,7 @@ class ShanghaiPhysicalAssetDownloader:
                             "project_code": candidate.project_code,
                             "page_url": candidate.page_url,
                             "row": row,
-                            "list_disclosure_start": list_disclosure_start.isoformat()
+                            "disclosure_start": list_disclosure_start.isoformat()
                             if list_disclosure_start
                             else None,
                         }
@@ -507,10 +507,10 @@ class ShanghaiPhysicalAssetDownloader:
             row_raw = entry.get("row")
             row = row_raw if isinstance(row_raw, dict) else {}
             list_disclosure_start = parse_loose_date(
-                entry.get("list_disclosure_start") or row.get("plksrq") or row.get("gpksrq")
+                entry.get("disclosure_start") or row.get("plksrq") or row.get("gpksrq")
             )
-            if list_disclosure_start and "list_disclosure_start" not in row:
-                row = {**row, "list_disclosure_start": list_disclosure_start.isoformat()}
+            if list_disclosure_start and "disclosure_start" not in row:
+                row = {**row, "disclosure_start": list_disclosure_start.isoformat()}
             if start or end:
                 if list_disclosure_start is None:
                     summary.skipped_by_list_date += 1
@@ -557,7 +557,7 @@ class ShanghaiPhysicalAssetDownloader:
                     "project_code": candidate.project_code,
                     "page_url": candidate.page_url,
                     "row": row,
-                    "list_disclosure_start": list_disclosure_start.isoformat()
+                    "disclosure_start": list_disclosure_start.isoformat()
                     if list_disclosure_start
                     else None,
                 }
@@ -814,7 +814,7 @@ class ShanghaiPhysicalAssetDownloader:
 
         disclosure_start = self._extract_disclosure_start_date(rendered_html)
         list_start = parse_loose_date(
-            candidate.row.get("list_disclosure_start")
+            candidate.row.get("disclosure_start")
             or candidate.row.get("plksrq")
             or candidate.row.get("gpksrq")
         )
