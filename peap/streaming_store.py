@@ -9,7 +9,7 @@ import os
 import re
 import sqlite3
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, Dict, Iterable, List
 
 from peap_core.record_identity import (
@@ -18,6 +18,7 @@ from peap_core.record_identity import (
     build_source_identity_payload,
 )
 
+from .export_projection import project_canonical_record_to_export_payload
 from .streaming_models import IngestedRecord, ItemProgressEvent
 
 SCHEMA_SQL = """
@@ -188,6 +189,26 @@ def _record_business_key(project_code: str, source_file: str) -> str:
         return code
     digest = hashlib.sha1(str(source_file or "").encode("utf-8")).hexdigest()
     return f"source:{digest}"
+
+
+def _derive_canonical_projection(canonical_record: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(canonical_record, dict) or not canonical_record:
+        return {}
+    payload, _ = project_canonical_record_to_export_payload(canonical_record, fail_on_missing=False)
+    return dict(payload)
+
+
+def _bind_ingested_record_identity(record: IngestedRecord, record_id: str) -> IngestedRecord:
+    canonical_record = dict(record.canonical_record or {})
+    if canonical_record:
+        canonical_record["record_id"] = record_id
+    canonical_projection = _derive_canonical_projection(canonical_record)
+    return replace(
+        record,
+        record_id=record_id,
+        canonical_record=canonical_record,
+        canonical_projection=canonical_projection,
+    )
 
 
 def _first_non_empty(*values: Any) -> str:
@@ -897,140 +918,285 @@ class StreamingStore:
                 updated += 1
         return updated
 
-    def normalize_required_mapping_states(self) -> Dict[str, int]:
+    def _normalize_record_payload_and_state(self, conn: sqlite3.Connection) -> tuple[int, list[tuple[str, str]]]:
+        """Phase 1: re-run normalize on normalizable records, update state.
+
+        Scans records whose state is in MAINTENANCE_NORMALIZABLE_STATES.
+        Re-runs normalize_record_payload + classify_record_state.
+        Updates records.state, record_revisions.state/postprocess_payload_json/findings_json.
+
+        Returns (updated_count, state_transitions) where state_transitions is a list of
+        (record_id, old_state) for records whose state actually changed.
+        This is needed by _reconcile_mapping_pending_backlog to correctly resolve
+        entries for records that left BACKLOG_OWNING_STATES during normalization.
+
+        禁止: 插入或解决 mapping_pending
+        """
+        from peap_core.record_state_policy import (
+            BACKLOG_OWNING_STATES,
+            MAINTENANCE_NORMALIZABLE_STATES,
+            classify_record_state,
+        )
         from .streaming_models import PostProcessFinding
         from .streaming_postprocess import normalize_record_payload
 
-        updated_records = 0
-        updated_findings = 0
-        inserted_pending = 0
-        resolved_pending = 0
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    records.record_id,
-                    records.project_code,
-                    records.state,
-                    revisions.revision_id,
-                    revisions.parser_payload_json,
-                    revisions.postprocess_payload_json,
-                    revisions.findings_json
-                FROM records
-                JOIN record_revisions AS revisions
-                  ON revisions.revision_id = records.latest_revision_id
-                WHERE records.state IN ('ready', 'pending_mapping', 'mapping_conflict', 'conflict')
-                """
-            ).fetchall()
-            open_pending_rows = conn.execute(
-                """
-                SELECT record_id
-                FROM mapping_pending
-                WHERE resolved_at = ''
-                """
-            ).fetchall()
-            open_pending = {str(row["record_id"]) for row in open_pending_rows}
+        state_values = {_s.value for _s in MAINTENANCE_NORMALIZABLE_STATES}
+        placeholders = ",".join("?" for _ in state_values)
+        rows = conn.execute(
+            f"""
+            SELECT
+                records.record_id,
+                records.project_code,
+                records.state,
+                revisions.revision_id,
+                revisions.parser_payload_json,
+                revisions.postprocess_payload_json,
+                revisions.findings_json
+            FROM records
+            JOIN record_revisions AS revisions
+              ON revisions.revision_id = records.latest_revision_id
+            WHERE records.state IN ({placeholders})
+            """,
+            list(state_values),
+        ).fetchall()
 
-            for row in rows:
-                record_id = str(row["record_id"])
-                parser_payload = _json_loads(row["parser_payload_json"], default={})
-                postprocess_payload = _json_loads(row["postprocess_payload_json"], default={})
-                raw_findings = _json_loads(row["findings_json"], default=[])
-                findings = [
-                    PostProcessFinding(
-                        severity=str(item.get("severity") or "warn"),
-                        type=str(item.get("type") or ""),
-                        message=str(item.get("message") or ""),
-                        evidence=dict(item.get("evidence") or {}),
-                    )
-                    for item in raw_findings
-                    if isinstance(item, dict)
-                ]
-                normalized_payload, normalized_findings = normalize_record_payload(
-                    parser_payload=parser_payload,
-                    postprocess_payload=postprocess_payload,
-                    findings=findings,
+        records_changed = 0
+        findings_changed = 0
+        state_transitions: list[tuple[str, str]] = []
+        backlog_values = {_s.value for _s in BACKLOG_OWNING_STATES}
+        for row in rows:
+            record_id = str(row["record_id"])
+            old_state = str(row["state"])
+            parser_payload = _json_loads(row["parser_payload_json"], default={})
+            postprocess_payload = _json_loads(row["postprocess_payload_json"], default={})
+            raw_findings = _json_loads(row["findings_json"], default=[])
+            findings = [
+                PostProcessFinding(
+                    severity=str(item.get("severity") or "warn"),
+                    type=str(item.get("type") or ""),
+                    message=str(item.get("message") or ""),
+                    evidence=dict(item.get("evidence") or {}),
                 )
-                finding_types = {str(item.type or "") for item in normalized_findings}
-                if "mapping_conflict" in finding_types:
-                    new_state = "mapping_conflict"
-                elif {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"} & finding_types:
-                    new_state = "pending_mapping"
-                else:
-                    new_state = "ready"
-                new_findings_json = _json_dumps([asdict(item) for item in normalized_findings])
-                new_payload_json = _json_dumps(normalized_payload)
+                for item in raw_findings
+                if isinstance(item, dict)
+            ]
+            normalized_payload, normalized_findings = normalize_record_payload(
+                parser_payload=parser_payload,
+                postprocess_payload=postprocess_payload,
+                findings=findings,
+            )
+            new_state = classify_record_state(normalized_findings)
+            new_findings_json = _json_dumps([asdict(item) for item in normalized_findings])
+            new_payload_json = _json_dumps(normalized_payload)
 
-                if row["state"] != new_state:
-                    conn.execute(
-                        """
-                        UPDATE records
-                        SET state = ?
-                        WHERE record_id = ?
-                        """,
-                        (new_state, record_id),
-                    )
-                    conn.execute(
-                        """
-                        UPDATE record_revisions
-                        SET state = ?
-                        WHERE revision_id = ?
-                        """,
-                        (new_state, int(row["revision_id"])),
-                    )
-                    updated_records += 1
+            if old_state != new_state.value:
+                conn.execute(
+                    "UPDATE records SET state = ? WHERE record_id = ?",
+                    (new_state.value, record_id),
+                )
+                conn.execute(
+                    "UPDATE record_revisions SET state = ? WHERE revision_id = ?",
+                    (new_state.value, int(row["revision_id"])),
+                )
+                records_changed += 1
+                # Track transitions that left BACKLOG_OWNING_STATES
+                if old_state in backlog_values and new_state.value not in backlog_values:
+                    state_transitions.append((record_id, old_state))
 
-                if (
-                    str(row["postprocess_payload_json"] or "") != new_payload_json
-                    or str(row["findings_json"] or "") != new_findings_json
-                ):
-                    conn.execute(
-                        """
-                        UPDATE record_revisions
-                        SET postprocess_payload_json = ?,
-                            findings_json = ?,
-                            state = ?
-                        WHERE revision_id = ?
-                        """,
-                        (new_payload_json, new_findings_json, new_state, int(row["revision_id"])),
-                    )
-                    updated_findings += 1
+            if (
+                str(row["postprocess_payload_json"] or "") != new_payload_json
+                or str(row["findings_json"] or "") != new_findings_json
+            ):
+                conn.execute(
+                    """
+                    UPDATE record_revisions
+                    SET postprocess_payload_json = ?,
+                        findings_json = ?,
+                        state = ?
+                    WHERE revision_id = ?
+                    """,
+                    (new_payload_json, new_findings_json, new_state.value, int(row["revision_id"])),
+                )
+                findings_changed += 1
 
-                if new_state in {"pending_mapping", "mapping_conflict"} and record_id not in open_pending:
+        return records_changed, findings_changed, state_transitions
+
+    def _sync_mapping_pending_for_record(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        record_id: str,
+        revision_id: int,
+        project_code: str,
+        payload: Dict[str, Any],
+        state: str,
+    ) -> None:
+        """Phase 2a: maintain single-record mapping_pending backlog.
+
+        Called by ingest after successful upsert, and by backlog reconciler.
+        根据 state_requires_mapping_pending(state) 决定插入或解决。
+        """
+        from peap_core.record_state_policy import state_requires_mapping_pending
+
+        if state_requires_mapping_pending(state):
+            existing = conn.execute(
+                "SELECT pending_id FROM mapping_pending WHERE record_id = ? AND resolved_at = ''",
+                (str(record_id),),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE mapping_pending
+                    SET revision_id = ?, project_code = ?, payload_json = ?, created_at = ?
+                    WHERE pending_id = ?
+                    """,
+                    (int(revision_id), str(project_code or ""), _json_dumps(payload), _utcnow(), int(existing["pending_id"])),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO mapping_pending (record_id, revision_id, project_code, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (str(record_id), int(revision_id), str(project_code or ""), _json_dumps(payload), _utcnow()),
+                )
+        else:
+            conn.execute(
+                "UPDATE mapping_pending SET resolved_at = ? WHERE record_id = ? AND resolved_at = ''",
+                (_utcnow(), str(record_id)),
+            )
+
+    def _reconcile_mapping_pending_backlog(
+        self, conn: sqlite3.Connection, *, state_transitions: list[tuple[str, str]] | None = None
+    ) -> tuple[int, int]:
+        """Phase 2b: bidirectional reconciliation of mapping_pending backlog.
+
+        双向对账:
+        - resolve stale: open row exists but record is no longer in BACKLOG_OWNING_STATES
+          (handles both DB-state-based resolution AND transitions from phase 1)
+        - insert missing: record in BACKLOG_OWNING_STATES without open row
+
+        state_transitions: list of (record_id, old_state) from phase 1 normalization.
+        Records that left BACKLOG_OWNING_STATES during normalization get their
+        pending entries resolved here even if the DB state was already updated.
+
+        Returns (resolved_count, inserted_count).
+        """
+        from peap_core.record_state_policy import (
+            BACKLOG_OWNING_STATES,
+            state_requires_mapping_pending,
+        )
+
+        backlog_states = {_s.value for _s in BACKLOG_OWNING_STATES}
+        backlog_placeholders = ",".join("?" for _ in backlog_states)
+
+        resolved_count = 0
+
+        # Resolve based on phase-1 state transitions (records that left backlog states)
+        if state_transitions:
+            for record_id, _ in state_transitions:
+                rows = conn.execute(
+                    "SELECT pending_id FROM mapping_pending WHERE record_id = ? AND resolved_at = ''",
+                    (record_id,),
+                ).fetchall()
+                for row in rows:
                     conn.execute(
-                        """
-                        INSERT INTO mapping_pending (
-                            record_id, revision_id, project_code, payload_json, created_at
-                        ) VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            record_id,
-                            int(row["revision_id"]),
-                            str(row["project_code"] or ""),
-                            new_payload_json,
-                            _utcnow(),
-                        ),
+                        "UPDATE mapping_pending SET resolved_at = ? WHERE pending_id = ?",
+                        (_utcnow(), int(row["pending_id"])),
                     )
-                    open_pending.add(record_id)
-                    inserted_pending += 1
-                if new_state not in {"pending_mapping", "mapping_conflict"} and record_id in open_pending:
-                    conn.execute(
-                        """
-                        UPDATE mapping_pending
-                        SET resolved_at = ?
-                        WHERE record_id = ? AND resolved_at = ''
-                        """,
-                        (_utcnow(), record_id),
-                    )
-                    open_pending.remove(record_id)
-                    resolved_pending += 1
+                    resolved_count += 1
+
+        # Resolve stale: open row but record's current state is not backlog-owning
+        stale_rows = conn.execute(
+            f"""
+            SELECT mp.pending_id, mp.record_id, r.state
+            FROM mapping_pending mp
+            JOIN records r ON r.record_id = mp.record_id
+            WHERE mp.resolved_at = '' AND r.state NOT IN ({backlog_placeholders})
+            """,
+            list(backlog_states),
+        ).fetchall()
+        for row in stale_rows:
+            conn.execute(
+                "UPDATE mapping_pending SET resolved_at = ? WHERE pending_id = ?",
+                (_utcnow(), int(row["pending_id"])),
+            )
+            resolved_count += 1
+
+        # insert missing
+        missing_rows = conn.execute(
+            f"""
+            SELECT r.record_id, r.latest_revision_id, r.project_code,
+                   revisions.postprocess_payload_json, r.state
+            FROM records r
+            JOIN record_revisions revisions ON revisions.revision_id = r.latest_revision_id
+            WHERE r.state IN ({backlog_placeholders})
+              AND r.record_id NOT IN (
+                  SELECT record_id FROM mapping_pending WHERE resolved_at = ''
+              )
+            """,
+            list(backlog_states),
+        ).fetchall()
+        inserted_count = 0
+        for row in missing_rows:
+            if state_requires_mapping_pending(row["state"]):
+                conn.execute(
+                    """
+                    INSERT INTO mapping_pending (record_id, revision_id, project_code, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["record_id"],
+                        row["latest_revision_id"],
+                        str(row["project_code"] or ""),
+                        row["postprocess_payload_json"],
+                        _utcnow(),
+                    ),
+                )
+                inserted_count += 1
+
+        return resolved_count, inserted_count
+
+    def normalize_required_mapping_states(self) -> Dict[str, int]:
+        """Single-transaction orchestration: phase1 (normalize) + phase2 (reconcile).
+
+        Returns aggregated stats from both phases.
+        """
+        with self._connect() as conn:
+            records_changed, findings_changed, state_transitions = self._normalize_record_payload_and_state(conn)
+            resolved_pending, inserted_pending = self._reconcile_mapping_pending_backlog(
+                conn, state_transitions=state_transitions
+            )
 
         return {
-            "records": updated_records,
-            "revisions": updated_findings,
+            "records": records_changed,
+            "revisions": findings_changed,
             "pending_inserted": inserted_pending,
             "pending_resolved": resolved_pending,
         }
+
+    def sync_mapping_pending_for_record(
+        self,
+        *,
+        record_id: str,
+        revision_id: int,
+        project_code: str,
+        payload: Dict[str, Any],
+        state: str,
+    ) -> None:
+        """Single synchronous entry point for mapping_pending sync.
+
+        Called by ingest after successful upsert.
+        """
+        with self._connect() as conn:
+            self._sync_mapping_pending_for_record(
+                conn,
+                record_id=record_id,
+                revision_id=revision_id,
+                project_code=project_code,
+                payload=payload,
+                state=state,
+            )
 
     def set_setting(self, key: str, value: Dict[str, Any]) -> None:
         now = _utcnow()
@@ -1201,6 +1367,8 @@ class StreamingStore:
                 (business_key,),
             ).fetchone()
             record_id = existing["record_id"] if existing is not None else record.record_id or uuid.uuid4().hex
+            record = _bind_ingested_record_identity(record, record_id)
+            canonical_projection = record.canonical_projection
             latest_revision_id = existing["latest_revision_id"] if existing is not None else None
             if existing is None:
                 conn.execute(
@@ -1260,7 +1428,7 @@ class StreamingStore:
                         _json_dumps(record.parser_payload),
                         _json_dumps(record.postprocess_payload),
                         _json_dumps(record.canonical_record),
-                        _json_dumps(record.canonical_projection),
+                        _json_dumps(canonical_projection),
                         _json_dumps(findings_json),
                         record.state,
                         record.source_file,
@@ -1285,7 +1453,7 @@ class StreamingStore:
                         _json_dumps(record.parser_payload),
                         _json_dumps(record.postprocess_payload),
                         _json_dumps(record.canonical_record),
-                        _json_dumps(record.canonical_projection),
+                        _json_dumps(canonical_projection),
                         _json_dumps(findings_json),
                         record.state,
                         record.source_file,

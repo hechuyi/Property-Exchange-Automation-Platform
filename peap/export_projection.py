@@ -15,6 +15,8 @@ from peap_core import CanonicalRecord
 from peap_core.error_contracts import PipelineFailure
 from peap.streaming_models import PostProcessFinding
 
+from .output_contract import clone_output_columns
+
 
 # Required canonical fields that must be preserved through the chain
 REQUIRED_EXPORT_FIELDS = frozenset({
@@ -42,6 +44,13 @@ CANONICAL_TO_COMPAT = {
     "start_date": "挂牌开始日期",
     "price": "挂牌价格",
 }
+
+EXPORT_EXTRA_FIELDS = frozenset(
+    column_name
+    for columns in clone_output_columns().values()
+    for column_name in columns
+    if column_name != "ID" and column_name not in set(CANONICAL_TO_COMPAT.values())
+)
 
 
 class ExportProjectionError(Exception):
@@ -82,14 +91,19 @@ def project_canonical_record_to_export_payload(
     findings: list[PostProcessFinding] = []
 
     # Extract canonical fields
+    export_extras: Dict[str, Any] = {}
     if isinstance(canonical, CanonicalRecord):
         canonical_fields = dict(canonical.canonical_fields)
+        export_extras = dict(canonical.export_extras)
     elif isinstance(canonical, dict):
         nested = canonical.get("canonical_fields")
         if isinstance(nested, dict):
             canonical_fields = dict(nested)
         else:
             canonical_fields = dict(canonical)
+        nested_extras = canonical.get("export_extras")
+        if isinstance(nested_extras, dict):
+            export_extras = dict(nested_extras)
     else:
         raise ExportProjectionError(f"Expected CanonicalRecord or dict, got {type(canonical)}")
 
@@ -126,6 +140,12 @@ def project_canonical_record_to_export_payload(
         value = canonical_fields.get(canonical_key)
         if value is not None and str(value).strip() != "":
             export_payload[compat_key] = value
+    for field_name in sorted(EXPORT_EXTRA_FIELDS):
+        if field_name in export_payload:
+            continue
+        value = export_extras.get(field_name)
+        if value is not None and str(value).strip() != "":
+            export_payload[field_name] = value
 
     return export_payload, tuple(findings)
 
@@ -133,6 +153,7 @@ def project_canonical_record_to_export_payload(
 __all__ = [
     "REQUIRED_EXPORT_FIELDS",
     "CANONICAL_TO_COMPAT",
+    "EXPORT_EXTRA_FIELDS",
     "ExportProjectionError",
     "project_canonical_record_to_export_payload",
 ]

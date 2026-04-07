@@ -47,9 +47,6 @@ HEADER_PRIORITY = [
 LISTING_REQUIRED_CANONICAL_FIELDS = frozenset(
     {"project_code", "project_name", "project_type", "status", "start_date", "price", "seller"}
 )
-LISTING_REQUIRED_COMPAT_FIELDS = frozenset(
-    {"项目编号", "项目名称", "项目类型", "项目状态", "挂牌开始日期", "挂牌价格", "转让方"}
-)
 
 
 def _safe_suffix(value: str) -> str:
@@ -62,8 +59,16 @@ def _normalize_export_mode(raw_value: str) -> str:
     return text or "incremental"
 
 
+def _normalize_requested_state(raw_value: str) -> str:
+    return str(raw_value or "all").strip().lower() or "all"
+
+
+def _normalize_keyword(raw_value: str) -> str:
+    return str(raw_value or "").strip().lower()
+
+
 def _record_matches_keyword(record: Dict[str, Any], *, keyword: str) -> bool:
-    normalized_keyword = str(keyword or "").strip().lower()
+    normalized_keyword = _normalize_keyword(keyword)
     if not normalized_keyword:
         return True
     payload = record_to_export_payload(record)
@@ -83,8 +88,8 @@ def _record_matches_keyword(record: Dict[str, Any], *, keyword: str) -> bool:
 
 def _default_cursor_key(request: ExportRequest) -> str:
     mode = _normalize_export_mode(request.mode)
-    requested_state = str(getattr(request, "requested_state", "all") or "all").strip().lower()
-    keyword = str(getattr(request, "keyword", "") or "").strip().lower()
+    requested_state = _normalize_requested_state(request.requested_state)
+    keyword = _normalize_keyword(request.keyword)
     seed = "|".join(
         [
             mode,
@@ -98,6 +103,47 @@ def _default_cursor_key(request: ExportRequest) -> str:
     )
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
     return f"export:{digest}"
+
+
+def _iter_records_in_export_scope(
+    store: StreamingStore,
+    request: ExportRequest,
+    *,
+    include_all_states: bool,
+) -> List[Dict[str, Any]]:
+    record_family = str(request.record_family or "listing").strip() or "listing"
+    requested_state = _normalize_requested_state(request.requested_state)
+    keyword = _normalize_keyword(request.keyword)
+    business_types = list(request.business_types or BUSINESS_TYPE_LABELS.keys())
+    records = store.iter_latest_records(
+        states=None if include_all_states else ["ready"],
+        date_from=request.date_from,
+        date_to=request.date_to,
+        record_family=record_family,
+    )
+
+    scoped: List[Dict[str, Any]] = []
+    for record in records:
+        record_state = str(record.get("state") or "").strip().lower()
+        if requested_state not in {"", "all"} and record_state != requested_state:
+            continue
+        business_type = str(record.get("project_type") or "").strip()
+        if business_types and business_type not in business_types:
+            continue
+        if not _record_matches_keyword(record, keyword=keyword):
+            continue
+        scoped.append(record)
+    return scoped
+
+
+def count_records_in_export_scope_by_state(store: StreamingStore, request: ExportRequest) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for record in _iter_records_in_export_scope(store, request, include_all_states=True):
+        state = str(record.get("state") or "").strip()
+        if not state:
+            continue
+        counts[state] = counts.get(state, 0) + 1
+    return counts
 
 
 def _listing_date(payload: Dict[str, Any]) -> str:
@@ -118,70 +164,27 @@ def ordered_export_headers(rows: Iterable[Dict[str, Any]]) -> List[str]:
     return ordered
 
 
-def _canonical_projection_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Build export payload from canonical record only - no raw payload fallback.
-
-    Uses export_projection module to produce a canonical export payload.
-    """
-    # Get canonical_record for filling in missing fields
-    canonical_record = record.get("canonical_record") or {}
-
-    if canonical_record:
-        # Use export_projection module - returns (payload, findings)
-        payload, _ = project_canonical_record_to_export_payload(
-            canonical_record,
-            fail_on_missing=False,
-        )
-        return payload
-
-    # Fall back to canonical_projection if no canonical_record
-    canonical_projection = record.get("canonical_projection") or {}
-    if canonical_projection:
-        return dict(canonical_projection)
-
-    return {}
-
-
 def record_to_export_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a record to export payload using canonical data only.
 
     Export must use canonical data only - NO raw payload merge fallback.
     Missing canonical fields fail through PipelineFailure or PostProcessFinding.
     """
-    # First try to use canonical_projection directly if it's complete
-    canonical_projection = record.get("canonical_projection") or {}
     canonical_record = record.get("canonical_record") or {}
     canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
 
-    # Check if we have a complete canonical record
-    if canonical_fields:
-        try:
-            # Use export_projection to build the payload - this will fail loudly
-            # if required fields are missing
-            payload, findings = project_canonical_record_to_export_payload(
-                canonical_record,
-                fail_on_missing=False,  # Return findings instead of raising
-            )
-            return payload
-        except Exception:
-            # Fall back to canonical_projection if available
-            pass
-
-    # Fall back to canonical_projection if canonical_record is not available
-    if canonical_projection:
-        payload = dict(canonical_projection)
-        return payload
-
-    # NO raw payload fallback - fail if we get here without canonical data
-    # This is the ONLY place where we would fall back to raw payload merge,
-    # and we explicitly do NOT allow it per the task requirements
-    return {}
+    if not canonical_fields:
+        return {}
+    payload, _ = project_canonical_record_to_export_payload(
+        canonical_record,
+        fail_on_missing=False,
+    )
+    return payload
 
 
 def _ensure_exportable_payload(record: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     canonical_record = record.get("canonical_record") or {}
     canonical_fields = canonical_record.get("canonical_fields") if isinstance(canonical_record, dict) else {}
-    canonical_projection = record.get("canonical_projection") or {}
 
     if isinstance(canonical_fields, dict) and canonical_fields:
         missing = [
@@ -192,18 +195,6 @@ def _ensure_exportable_payload(record: Dict[str, Any], payload: Dict[str, Any]) 
         if missing:
             raise ExportProjectionError(
                 f"incomplete canonical_record for export: missing {', '.join(missing)}"
-            )
-        return payload
-
-    if isinstance(canonical_projection, dict) and canonical_projection:
-        missing = [
-            field_name
-            for field_name in sorted(LISTING_REQUIRED_COMPAT_FIELDS)
-            if canonical_projection.get(field_name) in (None, "")
-        ]
-        if missing:
-            raise ExportProjectionError(
-                f"incomplete canonical_projection for export: missing {', '.join(missing)}"
             )
         return payload
 
@@ -255,8 +246,6 @@ def run_ready_export(
     writer = writer or _write_workbook_default
     record_family = str(request.record_family or "listing").strip() or "listing"
     mode = _normalize_export_mode(request.mode)
-    requested_state = str(getattr(request, "requested_state", "all") or "all").strip().lower()
-    keyword = str(getattr(request, "keyword", "") or "").strip().lower()
     if record_family != "listing":
         raise ValueError(f"unsupported record_family: {record_family}")
     output_dir = os.path.abspath(request.output_dir)
@@ -267,12 +256,7 @@ def run_ready_export(
     business_types = list(request.business_types or BUSINESS_TYPE_LABELS.keys())
     # rebuild is a full scoped re-export; it must not inherit incremental cursor state.
     exported = {} if mode == "rebuild" else store.get_exported_revision_map(cursor_key)
-    records = store.iter_latest_records(
-        states=["ready"],
-        date_from=request.date_from,
-        date_to=request.date_to,
-        record_family=record_family,
-    )
+    records = _iter_records_in_export_scope(store, request, include_all_states=False)
 
     grouped: Dict[tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     marked_records: List[Dict[str, Any]] = []
@@ -280,14 +264,7 @@ def run_ready_export(
     changed_count = 0
 
     for record in records:
-        record_state = str(record.get("state") or "").strip().lower()
-        if requested_state not in {"", "all"} and record_state != requested_state:
-            continue
         business_type = str(record["project_type"] or "").strip()
-        if business_types and business_type not in business_types:
-            continue
-        if not _record_matches_keyword(record, keyword=keyword):
-            continue
         payload = _ensure_exportable_payload(record, record_to_export_payload(record))
         previous = exported.get(record["record_id"])
         bucket = "new"

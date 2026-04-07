@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List
 
 from peap_core.record_identity import build_source_identity_payload
+from peap_core.record_state_policy import classify_record_state
 
+from .export_projection import EXPORT_EXTRA_FIELDS
 from .io_utils import read_text_with_fallback
 from .streaming_models import IngestedRecord, ItemSavedPayload, PostProcessFinding, RecordState
 from .streaming_postprocess import (
@@ -112,6 +114,13 @@ def _build_canonical_record_payload(
         }
         for item in findings
     ]
+    export_extras: Dict[str, Any] = {}
+    for field_name in sorted(EXPORT_EXTRA_FIELDS):
+        value = postprocess_payload.get(field_name)
+        if value in (None, ""):
+            value = parser_payload.get(field_name)
+        if value not in (None, ""):
+            export_extras[field_name] = value
     return {
         "record_id": record_id,
         "record_family": str(source_identity.get("record_family") or "listing"),
@@ -130,6 +139,7 @@ def _build_canonical_record_payload(
             "group_name": group_name,
             "listing_times": listing_times,
         },
+        "export_extras": export_extras,
         "field_provenance": {},
         "diagnostics": diagnostic_payload,
         "normalizer_version": "streaming_ingest/v1",
@@ -139,20 +149,74 @@ def _build_canonical_record_payload(
     }
 
 
+def _build_canonical_projection_payload(canonical_record: Dict[str, Any]) -> Dict[str, Any]:
+    from .export_projection import project_canonical_record_to_export_payload
+
+    payload, _ = project_canonical_record_to_export_payload(canonical_record, fail_on_missing=False)
+    return dict(payload)
+
+
 def _compute_revision_hash(payload: Dict[str, Any]) -> str:
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-    if not os.path.exists(base_path):
-        return base_path, False
-    root, ext = os.path.splitext(base_path)
-    index = 1
-    while True:
-        candidate = f"{root}__conflict{index}{ext}"
-        if not os.path.exists(candidate):
-            return candidate, True
-        index += 1
+def _assemble_ingested_record(
+    *,
+    record_id: str,
+    project_code: str,
+    project_name: str,
+    project_type: str,
+    exchange: str,
+    listing_date: str,
+    state: RecordState,
+    source_file: str,
+    archive_path: str,
+    parser_payload: Dict[str, Any],
+    postprocess_payload: Dict[str, Any],
+    findings: Iterable[PostProcessFinding],
+    source_identity: Dict[str, Any],
+    record_family: str = "listing",
+) -> IngestedRecord:
+    effective_record_family = str(
+        record_family or source_identity.get("record_family") or "listing"
+    ).strip() or "listing"
+    effective_source_identity = dict(source_identity or {})
+    if not str(effective_source_identity.get("record_family") or "").strip():
+        effective_source_identity["record_family"] = effective_record_family
+    findings_list = list(findings)
+    canonical_record = _build_canonical_record_payload(
+        record_id=record_id,
+        project_code=project_code,
+        project_name=project_name,
+        project_type=project_type,
+        exchange=exchange,
+        listing_date=listing_date,
+        source_identity=effective_source_identity,
+        parser_payload=parser_payload,
+        postprocess_payload=postprocess_payload,
+        findings=findings_list,
+    )
+    canonical_projection = _build_canonical_projection_payload(canonical_record)
+    return IngestedRecord(
+        record_id=record_id,
+        revision_hash=_compute_revision_hash(postprocess_payload),
+        project_code=project_code,
+        project_name=project_name,
+        project_type=project_type,
+        exchange=exchange,
+        listing_date=listing_date,
+        state=state,
+        source_file=source_file,
+        archive_path=archive_path,
+        parser_payload=parser_payload,
+        postprocess_payload=postprocess_payload,
+        findings=findings_list,
+        record_family=effective_record_family,
+        source_identity=effective_source_identity,
+        canonical_record=canonical_record,
+        canonical_projection=canonical_projection,
+    )
 
 
 def _canonical_archive_target(
@@ -277,17 +341,6 @@ def _rewrite_archived_asset_references(*, target_file: str, source_file: str) ->
         handle.write(updated_content)
 
 
-def classify_record_state(findings: Iterable[PostProcessFinding], *, had_conflict: bool = False) -> RecordState:
-    finding_types = {str(item.type) for item in findings}
-    if "mapping_conflict" in finding_types:
-        return "mapping_conflict"
-    if {"mapping_missing", "mapping_gap", "mapping_ambiguous", "project_type_unknown"} & finding_types:
-        return "pending_mapping"
-    if had_conflict:
-        return "conflict"
-    return "ready"
-
-
 def _resolve_project_type_label(*values: Any) -> str:
     for raw_value in values:
         text = str(raw_value or "").strip()
@@ -323,6 +376,58 @@ class StreamingIngestRunner:
         self.rules_config = dict(rules_config or {})
         self.dependencies = dependencies or StreamingIngestDependencies()
         os.makedirs(self.archive_root, exist_ok=True)
+
+    def _run_postprocess_pipeline(
+        self,
+        *,
+        parser_payload: Dict[str, Any],
+        source_file: str,
+        page_url: str = "",
+        project_id: str = "",
+        project_type_hint: str = "",
+        project_type_label: str = "",
+        project_type_fallback: str = "",
+    ) -> tuple[Dict[str, Any], Dict[str, Any], List[PostProcessFinding], str]:
+        working_parser_payload = dict(parser_payload or {})
+        if page_url and not str(working_parser_payload.get("page_url") or "").strip():
+            working_parser_payload["page_url"] = page_url
+        if project_id and not str(working_parser_payload.get("project_id") or "").strip():
+            working_parser_payload["project_id"] = project_id
+
+        postprocess_payload, findings = self.dependencies.postprocess(
+            working_parser_payload,
+            source_file=source_file,
+            mapping_entries=self.store.list_mapping_entries(),
+            rules_config=self.rules_config,
+        )
+        postprocess_payload, findings = normalize_record_payload(
+            parser_payload=working_parser_payload,
+            postprocess_payload=postprocess_payload,
+            findings=findings,
+        )
+        if page_url and not str(postprocess_payload.get("page_url") or "").strip():
+            postprocess_payload["page_url"] = page_url
+        if project_id and not str(postprocess_payload.get("project_id") or "").strip():
+            postprocess_payload["project_id"] = project_id
+
+        project_type = _resolve_project_type_label(
+            postprocess_payload.get("项目类型"),
+            working_parser_payload.get("项目类型"),
+            project_type_hint,
+            project_type_label,
+            project_type_fallback,
+        )
+        if project_type and str(postprocess_payload.get("项目类型") or "").strip() != project_type:
+            postprocess_payload["项目类型"] = project_type
+            postprocess_payload, findings = normalize_record_payload(
+                parser_payload=working_parser_payload,
+                postprocess_payload=postprocess_payload,
+                findings=[finding for finding in findings if str(finding.type or "") != "project_type_unknown"],
+            )
+
+        postprocess_payload.pop("canonical_projection", None)
+
+        return working_parser_payload, postprocess_payload, list(findings), project_type
 
     def ingest(self, item: ItemSavedPayload) -> Dict[str, Any]:
         source_file = os.path.abspath(item.source_file)
@@ -374,43 +479,17 @@ class StreamingIngestRunner:
         row = row_payload if isinstance(row_payload, dict) else {}
         page_url = str(item.page_url or item.extra.get("page_url") or row.get("page_url") or "").strip()
         project_id = str(item.extra.get("project_id") or row.get("project_id") or "").strip()
-        if page_url and not str(parser_payload.get("page_url") or "").strip():
-            parser_payload["page_url"] = page_url
-        if project_id and not str(parser_payload.get("project_id") or "").strip():
-            parser_payload["project_id"] = project_id
 
         try:
-            postprocess_payload, findings = self.dependencies.postprocess(
-                parser_payload,
-                source_file=source_file,
-                mapping_entries=self.store.list_mapping_entries(),
-                rules_config=self.rules_config,
-            )
-            postprocess_payload, findings = normalize_record_payload(
+            parser_payload, postprocess_payload, findings, project_type = self._run_postprocess_pipeline(
                 parser_payload=parser_payload,
-                postprocess_payload=postprocess_payload,
-                findings=findings,
+                source_file=source_file,
+                page_url=page_url,
+                project_id=project_id,
+                project_type_hint=str(item.extra.get("project_type") or ""),
+                project_type_label=str(item.extra.get("project_type_label") or ""),
+                project_type_fallback=str(item.extra.get("project_type_fallback") or ""),
             )
-            if page_url and not str(postprocess_payload.get("page_url") or "").strip():
-                postprocess_payload["page_url"] = page_url
-            if project_id and not str(postprocess_payload.get("project_id") or "").strip():
-                postprocess_payload["project_id"] = project_id
-            project_type = _resolve_project_type_label(
-                postprocess_payload.get("项目类型"),
-                parser_payload.get("项目类型"),
-                item.extra.get("project_type"),
-                item.extra.get("project_type_label"),
-                postprocess_payload.get("项目类型"),
-                parser_payload.get("项目类型"),
-                item.extra.get("project_type_fallback"),
-            )
-            if project_type and str(postprocess_payload.get("项目类型") or "").strip() != project_type:
-                postprocess_payload["项目类型"] = project_type
-                postprocess_payload, findings = normalize_record_payload(
-                    parser_payload=parser_payload,
-                    postprocess_payload=postprocess_payload,
-                    findings=[finding for finding in findings if str(finding.type or "") != "project_type_unknown"],
-                )
         except Exception as exc:
             payload = {"source_file": source_file, "project_code": project_code, "parser_payload": parser_payload}
             result = self.store.upsert_failed_record(
@@ -471,22 +550,8 @@ class StreamingIngestRunner:
             listing_date=listing_date,
             candidate_tokens=candidate_tokens,
         )
-        canonical_record = _build_canonical_record_payload(
+        record = _assemble_ingested_record(
             record_id=uuid.uuid4().hex,
-            project_code=project_code,
-            project_name=project_name,
-            project_type=project_type,
-            exchange=exchange,
-            listing_date=listing_date,
-            source_identity=source_identity,
-            parser_payload=parser_payload,
-            postprocess_payload=postprocess_payload,
-            findings=findings,
-        )
-        canonical_projection = dict(postprocess_payload.get("canonical_projection") or {})
-        record = IngestedRecord(
-            record_id=uuid.uuid4().hex,
-            revision_hash=_compute_revision_hash(postprocess_payload),
             project_code=project_code,
             project_name=project_name,
             project_type=project_type,
@@ -497,21 +562,75 @@ class StreamingIngestRunner:
             archive_path=archive_path,
             parser_payload=parser_payload,
             postprocess_payload=postprocess_payload,
-            findings=list(findings),
+            findings=findings,
             source_identity=source_identity,
-            canonical_record=canonical_record,
-            canonical_projection=canonical_projection,
         )
         stored = self.store.upsert_record(record)
-        if state == "pending_mapping":
-            self.store.mark_mapping_pending(
-                record_id=stored["record_id"],
-                revision_id=int(stored["revision_id"]),
-                project_code=project_code,
-                payload=postprocess_payload,
-            )
-        else:
-            self.store.resolve_mapping_pending(stored["record_id"])
+        self.store.sync_mapping_pending_for_record(
+            record_id=stored["record_id"],
+            revision_id=int(stored["revision_id"]),
+            project_code=project_code,
+            payload=postprocess_payload,
+            state=state,
+        )
+        return {
+            "state": state,
+            "record_id": stored["record_id"],
+            "revision_id": int(stored["revision_id"]),
+            "changed": bool(stored["changed"]),
+            "archive_path": archive_path,
+            "project_code": project_code,
+            "project_name": project_name,
+            "project_type": project_type,
+            "listing_date": listing_date,
+            "findings": [finding.__dict__ for finding in findings],
+        }
+
+    def refresh_postprocess(self, record_id: str) -> Dict[str, Any]:
+        record = self.store.get_record(record_id)
+        parser_payload = dict(record.get("parser_payload") or {})
+        project_code = str(record.get("project_code") or parser_payload.get("项目编号") or "").strip()
+        project_name = str(record.get("project_name") or parser_payload.get("项目名称") or "").strip()
+        exchange = str(record.get("exchange") or parser_payload.get("交易所") or "").strip()
+        listing_date = str(record.get("listing_date") or _first_non_empty(parser_payload, LISTING_DATE_FIELDS) or "").strip()
+        source_file = str(record.get("source_file") or record.get("archive_path") or "").strip()
+        archive_path = str(record.get("archive_path") or source_file).strip()
+        page_url = str(parser_payload.get("page_url") or "").strip()
+        project_id = str(parser_payload.get("project_id") or "").strip()
+        source_identity = dict(record.get("source_identity_json") or {})
+
+        parser_payload, postprocess_payload, findings, project_type = self._run_postprocess_pipeline(
+            parser_payload=parser_payload,
+            source_file=source_file or archive_path,
+            page_url=page_url,
+            project_id=project_id,
+            project_type_fallback=str(record.get("project_type") or ""),
+        )
+        state = classify_record_state(findings, had_conflict=str(record.get("state") or "").strip() == "conflict")
+        refreshed_record = _assemble_ingested_record(
+            record_id=str(record.get("record_id") or record_id),
+            project_code=project_code,
+            project_name=project_name,
+            project_type=project_type,
+            exchange=exchange,
+            listing_date=listing_date,
+            state=state,
+            source_file=source_file,
+            archive_path=archive_path,
+            parser_payload=parser_payload,
+            postprocess_payload=postprocess_payload,
+            findings=findings,
+            source_identity=source_identity,
+            record_family=str(record.get("record_family") or "listing").strip() or "listing",
+        )
+        stored = self.store.upsert_record(refreshed_record)
+        self.store.sync_mapping_pending_for_record(
+            record_id=stored["record_id"],
+            revision_id=int(stored["revision_id"]),
+            project_code=project_code,
+            payload=postprocess_payload,
+            state=state,
+        )
         return {
             "state": state,
             "record_id": stored["record_id"],

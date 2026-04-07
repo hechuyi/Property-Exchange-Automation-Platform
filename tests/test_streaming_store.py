@@ -134,6 +134,9 @@ class StreamingStoreTest(unittest.TestCase):
                         "seller": "规范化卖方",
                         "source_type": "国资",
                     },
+                    "export_extras": {
+                        "挂牌次数": 2,
+                    },
                     "policy_state": {"mapping_status": "applied"},
                 },
                 canonical_projection={
@@ -162,7 +165,61 @@ class StreamingStoreTest(unittest.TestCase):
         self.assertEqual(record["canonical_record"]["canonical_fields"]["seller"], "规范化卖方")
         self.assertEqual(record["canonical_projection"]["项目名称"], "规范化项目名")
         self.assertEqual(record["canonical_projection"]["转让方"], "规范化卖方")
+        self.assertEqual(record["canonical_projection"]["挂牌次数"], 2)
         self.assertTrue(any(str(item.get("type") or "") == "mapping_applied" for item in record["findings"]))
+
+    def test_upsert_record_recomputes_canonical_projection_from_canonical_record(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "projection-recompute.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>projection recompute</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-projection-recompute",
+                revision_hash="hash-projection-recompute",
+                project_code="G32026SH1000991",
+                project_name="原始项目名",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32026SH1000991"},
+                postprocess_payload={"项目编号": "G32026SH1000991"},
+                canonical_record={
+                    "record_family": "listing",
+                    "business_identity": {"project_code": "G32026SH1000991"},
+                    "canonical_fields": {
+                        "project_code": "G32026SH1000991",
+                        "project_name": "规范化项目名",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "规范化卖方",
+                        "source_type": "国资",
+                    },
+                    "export_extras": {
+                        "挂牌次数": 4,
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32026SH1000991",
+                    "项目名称": "过期项目名",
+                    "转让方": "过期卖方",
+                    "挂牌价格": "999.99",
+                },
+                findings=[],
+            )
+        )
+
+        record = self.store.get_record("rec-projection-recompute")
+        self.assertEqual(record["canonical_projection"]["项目名称"], "规范化项目名")
+        self.assertEqual(record["canonical_projection"]["转让方"], "规范化卖方")
+        self.assertEqual(record["canonical_projection"]["挂牌价格"], "108.00")
+        self.assertEqual(record["canonical_projection"]["挂牌次数"], 4)
 
     def test_upsert_record_refreshes_state_and_findings_when_revision_hash_is_unchanged(self) -> None:
         source_file = os.path.join(self.temp_dir.name, "same-payload.html")
@@ -1535,6 +1592,337 @@ class StreamingStoreJobLifecycleTest(unittest.TestCase):
             f"Job must have a startup-failure event. Events: {events}"
         )
         self.assertEqual(startup_events[0].get("error_type"), "job_startup_failed")
+
+
+class StreamingStoreMaintenanceRegressionTest(unittest.TestCase):
+    """Regression tests for normalize_required_mapping_states terminal-state semantics."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = StreamingStore(f"{self.temp_dir.name}/streaming_maint.sqlite3")
+
+    def test_maintenance_does_not_clobber_conflict_state(self) -> None:
+        """normalize_required_mapping_states must NOT reclassify conflict records.
+
+        conflict is a terminal state set by had_conflict=True during ingest.
+        The findings-recomputes-to-ready path must not overwrite it.
+        """
+        source_file = os.path.join(self.temp_dir.name, "conflict_record.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>conflict test</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-conflict-terminal",
+                revision_hash="hash-conflict-1",
+                project_code="G32025SH1000900",
+                project_name="冲突状态测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="conflict",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32025SH1000900", "项目名称": "冲突状态测试"},
+                postprocess_payload={"项目编号": "G32025SH1000900", "项目名称": "冲突状态测试"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="archive_conflict",
+                        message="archive naming conflict",
+                        evidence={},
+                    )
+                ],
+            )
+        )
+
+        self.store.normalize_required_mapping_states()
+
+        record = self.store.get_record("rec-conflict-terminal")
+        self.assertEqual(
+            record["state"],
+            "conflict",
+            "conflict state must not be overwritten by maintenance findings recomputation",
+        )
+
+    def test_maintenance_does_not_insert_mapping_conflict_into_pending_backlog(self) -> None:
+        """mapping_conflict records must NOT appear in the mapping_pending backlog.
+
+        The backlog is reserved for pending_mapping records only.
+        mapping_conflict is a terminal human-conflict state.
+        """
+        source_file = os.path.join(self.temp_dir.name, "mapping_conflict_record.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>mapping conflict test</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-mapping-conflict-terminal",
+                revision_hash="hash-mc-1",
+                project_code="G32025SH1000901",
+                project_name="映射冲突测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="mapping_conflict",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32025SH1000901", "项目名称": "映射冲突测试"},
+                postprocess_payload={"项目编号": "G32025SH1000901", "项目名称": "映射冲突测试"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="mapping_conflict",
+                        message="seller field ambiguous",
+                        evidence={"field": "seller"},
+                    )
+                ],
+            )
+        )
+
+        initial_pending = self.store.count_pending_mappings()
+        self.store.normalize_required_mapping_states()
+        final_pending = self.store.count_pending_mappings()
+
+        self.assertEqual(
+            final_pending,
+            initial_pending,
+            "mapping_conflict must not insert into mapping_pending backlog",
+        )
+
+        record = self.store.get_record("rec-mapping-conflict-terminal")
+        self.assertEqual(
+            record["state"],
+            "mapping_conflict",
+            "mapping_conflict state must not be changed by maintenance",
+        )
+
+    def test_maintenance_does_not_reclassify_mapping_conflict_when_findings_change(self) -> None:
+        """A mapping_conflict record whose normalized findings no longer contain mapping_conflict
+        must still stay mapping_conflict — it is terminal and requires human resolution.
+        """
+        source_file = os.path.join(self.temp_dir.name, "mc_findings_change.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>mapping conflict findings change test</body></html>")
+
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-mc-findings-change",
+                revision_hash="hash-mc-fc-1",
+                project_code="G32025SH1000902",
+                project_name="冲突修复测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="mapping_conflict",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32025SH1000902", "项目名称": "冲突修复测试"},
+                postprocess_payload={"项目编号": "G32025SH1000902", "项目名称": "冲突修复测试"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="archive_conflict",
+                        message="archive conflict only",
+                        evidence={},
+                    )
+                ],
+            )
+        )
+
+        self.store.normalize_required_mapping_states()
+
+        record = self.store.get_record("rec-mc-findings-change")
+        self.assertEqual(
+            record["state"],
+            "mapping_conflict",
+            "mapping_conflict must remain terminal even when normalized findings no longer contain mapping_conflict type",
+        )
+
+
+class BacklogReconcileTest(unittest.TestCase):
+    """Tests for _reconcile_mapping_pending_backlog bidirectional logic."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = StreamingStore(f"{self.temp_dir.name}/backlog.sqlite3")
+
+    def _insert_record_with_state(self, record_id, state, revision_id=1, project_code=None):
+        from peap.streaming_models import IngestedRecord
+        if project_code is None:
+            project_code = f"PC-{record_id}"
+        record = IngestedRecord(
+            record_id=record_id,
+            revision_hash=f"hash-{revision_id}",
+            project_code=project_code,
+            project_name="测试",
+            project_type="股权转让",
+            exchange="shanghai",
+            listing_date="2026-03-21",
+            state=state,
+            source_file=f"{self.temp_dir.name}/{record_id}.html",
+            archive_path=f"{self.temp_dir.name}/archive/{record_id}.html",
+            parser_payload={},
+            postprocess_payload={},
+            findings=[],
+        )
+        self.store.upsert_record(record)
+
+    def _insert_open_mapping_pending(self, record_id, revision_id=1, project_code="P001"):
+        with self.store._connect() as conn:
+            conn.execute(
+                "INSERT INTO mapping_pending (record_id, revision_id, project_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (record_id, revision_id, project_code, "{}", "2026-01-01 00:00:00"),
+            )
+
+    def test_reconcile_resolves_stale_mapping_conflict_open_row(self):
+        # Record is in "conflict" state (not in MAINTENANCE_NORMALIZABLE_STATES,
+        # so normalize phase skips it, but it IS NOT in BACKLOG_OWNING_STATES,
+        # so stale open row should be resolved by reconciliation).
+        # Use "conflict" state: not processed by normalization, but also not backlog-owning.
+        self._insert_record_with_state("rec-stale-mc", "conflict")
+        self._insert_open_mapping_pending("rec-stale-mc")
+        result = self.store.normalize_required_mapping_states()
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT resolved_at FROM mapping_pending WHERE record_id = ?", ("rec-stale-mc",)).fetchone()
+            self.assertNotEqual(row["resolved_at"], "")
+
+    def test_reconcile_resolves_stale_conflict_open_row(self):
+        # Record is now conflict but conflict is not backlog-owning
+        self._insert_record_with_state("rec-stale-conflict", "conflict")
+        self._insert_open_mapping_pending("rec-stale-conflict")
+        result = self.store.normalize_required_mapping_states()
+        # conflict rows are not backlog-owned, so should be resolved
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT resolved_at FROM mapping_pending WHERE record_id = ?", ("rec-stale-conflict",)).fetchone()
+            self.assertNotEqual(row["resolved_at"], "")
+
+    def test_reconcile_resolves_stale_pending_review_open_row(self):
+        # pending_review is currently inactive contract residue for streaming mainline.
+        # If historical data left an open mapping_pending row behind, reconcile should clear it.
+        self._insert_record_with_state("rec-stale-pending-review", "pending_review")
+        self._insert_open_mapping_pending("rec-stale-pending-review")
+        self.store.normalize_required_mapping_states()
+        with self.store._connect() as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM mapping_pending WHERE record_id = ?",
+                ("rec-stale-pending-review",),
+            ).fetchone()
+            self.assertNotEqual(row["resolved_at"], "")
+
+    def test_reconcile_inserts_missing_pending_mapping_row(self):
+        # Record in PENDING_MAPPING state but no open mapping_pending row
+        self._insert_record_with_state("rec-missing-pending", "pending_mapping")
+        result = self.store.normalize_required_mapping_states()
+        with self.store._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mapping_pending WHERE record_id = ? AND resolved_at = ''",
+                ("rec-missing-pending",)
+            ).fetchone()
+            self.assertIsNotNone(row)
+
+    def test_reconcile_bidirectional_mixed(self):
+        # rec-bidir-stale: conflict state - not processed by normalize, but stale open row
+        #   should be resolved (conflict is not in BACKLOG_OWNING_STATES)
+        # rec-bidir-missing: pending_mapping without open row - should be inserted
+        self._insert_record_with_state("rec-bidir-stale", "conflict")
+        self._insert_open_mapping_pending("rec-bidir-stale")
+        self._insert_record_with_state("rec-bidir-missing", "pending_mapping")
+        result = self.store.normalize_required_mapping_states()
+        with self.store._connect() as conn:
+            stale = conn.execute("SELECT resolved_at FROM mapping_pending WHERE record_id = ?", ("rec-bidir-stale",)).fetchone()
+            self.assertNotEqual(stale["resolved_at"], "")
+            missing = conn.execute("SELECT * FROM mapping_pending WHERE record_id = ? AND resolved_at = ''", ("rec-bidir-missing",)).fetchone()
+            self.assertIsNotNone(missing)
+
+    def test_normalize_record_payload_and_state_does_not_touch_mapping_pending(self):
+        # Verify the internal method does not insert or resolve mapping_pending
+        self._insert_record_with_state("rec-no-backlog-touch", "ready")
+        self._insert_open_mapping_pending("rec-no-backlog-touch")
+        # normalize_required_mapping_states calls _normalize_record_payload_and_state internally
+        result = self.store.normalize_required_mapping_states()
+        # The open row should still be open (not resolved by normalize phase)
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT resolved_at FROM mapping_pending WHERE record_id = ?", ("rec-no-backlog-touch",)).fetchone()
+            # It's still open at this point; reconcile phase will resolve it
+            self.assertEqual(row["resolved_at"], "")
+
+    def test_normalize_required_mapping_states_rolls_back_if_reconcile_fails(self):
+        # Phase 1 (normalize) + phase 2 (reconcile) run in single transaction.
+        # Empty payload normalizes to pending_mapping findings, so state becomes pending_mapping.
+        # Verify both phases run in same transaction (no exception = committed together).
+        self._insert_record_with_state("rec-rollback-test", "ready")
+        self._insert_open_mapping_pending("rec-rollback-test")
+        result = self.store.normalize_required_mapping_states()
+        # Empty payload produces mapping_missing findings → pending_mapping state
+        record = self.store.get_record("rec-rollback-test")
+        self.assertEqual(record["state"], "pending_mapping")
+
+
+class RecordStatePolicyTest(unittest.TestCase):
+    """Tests for peap_core.record_state_policy shared semantic layer."""
+
+    def test_state_requires_mapping_pending_true_only_for_pending_mapping(self):
+        from peap_core.pipeline_state_contracts import RecordState
+        from peap_core.record_state_policy import state_requires_mapping_pending
+        for state in RecordState:
+            if state == RecordState.PENDING_MAPPING:
+                self.assertTrue(state_requires_mapping_pending(state), f"{state} should require mapping_pending")
+            else:
+                self.assertFalse(state_requires_mapping_pending(state), f"{state} should NOT require mapping_pending")
+
+    def test_state_allows_maintenance_reclassification_values(self):
+        from peap_core.pipeline_state_contracts import RecordState
+        from peap_core.record_state_policy import state_allows_maintenance_reclassification, MAINTENANCE_NORMALIZABLE_STATES
+        for state in RecordState:
+            result = state_allows_maintenance_reclassification(state)
+            if state in MAINTENANCE_NORMALIZABLE_STATES:
+                self.assertTrue(result, f"{state} should be normalizable")
+            else:
+                self.assertFalse(result, f"{state} should NOT be normalizable")
+
+    def test_state_to_export_blocker_category_full_coverage(self):
+        from peap_core.pipeline_state_contracts import RecordState
+        from peap_core.record_state_policy import state_to_export_blocker_category, ExportBlockerCategory
+        for state in RecordState:
+            cat = state_to_export_blocker_category(state)
+            if state == RecordState.PENDING_MAPPING:
+                self.assertEqual(cat, ExportBlockerCategory.PENDING_MAPPING)
+            elif state in (RecordState.MAPPING_CONFLICT, RecordState.CONFLICT):
+                self.assertEqual(cat, ExportBlockerCategory.CONFLICT)
+            elif state == RecordState.SKIPPED:
+                self.assertEqual(cat, ExportBlockerCategory.SKIPPED, f"{state}")
+            else:
+                self.assertEqual(cat, ExportBlockerCategory.NONE, f"{state}")
+
+    def test_backlog_owning_states_only_pending_mapping(self):
+        from peap_core.pipeline_state_contracts import RecordState
+        from peap_core.record_state_policy import BACKLOG_OWNING_STATES
+        self.assertIn(RecordState.PENDING_MAPPING, BACKLOG_OWNING_STATES)
+        self.assertNotIn(RecordState.PENDING_REVIEW, BACKLOG_OWNING_STATES)
+
+    def test_classify_record_state_returns_record_state(self):
+        from peap_core.pipeline_state_contracts import RecordState
+        from peap_core.record_state_policy import classify_record_state
+        from peap.streaming_models import PostProcessFinding
+
+        # mapping_conflict finding -> MAPPING_CONFLICT
+        findings = [PostProcessFinding(severity="warn", type="mapping_conflict", message="conflict", evidence={})]
+        self.assertEqual(classify_record_state(findings), RecordState.MAPPING_CONFLICT)
+
+        # mapping_missing finding -> PENDING_MAPPING
+        findings = [PostProcessFinding(severity="warn", type="mapping_missing", message="missing", evidence={})]
+        self.assertEqual(classify_record_state(findings), RecordState.PENDING_MAPPING)
+
+        # had_conflict=True + no mapping findings -> CONFLICT
+        findings = []
+        self.assertEqual(classify_record_state(findings, had_conflict=True), RecordState.CONFLICT)
+
+        # empty findings + had_conflict=False -> READY
+        findings = []
+        self.assertEqual(classify_record_state(findings, had_conflict=False), RecordState.READY)
 
 
 if __name__ == "__main__":

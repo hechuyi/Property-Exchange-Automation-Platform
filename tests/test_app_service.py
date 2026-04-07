@@ -1022,6 +1022,7 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(payload["total_count"], 3)
         self.assertEqual(payload["page_count"], 3)
         self.assertTrue(payload["has_more"])
+        self.assertIs(type(payload["has_more"]), bool)
         self.assertEqual(len(payload["rows"]), 1)
         self.assertEqual(payload["rows"][0]["record_id"], "rec-page-2")
 
@@ -1063,7 +1064,7 @@ class AppServiceTest(unittest.TestCase):
             refreshed.append(record_id)
             return {"record_id": record_id, "state": "ready"}
 
-        with patch.object(self.service, "reprocess_record", side_effect=fake_reprocess):
+        with patch.object(self.service, "refresh_record_postprocess", side_effect=fake_reprocess):
             payload = self.service.upsert_mapping(
                 {
                     "source_name": "上海电气集团恒联企业发展有限公司",
@@ -1257,7 +1258,7 @@ class AppServiceTest(unittest.TestCase):
             refreshed.append(record_id)
             return {"record_id": record_id, "state": "ready", "project_code": record_id}
 
-        with patch.object(self.service, "reprocess_record", side_effect=fake_reprocess):
+        with patch.object(self.service, "refresh_record_postprocess", side_effect=fake_reprocess):
             payload = self.service.launch_pending_mapping_refresh({})
 
             deadline = time.time() + 1.0
@@ -1569,6 +1570,31 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(result["state"], "ready")
         self.assertIn("R005_normalize_source_type", dict(captured["rules_config"] or {}))
         self.assertTrue(str(captured["source_file"]).endswith("rec-reprocess.html"))
+
+    def test_refresh_record_postprocess_uses_effective_postprocess_rules_config(self) -> None:
+        self._insert_ready_record(record_id="rec-refresh-postprocess", project_code="G32025SH1000778")
+        captured: dict[str, object] = {}
+
+        class FakeRunner:
+            def __init__(self, *, store, archive_root, rules_config=None, dependencies=None) -> None:
+                captured["archive_root"] = archive_root
+                captured["rules_config"] = rules_config
+
+            def refresh_postprocess(self, record_id):
+                captured["record_id"] = record_id
+                return {
+                    "state": "ready",
+                    "record_id": record_id,
+                    "project_code": "G32025SH1000778",
+                    "archive_path": "",
+                }
+
+        with patch("desktop_backend.app_service.StreamingIngestRunner", FakeRunner):
+            result = self.service.refresh_record_postprocess("rec-refresh-postprocess")
+
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(captured["record_id"], "rec-refresh-postprocess")
+        self.assertIn("R005_normalize_source_type", dict(captured["rules_config"] or {}))
 
     def test_reprocess_passes_existing_project_type_as_fallback_context(self) -> None:
         self._insert_ready_record(record_id="rec-reprocess-type", project_code="G32026BJ1000003")
@@ -2011,7 +2037,136 @@ class AppServiceTest(unittest.TestCase):
         # Note: failed/skipped records do not expose parser_payload values in display
         # under the new contract (only canonical data is used for display)
 
-    def test_list_records_prefers_cli_contract_fields_from_parser_payload(self) -> None:
+    def test_list_records_promotes_seller_and_price_to_top_level_fields(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "rec-top-level-fields.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>top level fields</body></html>")
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-top-level-fields",
+                revision_hash="hash-top-level-fields",
+                project_code="G32025SH1000888",
+                project_name="顶层字段项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="pending_mapping",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "rec-top-level-fields.html"),
+                parser_payload={
+                    "项目编号": "G32025SH1000888",
+                    "项目名称": "顶层字段项目",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000888",
+                    "项目名称": "顶层字段项目",
+                    "项目类型": "股权转让",
+                    "交易所": "上海联合产权交易所",
+                    "转让方": "北京测试转让方",
+                    "挂牌价格": "1000",
+                    "挂牌开始日期": "2026-03-21",
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000888",
+                        "project_name": "顶层字段项目",
+                        "project_type": "股权转让",
+                        "status": "",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "1000",
+                        "seller": "北京测试转让方",
+                        "source_type": "",
+                        "group_name": "",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000888",
+                    "项目名称": "顶层字段项目",
+                    "项目类型": "股权转让",
+                    "交易所": "上海联合产权交易所",
+                    "转让方": "北京测试转让方",
+                    "挂牌价格": "1000",
+                    "挂牌开始日期": "2026-03-21",
+                },
+                findings=[],
+            )
+        )
+
+        payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "equity_transfer"})
+        row = next(record for record in payload["rows"] if record["record_id"] == "rec-top-level-fields")
+
+        self.assertEqual(row["values"]["转让方"], "北京测试转让方")
+        self.assertEqual(row["values"]["挂牌价格"], "1000")
+        self.assertEqual(row["seller"], "北京测试转让方")
+        self.assertEqual(row["price"], "1000")
+
+    def test_list_records_prefers_canonical_fields_over_stale_raw_payloads(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "rec-canonical-preferred.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>canonical preferred</body></html>")
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-canonical-preferred",
+                revision_hash="hash-canonical-preferred",
+                project_code="G32025SH1000997",
+                project_name="原始项目名",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "rec-canonical-preferred.html"),
+                parser_payload={
+                    "项目编号": "G32025SH1000997",
+                    "项目名称": "解析层项目名",
+                    "转让方": "解析层卖方",
+                    "挂牌价格": "666.66",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000997",
+                    "项目名称": "后处理项目名",
+                    "项目类型": "股权转让",
+                    "转让方": "后处理卖方",
+                    "挂牌价格": "777.77",
+                },
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000997",
+                        "project_name": "规范化项目名",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "规范化卖方",
+                        "source_type": "国资",
+                    },
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000997",
+                    "项目名称": "过期项目名",
+                    "项目类型": "股权转让",
+                    "转让方": "过期卖方",
+                    "挂牌价格": "999.99",
+                },
+                findings=[],
+            )
+        )
+
+        payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "equity_transfer"})
+        row = next(record for record in payload["rows"] if record["record_id"] == "rec-canonical-preferred")
+
+        self.assertEqual(row["values"]["项目名称"], "规范化项目名")
+        self.assertEqual(row["values"]["转让方"], "规范化卖方")
+        self.assertEqual(row["values"]["挂牌价格"], "108.00")
+        self.assertEqual(row["seller"], "规范化卖方")
+        self.assertEqual(row["price"], "108.00")
+        self.assertEqual(row["values"]["挂牌次数"], "")
+
+    def test_list_records_uses_canonical_export_extras_for_cli_contract_fields(self) -> None:
         self.service.store.upsert_record(
             IngestedRecord(
                 record_id="rec-cli-contract",
@@ -2034,14 +2189,23 @@ class AppServiceTest(unittest.TestCase):
                     "挂牌开始日期": "2026-03-21",
                 },
                 postprocess_payload={"项目编号": "G32025SH1000666", "项目名称": "CLI契约项目", "项目类型": "股权转让"},
-                canonical_projection={
-                    "项目编号": "G32025SH1000666",
-                    "项目名称": "CLI契约项目",
-                    "项目类型": "股权转让",
-                    "类型": "国资",
-                    "转让方": "上海CLI测试公司",
-                    "挂牌次数": 2,
-                    "挂牌开始日期": "2026-03-21",
+                canonical_record={
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000666",
+                        "project_name": "CLI契约项目",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "上海CLI测试公司",
+                        "source_type": "国资",
+                        "group_name": "测试集团",
+                    },
+                    "export_extras": {
+                        "挂牌次数": 2,
+                    },
                 },
                 findings=[],
             )
@@ -2053,6 +2217,48 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(row["values"]["类型"], "国资")
         self.assertEqual(row["values"]["转让方"], "上海CLI测试公司")
         self.assertEqual(row["values"]["挂牌次数"], "2")
+
+    def test_list_records_does_not_promote_projection_only_top_level_fields(self) -> None:
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-top-level-projection-only",
+                revision_hash="hash-top-level-projection-only",
+                project_code="G32025SH1000770",
+                project_name="projection-only 顶层字段项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=os.path.join(self.temp_dir.name, "rec-top-level-projection-only.html"),
+                archive_path=os.path.join(self.temp_dir.name, "archive", "rec-top-level-projection-only.html"),
+                parser_payload={
+                    "项目编号": "G32025SH1000770",
+                    "项目名称": "projection-only 顶层字段项目",
+                    "项目类型": "股权转让",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000770",
+                    "项目名称": "projection-only 顶层字段项目",
+                    "项目类型": "股权转让",
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000770",
+                    "项目名称": "projection-only 顶层字段项目",
+                    "项目类型": "股权转让",
+                    "转让方": "projection-only 卖方",
+                    "挂牌价格": "888.88",
+                },
+                findings=[],
+            )
+        )
+
+        payload = self.service.list_records({"state": "all", "limit": 20, "project_type": "equity_transfer"})
+        row = next(item for item in payload["rows"] if item["record_id"] == "rec-top-level-projection-only")
+
+        self.assertEqual(row["seller"], "")
+        self.assertEqual(row["price"], "")
+        self.assertEqual(row["values"]["转让方"], "")
+        self.assertEqual(row["values"]["挂牌价格"], "")
 
     def test_list_records_does_not_normalize_legacy_skip_parse_failures(self) -> None:
         self.service.store.upsert_failed_record(
@@ -2539,7 +2745,7 @@ class AppServiceTest(unittest.TestCase):
 
         with patch.object(
             self.service,
-            "reprocess_record",
+            "refresh_record_postprocess",
             return_value={"record_id": "rec-zero-repair", "project_code": "CODE-rec-zero-repair", "state": "pending_mapping"},
         ):
             payload = self.service.launch_pending_mapping_refresh({})
@@ -2618,9 +2824,9 @@ class AppServiceTest(unittest.TestCase):
         self._insert_ready_record(record_id="rec-scope-contract", project_code="G32025SH1001999")
         scope = {
             "record_family": "listing",
-            "state": "all",
+            "state": "pending_mapping",
             "project_type": "equity_transfer",
-            "keyword": "",
+            "keyword": "北交所",
             "date_from": "2026-03-21",
             "date_to": "2026-03-21",
             "page": 2,
@@ -2641,6 +2847,8 @@ class AppServiceTest(unittest.TestCase):
             captured["date_from"] = request.date_from
             captured["date_to"] = request.date_to
             captured["business_types"] = list(request.business_types)
+            captured["requested_state"] = request.requested_state
+            captured["keyword"] = request.keyword
             return _FakeExportResult()
 
         with patch("desktop_backend.app_service.run_ready_export", side_effect=fake_run_ready_export):
@@ -2650,9 +2858,9 @@ class AppServiceTest(unittest.TestCase):
             list_payload["scope"],
             {
                 "record_family": "listing",
-                "state": "all",
+                "state": "pending_mapping",
                 "project_type": "equity_transfer",
-                "keyword": "",
+                "keyword": "北交所",
                 "date_from": "2026-03-21",
                 "date_to": "2026-03-21",
                 "page": 2,
@@ -2664,6 +2872,39 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(captured["date_from"], "2026-03-21")
         self.assertEqual(captured["date_to"], "2026-03-21")
         self.assertEqual(captured["business_types"], ["股权转让"])
+        self.assertEqual(captured["requested_state"], "pending_mapping")
+        self.assertEqual(captured["keyword"], "北交所")
+
+    def test_run_export_empty_reason_respects_keyword_filtered_scope(self) -> None:
+        source_file = os.path.join(self.temp_dir.name, "pending_keyword_scope.html")
+        with open(source_file, "w", encoding="utf-8") as handle:
+            handle.write("<html><body>pending keyword scope</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-pending-keyword-scope",
+                revision_hash="hash-pending-keyword-scope",
+                project_code="G32025SH1000201",
+                project_name="待补映射项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/20",
+                state="pending_mapping",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "pending_keyword_scope.html"),
+                parser_payload={"项目编号": "G32025SH1000201", "项目名称": "待补映射项目"},
+                postprocess_payload={"项目编号": "G32025SH1000201", "项目名称": "待补映射项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+
+        payload = self.service.run_export(
+            {"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20", "keyword": "不存在的关键词"}}
+        )
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(payload["empty_reason_code"], "no_matching_records")
+        self.assertEqual(payload["scope_state_counts"], {})
 
     def test_list_records_summary_splits_filtered_counts_and_page_counts(self) -> None:
         self._insert_ready_record(record_id="rec-summary-split-1", project_code="G32025SH1003001")
@@ -2729,6 +2970,241 @@ class AppServiceTest(unittest.TestCase):
         self.assertEqual(record["source_identity_json"]["original_evidence_path"], failed_source_file)
         self.assertEqual(record["source_identity_json"]["original_source_file"], failed_source_file)
         self.assertEqual(row["source_file"], failed_source_file)
+
+    def test_run_export_reports_mapping_conflict_blocker_when_only_mapping_conflict_records(self) -> None:
+        """When the scope contains only mapping_conflict records, export must report
+        mapping_conflict_blocked (not no_matching_records).
+        """
+        source_file = os.path.join(self.temp_dir.name, "mapping_conflict_export.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>mapping conflict export</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-mapping-conflict-export",
+                revision_hash="hash-mc-export-1",
+                project_code="G32025SH1000903",
+                project_name="映射冲突导出测试",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/21",
+                state="mapping_conflict",
+                source_file=source_file,
+                archive_path=source_file,
+                parser_payload={"项目编号": "G32025SH1000903", "项目名称": "映射冲突导出测试"},
+                postprocess_payload={"项目编号": "G32025SH1000903", "项目名称": "映射冲突导出测试"},
+                findings=[
+                    PostProcessFinding(
+                        severity="warn",
+                        type="mapping_conflict",
+                        message="seller field ambiguous",
+                        evidence={"field": "seller"},
+                    )
+                ],
+            )
+        )
+
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-21", "date_to": "2026-03-21"}})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(
+            payload["empty_reason_code"],
+            "mapping_conflict_blocked",
+            "scope with only mapping_conflict records must report mapping_conflict_blocked, not no_matching_records",
+        )
+        self.assertIn("映射冲突", payload["message"])
+        self.assertEqual(payload["scope_state_counts"]["mapping_conflict"], 1)
+
+    def test_run_export_treats_pending_review_as_no_matching_records_residue(self) -> None:
+        """pending_review is inactive contract residue in current streaming mainline.
+
+        Export should not invent a new blocker reason for it; it should remain outside
+        the active export blocker vocabulary.
+        """
+        source_file = os.path.join(self.temp_dir.name, "pending_review_export.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>pending review export</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-pending-review-export",
+                revision_hash="hash-pr-export-1",
+                project_code="G32025SH1000904",
+                project_name="待审核项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/20",
+                state="pending_review",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "pending_review_export.html"),
+                parser_payload={"项目编号": "G32025SH1000904", "项目名称": "待审核项目"},
+                postprocess_payload={"项目编号": "G32025SH1000904", "项目名称": "待审核项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20"}})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(payload["empty_reason_code"], "no_matching_records")
+        self.assertEqual(payload["scope_state_counts"]["pending_review"], 1)
+
+    def test_run_export_reports_mapping_conflict_blocker_when_only_conflict_records(self) -> None:
+        """Export uses a stable compatibility alias for all conflict-like blockers."""
+        source_file = os.path.join(self.temp_dir.name, "conflict_export.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>conflict export</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-conflict-export",
+                revision_hash="hash-conflict-export-1",
+                project_code="G32025SH1000905",
+                project_name="冲突项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/20",
+                state="conflict",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "conflict_export.html"),
+                parser_payload={"项目编号": "G32025SH1000905", "项目名称": "冲突项目"},
+                postprocess_payload={"项目编号": "G32025SH1000905", "项目名称": "冲突项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20"}})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(
+            payload["empty_reason_code"],
+            "mapping_conflict_blocked",
+            "scope with only conflict records must report the existing conflict blocker alias",
+        )
+        self.assertIn("冲突", payload["message"])
+        self.assertEqual(payload["scope_state_counts"]["conflict"], 1)
+
+    def test_run_export_reports_mapping_conflict_blocker_when_conflict_and_skipped_mixed(self) -> None:
+        """Conflict-like blockers take priority over skipped-only messaging."""
+        conflict_source = os.path.join(self.temp_dir.name, "conflict_mixed_export.html")
+        skipped_source = os.path.join(self.temp_dir.name, "skipped_mixed_export.html")
+        with open(conflict_source, "w", encoding="utf-8") as f:
+            f.write("<html><body>conflict export</body></html>")
+        with open(skipped_source, "w", encoding="utf-8") as f:
+            f.write("<html><body>skipped export</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-conflict-mixed-export",
+                revision_hash="hash-conflict-mixed-export-1",
+                project_code="G32025SH1000905A",
+                project_name="冲突项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/20",
+                state="conflict",
+                source_file=conflict_source,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "conflict_mixed_export.html"),
+                parser_payload={"项目编号": "G32025SH1000905A", "项目名称": "冲突项目"},
+                postprocess_payload={"项目编号": "G32025SH1000905A", "项目名称": "冲突项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-skipped-mixed-export",
+                revision_hash="hash-skipped-mixed-export-1",
+                project_code="G32025SH1000906A",
+                project_name="跳过项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/20",
+                state="skipped",
+                source_file=skipped_source,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "skipped_mixed_export.html"),
+                parser_payload={"项目编号": "G32025SH1000906A", "项目名称": "跳过项目"},
+                postprocess_payload={"项目编号": "G32025SH1000906A", "项目名称": "跳过项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20"}})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(payload["empty_reason_code"], "mapping_conflict_blocked")
+        self.assertIn("冲突", payload["message"])
+        self.assertEqual(payload["scope_state_counts"]["conflict"], 1)
+        self.assertEqual(payload["scope_state_counts"]["skipped"], 1)
+
+    def test_run_export_reports_skipped_only_when_all_records_are_skipped(self) -> None:
+        """When all records in scope are skipped, export must report skipped_only."""
+        source_file = os.path.join(self.temp_dir.name, "skipped_export.html")
+        with open(source_file, "w", encoding="utf-8") as f:
+            f.write("<html><body>skipped export</body></html>")
+
+        self.service.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-skipped-export",
+                revision_hash="hash-skipped-export-1",
+                project_code="G32025SH1000906",
+                project_name="跳过项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026/03/20",
+                state="skipped",
+                source_file=source_file,
+                archive_path=os.path.join(self.temp_dir.name, "archive", "skipped_export.html"),
+                parser_payload={"项目编号": "G32025SH1000906", "项目名称": "跳过项目"},
+                postprocess_payload={"项目编号": "G32025SH1000906", "项目名称": "跳过项目", "项目类型": "股权转让"},
+                findings=[],
+            )
+        )
+
+        payload = self.service.run_export({"scope": {"date_from": "2026-03-20", "date_to": "2026-03-20"}})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(
+            payload["empty_reason_code"],
+            "skipped_only",
+            "scope with only skipped records must report skipped_only",
+        )
+        self.assertIn("已跳过", payload["message"])
+        self.assertEqual(payload["scope_state_counts"]["skipped"], 1)
+
+    def test_run_export_reports_no_matching_records_when_scope_has_no_records(self) -> None:
+        """When the scope has no records at all, export must report no_matching_records."""
+        payload = self.service.run_export({"scope": {"date_from": "2099-01-01", "date_to": "2099-01-01"}})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(payload["empty_reason_code"], "no_matching_records")
+        self.assertIn("没有可导出的记录", payload["message"])
+
+    def test_classify_empty_export_result_uses_policy_two_layer_mapping(self) -> None:
+        """_classify_empty_export_result must use state_to_export_blocker_category
+        from the shared policy (two-layer: state -> category -> UI reason)."""
+        from desktop_backend.app_service import _classify_empty_export_result
+
+        # pending_review is inactive residue in streaming mainline -> not an active blocker
+        reason, msg = _classify_empty_export_result({"pending_review": 3})
+        self.assertEqual(reason, "no_matching_records")
+
+        # conflict uses the stable conflict-like alias
+        reason, msg = _classify_empty_export_result({"conflict": 2})
+        self.assertEqual(reason, "mapping_conflict_blocked")
+        self.assertIn("冲突 2 条", msg)
+
+        # skipped -> SKIPPED (only when no other blockers)
+        reason, msg = _classify_empty_export_result({"skipped": 5})
+        self.assertEqual(reason, "skipped_only")
+        self.assertIn("已跳过 5 条", msg)
+
+        # Priority: pending_mapping wins over conflict-like blockers
+        reason, msg = _classify_empty_export_result({"pending_mapping": 1, "conflict": 2})
+        self.assertEqual(reason, "pending_mapping_blocked")
+
+        # ready / failed records are invisible (non-blocking)
+        reason, msg = _classify_empty_export_result({"ready": 100, "parse_failed": 2, "postprocess_failed": 1})
+        self.assertEqual(reason, "no_matching_records")
 
 
 class GhostJobPreventionTest(unittest.TestCase):
@@ -2799,7 +3275,12 @@ class GhostJobPreventionTest(unittest.TestCase):
         self.assertEqual(received_job_id, payload["job_id"])
 
     def test_launch_one_click_releases_lock_when_callback_never_sets_job_id(self) -> None:
-        """Serial guard is released when job creation callback fails to set job_id."""
+        """Pre-created one-click job must not leave a stale mutating lock behind.
+
+        The callback is now informational only. Even if it never runs, API launch should
+        succeed, and if the worker returns immediately the mutating lock should already be
+        released by the time launch_one_click() returns.
+        """
         callback_called = False
 
         def fake_run_streaming_daily_pipeline(
@@ -2821,12 +3302,10 @@ class GhostJobPreventionTest(unittest.TestCase):
             return None
 
         with patch("peap.streaming_daily_pipeline.run_streaming_daily_pipeline", side_effect=fake_run_streaming_daily_pipeline):
-            try:
-                self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
-            except RuntimeError:
-                pass  # Expected
+            payload = self.service.launch_one_click({"start_date": "2026-03-22", "end_date": "2026-03-22"})
 
-        # Lock must be released after API failure
+        self.assertTrue(callback_called)
+        self.assertTrue(str(payload.get("job_id") or "").strip())
         self.assertNotIn("one_click", self.service._active_mutating_jobs)
 
 
@@ -2908,8 +3387,8 @@ class ReprocessFailureTransitionTest(unittest.TestCase):
             "Reprocess failure should not create duplicate failed records"
         )
 
-    def test_reprocess_in_background_job_updates_original_on_failure(self) -> None:
-        """When reprocess fails in a background mapping_refresh job, original record is updated."""
+    def test_refresh_postprocess_in_background_job_updates_original_on_failure(self) -> None:
+        """When postprocess refresh fails in a background mapping_refresh job, original record is updated."""
         # Create a pending mapping record
         source_file = os.path.join(self.temp_dir.name, "pending-record.html")
         with open(source_file, "w", encoding="utf-8") as handle:
@@ -2941,21 +3420,20 @@ class ReprocessFailureTransitionTest(unittest.TestCase):
         )
 
         job_id = self.service.store.create_job("mapping_refresh", metadata={"scope": "pending_mapping"})
-        reprocess_calls = []
+        refresh_calls = []
 
-        def failing_reprocess(record_id):
-            reprocess_calls.append(record_id)
-            raise RuntimeError("background reprocess failed")
+        def failing_refresh(record_id):
+            refresh_calls.append(record_id)
+            raise RuntimeError("background postprocess refresh failed")
 
-        with patch.object(self.service, "reprocess_record", side_effect=failing_reprocess):
+        with patch.object(self.service, "refresh_record_postprocess", side_effect=failing_refresh):
             self.service._run_mapping_refresh_job(job_id=job_id, record_ids=["rec-pending"])
 
-        # Original record should have its state updated (even if reprocess failed)
+        # Original record should have its state updated (even if refresh failed)
         original = self.service.store.get_record("rec-pending")
-        # Reprocess failure must transition state to parse_failed
         self.assertEqual(
             original["state"], "parse_failed",
-            "Reprocess failure must transition pending_mapping record to parse_failed"
+            "Refresh failure must transition pending_mapping record to parse_failed"
         )
 
         # Verify no duplicate records were created

@@ -49,3 +49,10 @@ desktop_app/out/
 desktop_app/.pyinstaller/
 .cache/
 .worktrees/
+
+# SQLite temp database
+:memory:
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/.cache/

@@ -178,7 +178,7 @@ class StreamingExportTest(unittest.TestCase):
         self.assertEqual(row["类型"], "国资")
         self.assertEqual(row["转让方"], "上海测试公司")
 
-    def test_record_to_export_payload_accepts_explicit_canonical_projection(self) -> None:
+    def test_record_to_export_payload_ignores_projection_without_canonical_record(self) -> None:
         payload = record_to_export_payload(
             {
                 "project_code": "G32025SH1000194",
@@ -201,11 +201,100 @@ class StreamingExportTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(payload["项目编号"], "G32025SH1000194")
+        self.assertEqual(payload, {})
+
+    def test_run_ready_export_rejects_projection_only_record_even_when_projection_is_complete(self) -> None:
+        self.store.upsert_record(
+            IngestedRecord(
+                record_id="rec-projection-only",
+                revision_hash="hash-projection-only",
+                project_code="G32025SH1000555",
+                project_name="projection-only 项目",
+                project_type="股权转让",
+                exchange="shanghai",
+                listing_date="2026-03-21",
+                state="ready",
+                source_file=f"{self.temp_dir.name}/raw/projection-only.html",
+                archive_path=f"{self.temp_dir.name}/archive/projection-only.html",
+                parser_payload={
+                    "项目编号": "G32025SH1000555",
+                    "项目名称": "projection-only 项目",
+                    "项目类型": "股权转让",
+                },
+                postprocess_payload={
+                    "项目编号": "G32025SH1000555",
+                    "项目名称": "projection-only 项目",
+                    "项目类型": "股权转让",
+                },
+                canonical_projection={
+                    "项目编号": "G32025SH1000555",
+                    "项目名称": "projection-only 项目",
+                    "项目类型": "股权转让",
+                    "项目状态": "挂牌中",
+                    "挂牌开始日期": "2026-03-21",
+                    "挂牌价格": "108.00",
+                    "转让方": "projection-only 卖方",
+                },
+                findings=[],
+            )
+        )
+        request = ExportRequest(
+            date_from="2026-03-21",
+            date_to="2026-03-21",
+            business_types=["股权转让"],
+            mode="rebuild",
+            output_dir=f"{self.temp_dir.name}/exports",
+        )
+
+        with self.assertRaises(ExportProjectionError):
+            run_ready_export(self.store, request, writer=lambda *_args, **_kwargs: None)
+
+    def test_record_to_export_payload_prefers_canonical_fields_over_stale_projection(self) -> None:
+        payload = record_to_export_payload(
+            {
+                "project_code": "G32025SH1000777",
+                "project_name": "原始项目",
+                "project_type": "股权转让",
+                "exchange": "shanghai",
+                "canonical_record": {
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000777",
+                        "project_name": "规范化项目",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "规范化卖方",
+                        "source_type": "国资",
+                    },
+                },
+                "canonical_projection": {
+                    "项目编号": "G32025SH1000777",
+                    "项目名称": "过期项目名",
+                    "项目类型": "股权转让",
+                    "转让方": "过期卖方",
+                    "挂牌价格": "999.99",
+                },
+                "parser_payload": {
+                    "项目名称": "解析层项目名",
+                    "转让方": "解析层卖方",
+                    "挂牌价格": "666.66",
+                },
+                "postprocess_payload": {
+                    "项目名称": "后处理项目名",
+                    "转让方": "后处理卖方",
+                    "挂牌价格": "777.77",
+                },
+            }
+        )
+
+        self.assertEqual(payload["项目名称"], "规范化项目")
+        self.assertEqual(payload["转让方"], "规范化卖方")
         self.assertEqual(payload["挂牌价格"], "108.00")
-        self.assertEqual(payload["转让方"], "上海测试公司")
-        self.assertNotIn("未审计透传字段", payload)
-        self.assertNotIn("另一个透传字段", payload)
+        self.assertEqual(payload["类型"], "国资")
+        self.assertNotIn("挂牌次数", payload)
 
     def test_run_ready_export_prefers_persisted_canonical_projection_over_raw_payload_merge(self) -> None:
         self.store.upsert_record(
@@ -295,12 +384,18 @@ class StreamingExportTest(unittest.TestCase):
                 "project_name": "测试项目",
                 "project_type": "股权转让",
                 "exchange": "shanghai",
-                "canonical_projection": {
-                    "项目编号": "G32025SH1000194",
-                    "项目名称": "测试项目",
-                    "项目类型": "股权转让",
-                    "挂牌价格": "108.00",
-                    "转让方": "上海测试公司",
+                "canonical_record": {
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "G32025SH1000194",
+                        "project_name": "测试项目",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "shanghai",
+                        "start_date": "2026-03-21",
+                        "price": "108.00",
+                        "seller": "上海测试公司",
+                    },
                 },
                 "parser_payload": {
                     "项目编号": "G32025SH1000194",
@@ -329,15 +424,25 @@ class StreamingExportTest(unittest.TestCase):
                 "project_name": "成交样例项目",
                 "project_type": "股权转让",
                 "exchange": "北交所",
-                "canonical_projection": {
-                    "交易所": "北交所",
-                    "项目编号": "GR20260001",
-                    "项目名称": "成交样例项目",
-                    "交易方式": "网络竞价",
-                    "受让方名称": "样例受让方",
-                    "转让标的评估值": "88.00",
-                    "成交金额": "108.00",
-                    "成交日期": "2026/03/01",
+                "canonical_record": {
+                    "record_family": "listing",
+                    "canonical_fields": {
+                        "project_code": "GR20260001",
+                        "project_name": "成交样例项目",
+                        "project_type": "股权转让",
+                        "status": "挂牌中",
+                        "exchange": "北交所",
+                        "start_date": "2026/03/01",
+                        "price": "108.00",
+                        "seller": "样例受让方",
+                    },
+                    "export_extras": {
+                        "交易方式": "网络竞价",
+                        "受让方名称": "样例受让方",
+                        "转让标的评估值": "88.00",
+                        "成交金额": "108.00",
+                        "成交日期": "2026/03/01",
+                    },
                 },
                 "parser_payload": {
                     "交易所": "北交所",

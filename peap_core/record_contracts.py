@@ -51,6 +51,7 @@ class CanonicalRecord:
     business_identity: Mapping[str, Any]
     canonical_fields: Mapping[str, Any]
     field_provenance: Mapping[str, Any]
+    export_extras: Mapping[str, Any] = field(default_factory=dict)
     diagnostics: tuple[Any, ...] = ()
     normalizer_version: str = ""
     policy_state: Mapping[str, Any] = field(default_factory=dict)
@@ -59,6 +60,7 @@ class CanonicalRecord:
         object.__setattr__(self, "source_identity", _freeze_value(self.source_identity))
         object.__setattr__(self, "business_identity", _freeze_value(self.business_identity))
         object.__setattr__(self, "canonical_fields", _freeze_value(self.canonical_fields))
+        object.__setattr__(self, "export_extras", _freeze_value(self.export_extras))
         object.__setattr__(self, "field_provenance", _freeze_value(self.field_provenance))
         object.__setattr__(self, "diagnostics", _freeze_value(self.diagnostics))
         object.__setattr__(self, "policy_state", _freeze_value(self.policy_state))
@@ -70,6 +72,7 @@ class CanonicalRecord:
             "source_identity": _serialize_value(self.source_identity),
             "business_identity": _serialize_value(self.business_identity),
             "canonical_fields": _serialize_value(self.canonical_fields),
+            "export_extras": _serialize_value(self.export_extras),
             "field_provenance": _serialize_value(self.field_provenance),
             "diagnostics": _serialize_value(self.diagnostics),
             "normalizer_version": self.normalizer_version,

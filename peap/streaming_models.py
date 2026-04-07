@@ -82,6 +82,8 @@ class ExportRequest:
     date_from: str | None = None
     date_to: str | None = None
     business_types: List[str] = field(default_factory=list)
+    requested_state: str = "all"
+    keyword: str = ""
     mode: str = "incremental"
     cursor_key: str = ""
     output_dir: str = ""
