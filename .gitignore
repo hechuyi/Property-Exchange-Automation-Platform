@@ -2,44 +2,56 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
 
-# Local env / editor
+# Virtual env
 .venv/
 .venv-desktop/
+
+# Editor
 .vscode/
 .trae/
 .DS_Store
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
 
-# Runtime outputs (legacy in-repo artifacts, should stay outside repo)
+# Runtime data - MUST NOT upload
+data/
+PEAP_DATA/
+cache/
 logs/
-postprocess_output/
-postprocess_audit/
-peap_postprocess/logs/
-peap_postprocess/postprocess_output/
-peap_postprocess/postprocess_audit/
-archive_merge_module/output_test/
-peap_postprocess/ppe_config/postprocess_audit/
+exports/
+manual/
 
-# Web cache artifacts
+# Downloaded HTML snapshots (business source data)
 *.html
 *.htm
+*.mhtml
 
-# Temporary artifacts
-peap_postprocess/_tmp_*/
-.~lock*
-.tmp_test_data_root/
-
-# Business output tables (must not upload concrete tables)
+# Business output tables
 *.xlsx
 *.xls
 *.xlsm
 *.csv
 
-# Keep only template tables
+# Postprocess audit/output
+postprocess_output/
+postprocess_audit/
+peap_postprocess/logs/
+peap_postprocess/postprocess_output/
+peap_postprocess/postprocess_audit/
+peap_postprocess/ppe_config/postprocess_audit/
+archive_merge_module/output_test/
+
+# Temp databases
+:memory:
+peap_postprocess/_tmp_*/
+.~lock*
+.tmp_test_data_root/
+
+# Keep config templates (negate patterns below)
 !peap_postprocess/ppe_config/*.template.csv
+!assets/runtime_config.template.json
 
 # Desktop app
 desktop_app/node_modules/
@@ -47,12 +59,23 @@ desktop_app/build/
 desktop_app/dist/
 desktop_app/out/
 desktop_app/.pyinstaller/
-.cache/
-.worktrees/
+desktop_app/.cache/
 
-# SQLite temp database
-:memory:
-
-# Frontend build artifacts
+# Frontend
 frontend/node_modules/
 frontend/.cache/
+frontend/build/
+frontend/dist/
+
+# Claude / worktrees
+.claude/
+.worktrees/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Vite
+.vite/
+
+# GitHub Actions (keep workflows)
+.github/workflows/
