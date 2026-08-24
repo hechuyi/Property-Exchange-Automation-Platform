@@ -13,12 +13,15 @@ PEAP_PATH_ENV_NAMES = (
     "PEAP_STREAMING_DB_PATH",
 )
 
+PROTECTED_PEAP_HOME = os.path.join(os.path.abspath(os.sep), "peap-protected-test-workspace")
+
 
 def isolated_peap_env(temp_root: str, *, app_home: str | None = None) -> dict[str, str]:
     resolved_root = os.path.abspath(temp_root)
     resolved_app_home = os.path.abspath(app_home or os.path.join(resolved_root, "app_home"))
     return {
         "HOME": os.path.join(resolved_root, "home"),
+        "PEAP_PROTECTED_WORKSPACE_ROOTS": PROTECTED_PEAP_HOME,
         "PEAP_APP_HOME": resolved_app_home,
         "PEAP_DATA_ROOT": os.path.join(resolved_app_home, "data"),
         "PEAP_ARCHIVE_ROOT": os.path.join(resolved_app_home, "archive"),

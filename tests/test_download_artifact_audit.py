@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from path_isolation import PROTECTED_PEAP_HOME
+
 from peap.download_artifact_audit import (
     STALE_DOWNLOAD_OPERATION_CODE,
     _evidence_verdict_to_dict,
@@ -18,9 +20,12 @@ from peap.download_tasks import build_task_registry
 
 
 class DownloadArtifactAuditTest(unittest.TestCase):
+    REAL_PEAP_HOME = PROTECTED_PEAP_HOME
+
     @contextmanager
     def _isolated_peap_env(self, tmp_dir: str):
         env = {
+            "PEAP_PROTECTED_WORKSPACE_ROOTS": self.REAL_PEAP_HOME,
             "PEAP_APP_HOME": os.path.join(tmp_dir, "app-home"),
             "PEAP_DATA_ROOT": os.path.join(tmp_dir, "data"),
             "PEAP_ARCHIVE_ROOT": os.path.join(tmp_dir, "archive"),
@@ -457,7 +462,7 @@ class DownloadArtifactAuditTest(unittest.TestCase):
                 )
 
     def test_rejects_real_workspace_db_path_before_filesystem_probe(self) -> None:
-        real_db_path = "/Users/rtoc/Documents/PEAP/data/streaming_ingest.sqlite3"
+        real_db_path = os.path.join(self.REAL_PEAP_HOME, "data", "streaming_ingest.sqlite3")
         args = SimpleNamespace(
             exchange="sse",
             record_family="listing",
@@ -469,11 +474,15 @@ class DownloadArtifactAuditTest(unittest.TestCase):
         spec = build_task_registry()["sse:listing:physical_asset"]
 
         def forbid_isfile(path: object) -> bool:
-            if str(path).startswith("/Users/rtoc/Documents/PEAP"):
+            if str(path).startswith(self.REAL_PEAP_HOME):
                 raise AssertionError(f"attempted filesystem probe for forbidden PEAP path: {path}")
             return False
 
-        with patch("peap.download_artifact_audit.os.path.isfile", side_effect=forbid_isfile):
+        with patch.dict(
+            os.environ,
+            {"PEAP_PROTECTED_WORKSPACE_ROOTS": self.REAL_PEAP_HOME},
+            clear=False,
+        ), patch("peap.download_artifact_audit.os.path.isfile", side_effect=forbid_isfile):
             with self.assertRaisesRegex(ValueError, "real PEAP workspace"):
                 build_download_artifact_audit(config, args=args, tasks=[spec])
 
@@ -865,7 +874,7 @@ class DownloadArtifactAuditTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             with self._isolated_peap_env(tmp_dir):
                 db_path = os.path.join(tmp_dir, "streaming.sqlite3")
-                forbidden_path = "/Users/rtoc/Documents/PEAP/archive/forbidden-row.html"
+                forbidden_path = os.path.join(self.REAL_PEAP_HOME, "archive", "forbidden-row.html")
                 self._init_db(db_path)
                 with sqlite3.connect(db_path) as conn:
                     conn.execute(

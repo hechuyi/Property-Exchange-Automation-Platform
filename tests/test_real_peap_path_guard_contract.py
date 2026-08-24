@@ -6,7 +6,8 @@ from pathlib import Path
 def test_real_peap_path_guard_avoids_resolve_based_filesystem_probes() -> None:
     source = Path("scripts/_paths.py").read_text(encoding="utf-8")
 
-    assert 'Path("/Users/rtoc/Documents/PEAP").resolve' not in source
+    assert "/Users/" not in source
+    assert "C:\\Users\\" not in source
     assert ".resolve(strict=False)" not in source
 
 

@@ -10,7 +10,7 @@ import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from path_isolation import assert_peap_env_under_temp, isolated_peap_env
+from path_isolation import PROTECTED_PEAP_HOME, assert_peap_env_under_temp, isolated_peap_env
 
 from peap import failure_repair, operations_admin
 from peap.cli import main as peap_main
@@ -28,12 +28,16 @@ def _isolated_admin_env(temp_dir: str):
 
 
 class DataHealthCliTest(unittest.TestCase):
-    REAL_PEAP_HOME = "/Users/rtoc/Documents/PEAP"
+    REAL_PEAP_HOME = PROTECTED_PEAP_HOME
 
     def test_data_health_rejects_real_peap_workspace(self) -> None:
         stdout = io.StringIO()
 
-        with redirect_stdout(stdout):
+        with patch.dict(
+            os.environ,
+            {"PEAP_PROTECTED_WORKSPACE_ROOTS": self.REAL_PEAP_HOME},
+            clear=False,
+        ), redirect_stdout(stdout):
             exit_code = peap_main(["data-health", "--app-home", self.REAL_PEAP_HOME])
 
         payload = json.loads(stdout.getvalue())
@@ -892,7 +896,7 @@ class DataHealthCliTest(unittest.TestCase):
             self.assertTrue(stale_reference["path_diagnostic"]["base_exists"])
 
     def test_archive_conflict_classification_denies_real_peap_paths_before_artifact_truth(self) -> None:
-        real_peap_home = "/Users/rtoc/Documents/PEAP"
+        real_peap_home = self.REAL_PEAP_HOME
         forbidden_archive_path = os.path.join(real_peap_home, "archive", "conflict.html")
         forbidden_source_path = os.path.join(real_peap_home, "archive", "source.html")
 
@@ -971,7 +975,11 @@ class DataHealthCliTest(unittest.TestCase):
                     raise AssertionError(f"attempted filesystem probe for forbidden PEAP path: {path}")
                 return False
 
-            with patch(
+            with patch.dict(
+                os.environ,
+                {"PEAP_PROTECTED_WORKSPACE_ROOTS": real_peap_home},
+                clear=False,
+            ), patch(
                 "peap.operations_admin.resolve_artifact_evidence_verdict",
                 side_effect=AssertionError("artifact truth must not inspect forbidden PEAP paths"),
             ) as verdict, patch("peap.operations_admin.os.path.exists", side_effect=forbid_exists):
@@ -987,7 +995,7 @@ class DataHealthCliTest(unittest.TestCase):
             conn.close()
 
     def test_archive_conflict_classification_surfaces_invalid_source_identity_json(self) -> None:
-        real_peap_home = "/Users/rtoc/Documents/PEAP"
+        real_peap_home = self.REAL_PEAP_HOME
         forbidden_archive_path = os.path.join(real_peap_home, "archive", "bad-json-conflict.html")
         forbidden_source_path = os.path.join(real_peap_home, "archive", "bad-json-source.html")
 

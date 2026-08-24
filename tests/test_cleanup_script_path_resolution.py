@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from path_isolation import assert_paths_under_temp, isolated_peap_env
+from path_isolation import PROTECTED_PEAP_HOME, assert_paths_under_temp, isolated_peap_env
 
 from desktop_backend.app_config import AppConfig
 from scripts._paths import resolve_cleanup_paths
@@ -41,7 +41,7 @@ def _assert_paths_under(testcase: unittest.TestCase, root: str, *paths: str) -> 
 
 
 class CleanupScriptPathResolutionTest(unittest.TestCase):
-    REAL_PEAP_HOME = "/Users/rtoc/Documents/PEAP"
+    REAL_PEAP_HOME = PROTECTED_PEAP_HOME
 
     def test_rejects_real_peap_workspace_default_paths(self) -> None:
         args = argparse.Namespace(archive_root=None, db=None, app_home=None)
@@ -58,6 +58,7 @@ class CleanupScriptPathResolutionTest(unittest.TestCase):
                     "data",
                     "streaming_ingest.sqlite3",
                 ),
+                "PEAP_PROTECTED_WORKSPACE_ROOTS": self.REAL_PEAP_HOME,
             },
             clear=True,
         ):
@@ -78,14 +79,22 @@ class CleanupScriptPathResolutionTest(unittest.TestCase):
                     app_home=os.path.join(tmp, "app"),
                 )
                 setattr(args, attr, path_value)
-                with self.assertRaisesRegex(ValueError, "real PEAP workspace"):
-                    resolve_cleanup_paths(args, report_only=False)
+                with patch.dict(
+                    os.environ,
+                    {"PEAP_PROTECTED_WORKSPACE_ROOTS": self.REAL_PEAP_HOME},
+                    clear=False,
+                ):
+                    with self.assertRaisesRegex(ValueError, "real PEAP workspace"):
+                        resolve_cleanup_paths(args, report_only=False)
 
     def test_report_only_resolution_allows_real_workspace_defaults(self) -> None:
         args = argparse.Namespace(archive_root=None, db=None, app_home=None)
         with patch.dict(
             os.environ,
-            {"PEAP_APP_HOME": self.REAL_PEAP_HOME},
+            {
+                "PEAP_APP_HOME": self.REAL_PEAP_HOME,
+                "PEAP_PROTECTED_WORKSPACE_ROOTS": self.REAL_PEAP_HOME,
+            },
             clear=True,
         ):
             resolve_cleanup_paths(args)
