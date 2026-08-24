@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>产权交易所自动录入</title>
+  <link rel="icon" href="public/favicon.ico">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <!-- 侧边栏 -->
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <h1>产权交易所<br>自动录入</h1>
+      <div class="version">PEAP 3.0</div>
+    </div>
+    <ul class="sidebar-nav">
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link active" data-panel="overview" onclick="switchPanel('overview')">总览</a>
+      </li>
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link" data-panel="tasks" onclick="switchPanel('tasks')">任务</a>
+      </li>
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link" data-panel="records" onclick="switchPanel('records')">记录</a>
+      </li>
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link" data-panel="reviews" onclick="switchPanel('reviews')">待复核</a>
+      </li>
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link" data-panel="export-history" onclick="switchPanel('export-history')">导出历史</a>
+      </li>
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link" data-panel="mappings" onclick="switchPanel('mappings')">映射</a>
+      </li>
+      <li class="sidebar-nav-item">
+        <a class="sidebar-nav-link" data-panel="settings" onclick="switchPanel('settings')">设置</a>
+      </li>
+    </ul>
+  </nav>
+
+  <!-- 主内容 -->
+  <main class="main">
+    <div id="panel-overview" class="panel active"></div>
+    <div id="panel-tasks" class="panel"></div>
+    <div id="panel-records" class="panel"></div>
+    <div id="panel-reviews" class="panel"></div>
+    <div id="panel-export-history" class="panel"></div>
+    <div id="panel-mappings" class="panel"></div>
+    <div id="panel-settings" class="panel"></div>
+  </main>
+</div>
+    <script type="module" src="app.js"></script>
+</body>
+</html>

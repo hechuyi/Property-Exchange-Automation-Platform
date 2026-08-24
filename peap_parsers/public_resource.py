@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Parser for public-resource-platform MHTML deal pages."""
+
+from __future__ import annotations
+
+import re
+from typing import Dict
+
+from bs4 import BeautifulSoup
+
+from peap.public_resource_attribution import normalize_public_resource_exchange
+
+from .base import WebPageParser
+from .snapshot_decoder import load_html_parts_from_mhtml, resolve_mhtml_result_html
+
+EXPECTED_TABLE_LABELS = {
+    "项目编号",
+    "项目名称",
+    "交易方式",
+    "受让方名称",
+    "转让标的评估值或账面净值",
+    "成交金额",
+    "成交日期",
+}
+
+
+def _clean_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _normalize_trade_date(value: object) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    if " " in text:
+        text = text.split(" ", 1)[0]
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    text = (
+        text.replace("年", "/")
+        .replace("月", "/")
+        .replace("日", "")
+        .replace(".", "/")
+        .replace("-", "/")
+    )
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}/{text[4:6]}/{text[6:8]}"
+    match = re.fullmatch(r"(\d{4})/(\d{1,2})/(\d{1,2})", text)
+    if match:
+        y, m, d = match.groups()
+        return f"{int(y):04d}/{int(m):02d}/{int(d):02d}"
+    return text
+
+
+def _extract_source_label(outer_html: str) -> str:
+    soup = BeautifulSoup(outer_html, "html.parser")
+    node = soup.select_one("#platformName")
+    if node is not None:
+        return _clean_text(node.get_text(" ", strip=True))
+    return ""
+
+
+def _extract_original_link(inner_soup: BeautifulSoup) -> str:
+    for anchor in inner_soup.find_all("a", href=True):
+        href = _clean_text(anchor.get("href"))
+        if href:
+            return href
+    return ""
+
+
+def _normalize_exchange(source_label: str, original_link: str, project_code: str) -> str:
+    del project_code
+    return normalize_public_resource_exchange(source_label, original_link)
+
+
+def _extract_table_rows(inner_html: str) -> Dict[str, str]:
+    soup = BeautifulSoup(inner_html, "html.parser")
+    table = soup.find("table", class_="detail_Table")
+    if table is None:
+        raise ValueError("detail_Table not found")
+
+    row_map: Dict[str, str] = {}
+    for tr in table.find_all("tr"):
+        cells = [_clean_text(cell.get_text(" ", strip=True)) for cell in tr.find_all(["th", "td"])]
+        if len(cells) < 2:
+            continue
+        row_map[cells[0]] = cells[1]
+
+    missing_labels = sorted(EXPECTED_TABLE_LABELS - set(row_map))
+    if missing_labels:
+        raise ValueError(f"missing table labels: {missing_labels}")
+    return row_map
+
+
+def parse_mhtml_file(file_path: str) -> Dict[str, str]:
+    html_parts = load_html_parts_from_mhtml(file_path)
+    outer_html, inner_html = resolve_mhtml_result_html(html_parts)
+
+    source_label = _extract_source_label(outer_html)
+    inner_soup = BeautifulSoup(inner_html, "html.parser")
+    original_link = _extract_original_link(inner_soup)
+    row_map = _extract_table_rows(inner_html)
+    exchange = _normalize_exchange(
+        source_label=source_label,
+        original_link=original_link,
+        project_code=row_map["项目编号"],
+    )
+
+    return {
+        "交易所": exchange,
+        "项目编号": row_map["项目编号"],
+        "项目名称": row_map["项目名称"],
+        "交易方式": row_map["交易方式"],
+        "受让方名称": row_map["受让方名称"],
+        "转让标的评估值": row_map["转让标的评估值或账面净值"],
+        "成交金额": row_map["成交金额"],
+        "成交日期": _normalize_trade_date(row_map["成交日期"]),
+    }
+
+
+class PublicResourceParser(WebPageParser):
+    """公共资源网 MHTML 成交详情解析器。"""
+
+    def parse(self) -> Dict[str, object]:
+        row = parse_mhtml_file(self.require_source_file())
+        trade_mode = str(row.get("交易方式") or "").strip()
+        buyer = str(row.get("受让方名称") or "").strip()
+        valuation = str(row.get("转让标的评估值") or "").strip()
+        trade_date = str(row.get("成交日期") or "").strip()
+        amount = str(row.get("成交金额") or "").strip()
+
+        remark_parts = []
+        if trade_mode:
+            remark_parts.append(f"交易方式={trade_mode}")
+        if buyer:
+            remark_parts.append(f"受让方={buyer}")
+        if valuation:
+            remark_parts.append(f"评估值={valuation}")
+        if trade_date:
+            remark_parts.append(f"成交日期={trade_date}")
+
+        self.data["项目编号"] = str(row.get("项目编号") or "").strip()
+        self.data["项目名称"] = str(row.get("项目名称") or "").strip()
+        self.data["交易所"] = str(row.get("交易所") or "").strip()
+        self.data["挂牌价格"] = amount
+        self.data["成交金额"] = amount
+        self.data["交易方式"] = trade_mode
+        self.data["受让方名称"] = buyer
+        self.data["转让标的评估值"] = valuation
+        self.data["成交日期"] = trade_date
+        self.data["__source_exchange"] = "public_resource"
+        if remark_parts:
+            self.data["备注"] = "; ".join(remark_parts)
+        return self.data

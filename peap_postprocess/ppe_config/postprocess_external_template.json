@@ -1,0 +1,62 @@
+{
+  "input_dir": "%PEAP_DATA_ROOT%/outputs/excel",
+  "output_dir": "%PEAP_DATA_ROOT%/outputs/postprocess",
+  "audit_dir": "%PEAP_DATA_ROOT%/outputs/postprocess_audit",
+  "exclude_dirs": [
+    "%PEAP_DATA_ROOT%/outputs/postprocess",
+    "../ppe_config"
+  ],
+  "mode": "plan",
+  "overwrite": false,
+  "output_suffix": "_postprocessed",
+  "scan_recursive": false,
+  "input_targets": [
+    "挂牌_股权转让.xlsx",
+    "挂牌_实物资产.xlsx",
+    "挂牌_增资扩股.xlsx",
+    "挂牌_预披露.xlsx"
+  ],
+  "include_globs": [
+    "*.xlsx",
+    "*.xls",
+    "*.csv"
+  ],
+  "rules": [
+    {
+      "id": "R010_filter_scrap_physical_asset",
+      "enabled": true,
+      "priority": 5,
+      "record_families": ["listing"],
+      "params": {
+        "active": true,
+        "severity": "info",
+        "search_all_fields": true
+      }
+    },
+    {
+      "id": "R012_clear_invalid_group_placeholder",
+      "enabled": true,
+      "priority": 30,
+      "record_families": ["listing"],
+      "params": {
+        "min_placeholder_length": 3
+      }
+    },
+    {
+      "id": "R011_person_transferor_private",
+      "enabled": true,
+      "priority": 40,
+      "record_families": ["listing"],
+      "params": {
+        "override_existing": true
+      }
+    },
+    {
+      "id": "R006_derive_listing_times",
+      "enabled": true,
+      "priority": 60,
+      "record_families": ["listing"],
+      "params": {}
+    }
+  ]
+}

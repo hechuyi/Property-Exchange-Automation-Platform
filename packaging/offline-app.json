@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "PEAP Launcher",
+  "platform": "macOS",
+  "architecture": "arm64",
+  "minimum_macos": "14.0",
+  "python_version": "3.11.9",
+  "node_version": "20.19.5",
+  "node_archive": {
+    "url": "https://nodejs.org/dist/v20.19.5/node-v20.19.5-darwin-arm64.tar.gz",
+    "sha256": "cfed7503d8d99fbcf2f52e408ec52f616058eb0867b34dbc3437259993ef5cba",
+    "root": "node-v20.19.5-darwin-arm64"
+  }
+}

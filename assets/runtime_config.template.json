@@ -1,0 +1,129 @@
+{
+  "paths": {
+    "data_root": "~/Documents/PEAP/data",
+    "html_folder": "../manual",
+    "auto_html_folder": "../archive",
+    "log_dir": "../logs",
+    "output_excel_dir": "../exports",
+    "submission_dir": "../exports/submission",
+    "excel_schema_file": "assets/excel_output_schema.json",
+    "regression_root": "reference",
+    "regression_workdir_root": "logs/parser_regression_runs",
+    "compare_report_dir": "logs/compare",
+    "parser_cache_db": "logs/parser_cache.sqlite3",
+    "download_chunk_state_dir": "logs/download_chunk_state",
+    "streaming_db_path": "streaming_ingest.sqlite3"
+  },
+  "output_file_names": {
+    "equity_transfer": "挂牌_股权转让.xlsx",
+    "pre_disclosure": "挂牌_预披露.xlsx",
+    "physical_asset": "挂牌_实物资产.xlsx",
+    "capital_increase": "挂牌_增资扩股.xlsx"
+  },
+  "deal_file_names": {
+    "equity_transfer": "成交_股权转让.xlsx",
+    "physical_asset": "成交_实物资产.xlsx",
+    "capital_increase": "成交_增资扩股.xlsx"
+  },
+  "logging": {
+    "level": "INFO",
+    "to_file": true
+  },
+  "supported_exchanges": [
+    "shenzhen",
+    "beijing",
+    "shanghai",
+    "chongqing",
+    "tianjin",
+    "shandong",
+    "guangdong"
+  ],
+  "project_code_prefixes": {
+    "G3": "股权转让",
+    "Q3": "股权转让",
+    "T3": "股权转让",
+    "G6": "增资扩股",
+    "Q6": "增资扩股",
+    "T6": "增资扩股",
+    "GR": "实物资产",
+    "QR": "实物资产",
+    "PR": "实物资产",
+    "TR": "实物资产",
+    "TA": "实物资产",
+    "CQID": "实物资产",
+    "YQCQ": "股权转让",
+    "SDCQ": "股权转让"
+  },
+  "exchange_names": {
+    "shenzhen": "深交所",
+    "beijing": "北交所",
+    "shanghai": "上交所",
+    "chongqing": "重交所",
+    "tianjin": "天交所",
+    "shandong": "山交所",
+    "guangdong": "广交所"
+  },
+  "parser_defaults": {
+    "limit": null,
+    "batch_flush_interval": 50,
+    "compat_profile": "full",
+    "progress_interval": 50,
+    "compare_fields": [
+      "类型",
+      "挂牌次数"
+    ],
+    "parse_cache_enabled": true
+  },
+  "downloader_defaults": {
+    "exchange": "sse",
+    "business_id": "physical_asset",
+    "concurrency": 4,
+    "split_candidates": 150,
+    "split_min_days": 1,
+    "split_max_depth": 8,
+    "split_mode": "fast",
+    "resume": false,
+    "save_json": false,
+    "auto_split": false,
+    "sse_ssl_verify": true,
+    "sse_ca_bundle": null
+  },
+  "submission_defaults": {
+    "resume": true,
+    "prefer_auto": true,
+    "mapping_source": "excel_only",
+    "filename_max_bytes": 200
+  },
+  "downloader_task_page_size": {
+    "sse:listing:physical_asset": 20,
+    "cbex:listing:physical_asset": 16,
+    "sse:listing:equity_transfer": 20,
+    "sse:listing:capital_increase": 20,
+    "sse:listing:pre_disclosure": 20,
+    "cbex:listing:equity_transfer": 15,
+    "cbex:listing:capital_increase": 15,
+    "cbex:listing:pre_disclosure": 15,
+    "tpre:listing:physical_asset": 20,
+    "tpre:listing:equity_transfer": 20,
+    "tpre:listing:capital_increase": 20,
+    "tpre:listing:pre_disclosure": 20,
+    "cquae:listing:physical_asset": 10,
+    "cquae:listing:equity_transfer": 10,
+    "cquae:listing:capital_increase": 10,
+    "cquae:listing:pre_disclosure": 10,
+    "shandong:listing:equity_transfer": 20,
+    "shandong:listing:capital_increase": 20,
+    "guangdong:listing:equity_transfer": 20,
+    "guangdong:listing:capital_increase": 20,
+    "shenzhen:listing:equity_transfer": 20,
+    "shenzhen:listing:capital_increase": 20
+  },
+  "regression_defaults": {
+    "print_top": 20,
+    "ignored_fields": [
+      "类型",
+      "挂牌次数"
+    ],
+    "show_parser_tail": false
+  }
+}

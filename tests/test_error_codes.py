@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+import unittest
+from http import HTTPStatus
+
+from desktop_backend.error_codes import (
+    ERROR_BROWSER_RUNTIME_MISSING,
+    ERROR_INTERNAL_ERROR,
+    ERROR_INVALID_INPUT,
+    ERROR_INVALID_PATH_SELECTION_KIND,
+    ERROR_INVALID_REQUEST,
+    ERROR_LOCAL_PATH_OPEN_FAILED,
+    ERROR_LOCAL_PATH_PICKER_FAILED,
+    ERROR_LOCAL_PATH_REQUIRED,
+    ERROR_MANUAL_IMPORT_INPUT_DIR_NOT_FOUND,
+    ERROR_MUTATING_JOB_IN_PROGRESS,
+    ERROR_NOT_FOUND,
+    ERROR_RECORD_ARTIFACT_NOT_FOUND,
+    ERROR_RECORD_ARTIFACT_OPEN_FAILED,
+    ERROR_UNAUTHORIZED,
+    PUBLIC_ERROR_CODE_REGISTRY,
+)
+
+
+class ErrorCodeRegistryTest(unittest.TestCase):
+    def test_public_error_code_registry_contains_documented_http_codes(self) -> None:
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_INVALID_INPUT].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_INVALID_REQUEST].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_INVALID_PATH_SELECTION_KIND].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_LOCAL_PATH_REQUIRED].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_LOCAL_PATH_PICKER_FAILED].http_status, HTTPStatus.INTERNAL_SERVER_ERROR)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_LOCAL_PATH_OPEN_FAILED].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_NOT_FOUND].http_status, HTTPStatus.NOT_FOUND)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_RECORD_ARTIFACT_NOT_FOUND].http_status, HTTPStatus.NOT_FOUND)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_RECORD_ARTIFACT_OPEN_FAILED].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_MUTATING_JOB_IN_PROGRESS].http_status, HTTPStatus.CONFLICT)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_BROWSER_RUNTIME_MISSING].http_status, HTTPStatus.CONFLICT)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_MANUAL_IMPORT_INPUT_DIR_NOT_FOUND].http_status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_UNAUTHORIZED].http_status, HTTPStatus.UNAUTHORIZED)
+        self.assertEqual(PUBLIC_ERROR_CODE_REGISTRY[ERROR_INTERNAL_ERROR].http_status, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+
+if __name__ == "__main__":
+    unittest.main()

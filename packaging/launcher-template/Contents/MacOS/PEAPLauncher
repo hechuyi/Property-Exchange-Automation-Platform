@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+RUN_SCRIPT="$APP_BUNDLE/Contents/Resources/run.sh"
+BUNDLED_PROJECT="$APP_BUNDLE/Contents/Resources/Project"
+CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || true)"
+
+if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" || "$CONSOLE_USER" == "loginwindow" ]]; then
+  CONSOLE_USER="${USER:-}"
+fi
+CONSOLE_HOME=""
+if [[ -n "$CONSOLE_USER" ]]; then
+  CONSOLE_HOME="$(
+    /usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null |
+      /usr/bin/sed -n 's/^NFSHomeDirectory: //p' | /usr/bin/head -n 1
+  )"
+fi
+if [[ -z "$CONSOLE_HOME" || ! -d "$CONSOLE_HOME" ]]; then
+  CONSOLE_HOME="${HOME:-}"
+fi
+
+show_error() {
+  /usr/bin/osascript - "$1" <<'APPLESCRIPT' || true
+on run argv
+  display dialog (item 1 of argv) with title "PEAP Launcher" buttons {"OK"} default button "OK" with icon stop
+end run
+APPLESCRIPT
+}
+
+if [[ ! -x "$RUN_SCRIPT" ]]; then
+  show_error "启动器资源不完整，请重新获取 PEAP Launcher.app。"
+  exit 1
+fi
+if [[ ! -f "$BUNDLED_PROJECT/start.sh" ]]; then
+  show_error "启动器资源不完整：找不到内置项目文件。"
+  exit 1
+fi
+if [[ "$CONSOLE_HOME" != /* || "$CONSOLE_HOME" == "/" ]]; then
+  show_error "无法确定当前 macOS 用户的家目录。"
+  exit 1
+fi
+
+if ! /usr/bin/osascript - "$RUN_SCRIPT" "$BUNDLED_PROJECT" "$CONSOLE_HOME" "$CONSOLE_USER" \
+  "${HTTP_PROXY:-}" "${HTTPS_PROXY:-}" "${ALL_PROXY:-}" "${NO_PROXY:-}" \
+  "${http_proxy:-}" "${https_proxy:-}" "${all_proxy:-}" "${no_proxy:-}" \
+  "${SSL_CERT_FILE:-}" "${REQUESTS_CA_BUNDLE:-}" "${CURL_CA_BUNDLE:-}" \
+  "${LANG:-}" "${LC_ALL:-}" "${TZ:-}" <<'APPLESCRIPT'
+on run argv
+  set runScript to item 1 of argv
+  set projectRoot to item 2 of argv
+  set userHome to item 3 of argv
+  set userName to item 4 of argv
+  -- Preserve legitimate network/CA/locale settings while excluding stale
+  -- PEAP path overrides from the launching shell.
+  set envNames to {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "LANG", "LC_ALL", "TZ"}
+  set envCommand to "/usr/bin/env -i HOME=" & quoted form of userHome & " USER=" & quoted form of userName & " LOGNAME=" & quoted form of userName & " PEAP_LAUNCHER_MANAGED=1 PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  repeat with index from 1 to count envNames
+    set envValue to item (index + 4) of argv
+    if envValue is not "" then
+      set envCommand to envCommand & " " & (item index of envNames) & "=" & quoted form of envValue
+    end if
+  end repeat
+  set envCommand to envCommand & " /bin/bash " & quoted form of runScript & " " & quoted form of projectRoot
+  tell application "Terminal"
+    activate
+    do script envCommand
+  end tell
+end run
+APPLESCRIPT
+then
+  show_error "无法启动 Terminal。请在系统设置中允许 PEAP Launcher 自动化 Terminal 后重试。"
+  exit 1
+fi

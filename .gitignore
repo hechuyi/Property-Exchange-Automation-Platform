@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+
+# Virtual env
+.venv/
+.venv-desktop/
+
+# Editor
+.vscode/
+.trae/
+.DS_Store
+
+# Runtime data - MUST NOT upload
+/tmp/
+data/
+PEAP_DATA/
+.cache/
+cache/
+logs/
+exports/
+manual/
+output/
+outputs/
+submission/
+C:\\temp\\manual_html/
+
+# Downloaded HTML snapshots (business source data)
+*.html
+*.htm
+*.mhtml
+!frontend/index.html
+
+# Business output tables
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+
+# Postprocess audit/output
+postprocess_output/
+postprocess_audit/
+peap_postprocess/logs/
+peap_postprocess/postprocess_output/
+peap_postprocess/postprocess_audit/
+peap_postprocess/ppe_config/postprocess_audit/
+archive_merge_module/output_test/
+
+# Temp databases
+:memory:
+peap_postprocess/_tmp_*/
+.~lock*
+.tmp_test_data_root/
+
+# Keep config templates (negate patterns below)
+!peap_postprocess/ppe_config/*.template.csv
+!assets/runtime_config.template.json
+
+# Desktop app
+/*.app/
+desktop_app/node_modules/
+desktop_app/build/
+desktop_app/dist/
+desktop_app/out/
+desktop_app/.pyinstaller/
+desktop_app/.cache/
+
+# Frontend
+frontend/node_modules/
+frontend/.cache/
+frontend/build/
+frontend/dist/
+/dist/
+
+# Claude / worktrees
+.claude/
+.worktrees/
+
+# Playwright MCP
+.playwright-mcp/
+.playwright-cli/
+
+# Vite
+.vite/
+
+# Distribution staging (generated; keep the development tree separate)
+release/
